@@ -1,14 +1,14 @@
 # 总体进展总览（PROGRESS）
 
 > 本文件与 `docs/progress/` 下的单次进度文档配合使用；每次新建进度文档必须在同一提交或 PR 内更新本文件。
-> 统计基准日：2026-11-08 ｜ 当前里程碑：M1 骨架（已完成） ｜ 下一个可用编号：005（M2 区间 005–009；M6 前端体验 025–028 已预留）
+> 统计基准日：2026-11-08 ｜ 当前里程碑：M2 单场景 MVP（进行中） ｜ 下一个可用编号：006（M2 区间 005–009；M6 前端体验 025–028 已预留）
 
 ## 1. 里程碑状态
 
 | 里程碑 | 名称 | 编号区间 | 状态 | 已通过测试任务数/总任务数 | 完成度 | 最近进度文档 | 阻塞项 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | M1 | 骨架 | 001–004 | 已完成 | 4/4 | 100.0% | [004](progress/004-2026-11-08-ci-license-gate.md) | 无 |
-| M2 | 单场景 MVP | 005–009 | 未开始 | 0/5 | 0.0% | - | 无 |
+| M2 | 单场景 MVP | 005–009 | 进行中 | 1/5 | 20.0% | [005](progress/005-2026-11-08-turn-api.md) | 无 |
 | M3 | 多角色 | 010–014 | 未开始 | 0/5 | 0.0% | - | 无 |
 | M4 | 制造 | 015–018 | 未开始 | 0/4 | 0.0% | - | 无 |
 | M5 | API 调用治理 | 019–024 | 未开始 | 0/6 | 0.0% | - | 无 |
@@ -28,20 +28,26 @@
 | 002 | 2026-11-08 | M1 | domain-models | 第 5 章 23 类领域模型逐字落地，246 单测全绿、domain 零框架依赖 | [002](progress/002-2026-11-08-domain-models.md) |
 | 003 | 2026-11-08 | M1 | eventlog-replay | RandomSource/DerivedRandom + EventLog 盖章/追加/派生重放，golden seed 与第 10 章示例一致 | [003](progress/003-2026-11-08-eventlog-replay.md) |
 | 004 | 2026-11-08 | M1 | ci-license-gate | GitHub Actions（3.10/3.12 矩阵）+ 许可证门禁（GPL/AGPL 阻断），deps 三件套本地彩排通过 | [004](progress/004-2026-11-08-ci-license-gate.md) |
+| 005 | 2026-11-08 | M2 | turn-api | `/api/v1/turns`+`/games` 端点、TurnResult DTO、8 码→HTTP 映射、Idempotency-Key 幂等、GameEngine 唯一写入者落地；17 集成 + 34 单测全绿 | [005](progress/005-2026-11-08-turn-api.md) |
 
 ## 4. 编号分配与变更记录
 
 | 里程碑 | 区间 | 已用编号 | 下一个可用 | 备注 |
 | --- | --- | --- | --- | --- |
 | M1 | 001–004 | 001–004 | - | M1 已完成（4/4）；编号区间已用尽，`005` 起进入 M2 |
-| M2 | 005–009 | - | 005 | 下一步 005-turn-api |
+| M2 | 005–009 | 005 | 006 | 005-turn-api 已完成（1/5）；下一步 006-parser-tools |
 | M6 | 025–028 | - | 025 | v0.2 新增「前端体验」里程碑（M1–M5 完成后再启动编号分配） |
 
 ## 5. 接口偏离登记（对照开发文档第 6、7 章）
 
 | 偏离编号 | 接口/工具 | 文档定义 | 本次实现 | 决策 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| - | - | - | M1-001~004 无服务/工具接口实现，无契约变更 | - | - |
+| D-005-1 | `POST /api/v1/turns` | 第 21 章 §21.3 失败统一 4xx/5xx 信封 | 业务失败仍 HTTP 200 + `TurnResult(ok=false)`；仅缺 `Idempotency-Key`/body 校验失败走 422 信封 | 第 6 章 §6.7「既有 turns 例外」落地 | 已登记 |
+| D-005-2 | `EventType` | 第 14 章 §14.7 核心表未列 `DIALOGUE_EXCHANGED` | 新增 `DIALOGUE_EXCHANGED`（`talk_to` 写事件） | 第 6 章 §6.4 动作表需对话事件 | 已登记 |
+| D-005-3 | `game_created` 载荷 | 第 14 章 §14.7：`card_id`/`card_snapshot`/`starting_room_id`/`initial_character_id`/`snapshot_version`/`save_seed` | result 增 `initial_state` 整状态快照（M2 无人物卡库，回放据此重建） | M2 简化，基线字段不变；M6 人物卡库接入后评估回退 | 已登记 |
+| D-005-4 | `GameState.apply` | 第 5 章：占位 `NotImplementedError`，投影由 persistence/replay 提供 | `domain/reducers.py` 纯投影 + `apply` 委托；persistence/回放复用同一实现 | 第 14 章 §14.7 reducer 落地；`domain` 零框架依赖不变 | 已登记 |
+| D-005-5 | `POST /api/v1/games` | 第 6 章 §6.7 v0.2：body `{card_id}` | M2 body 可选 `{seed}`（无人物卡库） | M2 最小开局；M6 人物卡库接入后按 v0.2 契约补 `card_id` | 已登记 |
+| D-M2-1 | 写操作路由 | 第 7 章 §7.4 DESTRUCTIVE → ProposalQueue/Resolver | M2 单角色直接 gate → 服务层 → GameEngine（仍过白名单/scope/Schema/规则前置/唯一写入者），ProposalQueue/Resolver 留 M3 | 第 17 章 M2 范围不含多角色 | 已登记 |
 
 ## 6. 风险与阻塞摘要（与开发文档第 20 章同一编号）
 
@@ -55,12 +61,13 @@
 | R1（M1 新开） | Python 3.10 兼容：CI 矩阵未实跑 | 中 | 已关闭（GitHub Actions run #1（commit `5ec780b`）3.10/3.12 矩阵实跑通过；本地亦用 3.10.22 实跑 402 passed） | lead |
 | R2（M1 新开） | 项目自身许可证未定（`textgame` 在 pip-licenses 中为 UNKNOWN） | 低（发布前） | 打开（许可证门禁已默认忽略自身；发布前需决策） | lead |
 | R3（M1 新开） | MPL-2.0 传递依赖（orjson/certifi/pathspec/tqdm/hypothesis）文件级义务未登记 | 低 | 缓解中（CI deps job 已生成 CycloneDX SBOM artifact；文件级义务登记随发布流程） | lead |
+| R4（M2 新开） | SQLite 交付前无迁移工具（建表用 `create_all`）；current 行丢失时 `version` 取 `last_seq`（M2 每次提交恰 1 事件） | 中 | 缓解中（008 交付后登记细节；Alembic 迁移与多事件提交的 version 列在 M3 前补） | lead |
 
 ## 7. 当前状态与下一步
 
-- 当前状态：**M1 骨架已完成（4/4 = 100.0%）**。001 环境/最小服务、002 领域模型（246 单测）、003 事件日志与固定种子回放（28 回放测试，golden seed 一致）、004 CI/许可证门禁（402 全量测试、deps 三件套本地彩排）均已交付；M1 出口验收：`uv run pytest -q` → 402 passed、ruff/mypy/lint-imports 全绿、uvicorn `/healthz` 200、1+ 条事件派生重放一致、许可证扫描 0 阻断。
+- 当前状态：**M2 单场景 MVP 进行中（1/5 = 20.0%）**。005 · turn-api 已交付：`POST /api/v1/turns` + `/api/v1/games`、TurnResult DTO、8 码→HTTP 映射、`Idempotency-Key` 幂等（同键同参回放/同键异参 `CONFLICT`/版本 CAS）、唯一写入者 `GameEngine`（CAS+盖章+原子提交+阈值快照）与 `domain/reducers` 纯投影落地；17 集成 + 34 单测，全量 589 passed。
 - 环境追加项（不计入切片完成度）：DeepSeek API（`deepseek-flash`）凭据与连通性自检已配置——密钥仅存 `.env`（gitignored，不入库）；自检命令 `uv run python -m textgame.llm.smoke`。
-- CI：M1 代码已 push 到 `origin/main`（`b261e50..5ec780b`），GitHub Actions **run #1（commit `5ec780b`）已完成且成功**（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM 全通过），R1 关闭。
+- CI：M1 代码已 push 到 `origin/main`；按切片提交后触发 Actions（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM）。
 - 当前阻塞：无。
-- 下一步：005 · turn-api（M2 单场景 MVP），验收命令 `uv run pytest tests/integration/test_turn_api.py`；写操作必须带 `Idempotency-Key`。
+- 下一步：006 · parser-tools（ToolRegistry 白名单 + ToolGate + IntentParseAgent/FakeLLM 三分支接入编排链），验收命令 `uv run pytest tests/integration/test_parser_tool_chain.py`；随后 007 rule-narrate、008 sqlite-snapshot、009 golden-replay。
 - 需要 lead 决策：① 项目许可证决策（发布前，对应 R2）；② 第 20 章 Q9 CI 沙箱 / Q10 上下文白名单需在后续里程碑前定案。
