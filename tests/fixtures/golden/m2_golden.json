@@ -1,0 +1,135 @@
+{
+  "_comment": "M2 golden 固定种子回放数据 (009)：save_seed=save-42、内置单场景、7 回合脚本；由本任务在生产装配下一次性生成，逐字段人工核对。变更必须 Lead 审核并在进度文档 登记 (禁止 --snapshot-update 掩盖回归)。",
+  "save_seed": "save-42",
+  "create_game": {
+    "seed": 42,
+    "idempotency_key": "golden-game-0001"
+  },
+  "script": [
+    "环顾四周",
+    "对老哨兵问好",
+    "拿起火把",
+    "拿起治疗药水",
+    "使用治疗药水",
+    "向北走进地窖",
+    "拿起锈剑"
+  ],
+  "game_created": {
+    "seq": 1,
+    "id": "evt_000001",
+    "turn_id": 1,
+    "actor_id": "system",
+    "method": "game_created",
+    "event_type": "game_created",
+    "rng_seed": 2288003755081153120
+  },
+  "turns": [
+    {
+      "input": "环顾四周",
+      "ok": true,
+      "turn_id": 1,
+      "version": 1,
+      "last_seq": 1,
+      "event_ids": [],
+      "rng_seeds": [],
+      "state_hash": "1aa77bf9b0085aa0919fa3bdd9efffa3fcb606389a3a8497f14187c33e011e38",
+      "text_len": 114
+    },
+    {
+      "input": "对老哨兵问好",
+      "ok": true,
+      "turn_id": 2,
+      "version": 2,
+      "last_seq": 2,
+      "event_ids": [
+        "evt_000002"
+      ],
+      "rng_seeds": [
+        100263459262698480
+      ],
+      "state_hash": "d6b82f3b7f5b3861e77e43bff81c21155b5d9f2154c6b0a0de8633765f51ad33",
+      "text_len": 83
+    },
+    {
+      "input": "拿起火把",
+      "ok": true,
+      "turn_id": 3,
+      "version": 3,
+      "last_seq": 3,
+      "event_ids": [
+        "evt_000003"
+      ],
+      "rng_seeds": [
+        6715782039362208377
+      ],
+      "state_hash": "bd7b8bea46fe7a45fc511a19cef97abbbc970f68210fdd0ba3006768e20a133f",
+      "text_len": 81
+    },
+    {
+      "input": "拿起治疗药水",
+      "ok": true,
+      "turn_id": 4,
+      "version": 4,
+      "last_seq": 4,
+      "event_ids": [
+        "evt_000004"
+      ],
+      "rng_seeds": [
+        187783308649644826
+      ],
+      "state_hash": "c2479cd2277a7ccaf5d5d9e77c662487ef5d783fc9d78f1aff41c2496ec65872",
+      "text_len": 85
+    },
+    {
+      "input": "使用治疗药水",
+      "ok": true,
+      "turn_id": 5,
+      "version": 5,
+      "last_seq": 5,
+      "event_ids": [
+        "evt_000005"
+      ],
+      "rng_seeds": [
+        217821860451728141
+      ],
+      "state_hash": "236776448d93fe6540fd9c897112847c2772cdd839223c0e92f3ade4bb7183c0",
+      "text_len": 82
+    },
+    {
+      "input": "向北走进地窖",
+      "ok": true,
+      "turn_id": 6,
+      "version": 6,
+      "last_seq": 6,
+      "event_ids": [
+        "evt_000006"
+      ],
+      "rng_seeds": [
+        4309974356632152325
+      ],
+      "state_hash": "c1f378f9f271dae1b50a35b863c3e20652c2aebe9f63f8fa0c2d01b3d3900340",
+      "text_len": 84
+    },
+    {
+      "input": "拿起锈剑",
+      "ok": true,
+      "turn_id": 7,
+      "version": 7,
+      "last_seq": 7,
+      "event_ids": [
+        "evt_000007"
+      ],
+      "rng_seeds": [
+        7316204816244593330
+      ],
+      "state_hash": "0e0b0073d5aef5169577723b3d4a2ae34dba539a4f5e7d5eb08e2c2cf3013df0",
+      "text_len": 81
+    }
+  ],
+  "final_state_hash": "0e0b0073d5aef5169577723b3d4a2ae34dba539a4f5e7d5eb08e2c2cf3013df0",
+  "final_turn": 7,
+  "final_last_seq": 7,
+  "final_version": 7,
+  "text_len_min": 80,
+  "text_len_max": 150
+}
