@@ -2,7 +2,7 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架已完成（4/4 切片）** —— 环境与依赖锁定、最小 FastAPI（`/healthz`）、领域模型、EventLog 固定种子回放、CI 质量门与许可证门禁均已交付并通过独立验收；下一步 M2 单场景 MVP（005-turn-api）。
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）与 M2 单场景 MVP（5/5）均已完成并通过出口独立验收** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例均已交付；下一步 M3 多角色（010-perception-slice）。
 
 ## 开发模式（v0.3）
 
@@ -33,18 +33,18 @@
 | 质量门 / CI | GitHub Actions：ruff + mypy + import-linter + pytest（3.10/3.12 矩阵）+ pip-licenses/pip-audit/CycloneDX；本地 pre-commit 钩子 |
 | Web 前端（M6） | Vue 3 + TypeScript + Vite + Pinia + Vue Router（构建期 Node，产物由 FastAPI 托管） |
 
-## 本地开发环境（M1-001 已就绪）
+## 本地开发环境（已就绪）
 
 前置：安装 [uv](https://github.com/astral-sh/uv)（本机 0.13.7，位于 `%USERPROFILE%\.local\bin` 并已在 PATH）。Python 3.12 由 uv 自动下载管理；本仓库**不使用**全局 Python 或全局 Anaconda 环境装依赖，所有命令都在仓库根目录执行：
 
 ```bash
 uv sync --frozen                                          # 按 uv.lock 安装 runtime + dev 依赖（首次会拉取 Python 3.12）
-uv run uvicorn textgame.main:app --reload --port 8000     # 启动服务
+uv run uvicorn textgame.main:app --reload --port 8000     # 启动服务（默认 SQLite: data/textgame.db，已 gitignore）
 curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"ok"}
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 402 passed）
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 638 passed）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
@@ -52,7 +52,29 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 > **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
 
-> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（已验证 3.10.22 全量 402 passed）。CI 在 ubuntu（UTF-8）上不受影响。
+> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（已验证 3.10.22 全量 638 passed）。CI 在 ubuntu（UTF-8）上不受影响。
+
+## M2 单场景 MVP 快速试玩（已交付）
+
+服务默认使用 SQLite 存档（`TEXTGAME_DB_URL`，默认 `sqlite:///data/textgame.db`，`data/` 已 gitignore；M2 每库单存档）。启动后：
+
+```bash
+# 1) 创建存档（写操作必带 Idempotency-Key；可选 seed 用于固定种子）
+curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/games \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-create-0001' -d '{"seed":42}'
+# → 201 {"game_id":"game_...","turn":1,"version":1,"snapshot_version":1,"save_seed":"save-42"}
+
+# 2) 提交回合（body = {game_id, input, expected_version}；expected_version 用上次返回的 version）
+curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/turns \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-turn-0001' \
+  -d '{"game_id":"game_...","input":"环顾四周","expected_version":1}'
+# → 200 TurnResult {ok, turn_id, version, text(80–150 字), events, error_code}
+
+# 3) 刷新/重连：GET /api/v1/games/{game_id} → {turn, version, snapshot_version, status, last_text}
+```
+
+- 业务失败（无法理解/版本过期/幂等键冲突）仍返回 HTTP 200 + `TurnResult(ok=false, error_code)`；协议错误（缺 `Idempotency-Key`、body 非法）返回 4xx 统一失败信封 `{ok:false, error_code, message, violations?}`。
+- 演示脚本（可复现）：环顾四周 → 对老哨兵问好 → 拿起火把 → 拿起治疗药水 → 使用治疗药水 → 向北走进地窖 → 拿起锈剑；固定种子（save-42）7 回合 golden 回放见 `tests/replay/test_m2_golden_replay.py`。
 
 ## LLM API 配置（DeepSeek）
 
@@ -63,7 +85,7 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 - **配置项**：`TEXTGAME_LLM_PROVIDER=deepseek`、`TEXTGAME_LLM_MODEL=deepseek-flash`、`TEXTGAME_LLM_BASE_URL=https://api.deepseek.com`、`TEXTGAME_LLM_API_KEY=<真实密钥，只写 .env>`。
 - **连通性自检**（真实调用、消耗少量 token）：`uv run python -m textgame.llm.smoke` → `[OK] LLM API 配置可用 ...`；缺密钥退出码 2，API 失败退出码 1。实现见 [src/textgame/llm/providers.py](src/textgame/llm/providers.py) 与 [src/textgame/llm/smoke.py](src/textgame/llm/smoke.py)；LiteLLM 仅在 `llm/providers.py` 内 import（第 12 章 12.1）。
 
-## 质量门与 CI（M1-004 已就绪）
+## 质量门与 CI（已就绪）
 
 本地门禁（与 CI 同命令，见 [.github/workflows/ci.yml](.github/workflows/ci.yml)）：
 
@@ -84,16 +106,23 @@ uv run pip-audit -r artifacts/requirements.lock.txt               # 已知漏洞
 
 CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint-imports → pytest，矩阵用 `uv sync --frozen --python <ver>` 验证解释器）与 `deps`（`uv export` → pip-licenses → 许可证门禁 → pip-audit → CycloneDX SBOM → artifact）。护栏：GPL/AGPL 出现即阻断；项目自身 license 未定前 `check_licenses.py` 默认忽略 `textgame`（第 19 章 R2）。
 
-## 目录结构（M1 完成态）
+## 目录结构（M2 完成态）
 
 ```text
 .
 ├── .github/workflows/ci.yml   # CI：quality（3.10/3.12 矩阵）+ deps（许可证/pip-audit/SBOM）
-├── docs/                       # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档 001–004
-├── src/textgame/               # 包根：main.py（uvicorn 入口）、api/（/healthz）、config/（settings/rng）、llm/（供应商适配 + 自检）
-│   ├── domain/                 # 领域层（零框架依赖）：types / results / events（Event+EventLog）/ models / rules（随机与判定值对象）
-│   └── services/ tools/ agents/ orchestration/ persistence/   # M2–M5 占位包
-├── tests/                      # unit/、integration/、replay/
+├── docs/                       # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档 001–009
+├── src/textgame/               # 包根：main.py（组合根/uvicorn 入口）
+│   ├── api/                    # 接入层：/healthz、/api/v1/games、/api/v1/turns、错误码→HTTP 映射、Idempotency-Key
+│   ├── orchestration/          # 回合编排：TurnOrchestrator、关键词解析、模板叙事
+│   ├── agents/                 # 解析 Agent（LLM Schema 校验/修复/兜底）与 ParseOutcome 契约
+│   ├── tools/                  # @tool JSON Schema、ToolRegistry 白名单/actor_scope、ToolGate、M2 六工具
+│   ├── services/               # GameEngine（唯一写入者）、Query/Action Service、仓储端口、TurnResult
+│   ├── persistence/            # SQLAlchemy SQLite：events/snapshots/game_state_current/idempotency + 内存实现
+│   ├── domain/                 # 领域层（零框架依赖）：types/results/events/models/reducers/scenario/rules
+│   ├── llm/                    # LLMClient 接口、Schema 修复、供应商适配（litellm 唯一 import 点）与自检
+│   └── config/                 # pydantic-settings 配置与种子派生
+├── tests/                      # unit/、integration/、replay/、security/、fixtures/golden/
 ├── scripts/                    # check_secrets.py（密钥门禁）、check_licenses.py（许可证门禁）
 ├── pyproject.toml              # 三层依赖分组 + ruff/mypy/pytest/coverage/import-linter 配置
 ├── uv.lock                     # 依赖锁定（验收一律 uv sync --frozen）
@@ -105,7 +134,7 @@ CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint
 
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册机制、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、**vibe coding 开发计划**、测试策略、依赖与许可证、风险与开放问题、附录、**轻量进度制度**，以及 **Vue 3 前端设计（人物卡 JSON 上传 + LLM 生成 JSON）**。
 - [按章拆分版](docs/开发文档/)：由权威单文件自动生成，便于按章阅读与 review。
-- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M6 前端体验编号区间 025–028）。
+- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009 已完成；M6 前端体验编号区间 025–028）。
 
 ## 开发进度文档制度
 
