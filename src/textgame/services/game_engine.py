@@ -92,7 +92,10 @@ class GameEngine:
             stamped_events=tuple(stamped),
         )
         if not self._repo.commit(payload):
-            return Result.fail(ErrorCode.CONFLICT, "concurrent game creation detected")
+            return Result.fail(
+                ErrorCode.CONFLICT,
+                "创建存档失败：当前数据库已存在存档（M2 每库单存档，见 PROGRESS §5 D-008-3）",
+            )
         self._save_snapshot(
             new_game_id,
             new_state,

@@ -103,5 +103,20 @@ def install_error_handlers(app: FastAPI) -> None:
             ),
         )
 
+    @app.exception_handler(ValueError)
+    async def _handle_value_error(request: Request, exc: ValueError) -> JSONResponse:
+        """存档状态/领域不变量校验失败按 ``INTERNAL`` 信封返回（第 14 章回放不一致不可降级）。
+
+        先于本处理器注册的 ``RequestValidationError`` 有更精确的处理器，不会被这里拦截；
+        此处只兜住仓储/投影抛出的 ``ValueError``（损坏存档、快照哈希不符等），避免把
+        内部异常以 text/plain 500 暴露给客户端。
+        """
+        message = "服务内部错误：存档状态校验失败，请联系运维审计"
+        del exc  # 不回显内部细节（第 15 章：不向客户端暴露实现信息）
+        return JSONResponse(
+            status_code=_HTTP_STATUS[ErrorCode.INTERNAL],
+            content=error_body(ErrorCode.INTERNAL, message),
+        )
+
 
 __all__ = ["ApiError", "error_body", "install_error_handlers"]
