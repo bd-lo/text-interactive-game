@@ -300,10 +300,128 @@ class GoodInventoryService:
 
 **复用判断与拼接边界（三）：依赖注入用 FastAPI 原生能力，不引入 DI 容器**。`api/` 用 `Depends` 注入 `TurnOrchestrator`，`main.py` 里手工组装服务对象（显式构造函数注入，可读、可单测）；`dependency-injector` 会带来平台相关编译 wheel（PyPI 文件列表为 `cp310-abi3-*` 的多平台二进制），CI 与部署环境多一层构建风险，而它解决的问题（延迟绑定）本项目用不着。若未来服务数量膨胀到 30+，再评估引入。
 
+### 6.7 前端调用的新增 API（v0.2：人物卡库、开局与回放）
+
+v0.2 前端（Vue 3 SPA，第 23 章）只经 `/api/v1` 与后端交互：**前端只做展示与输入，不持有权威状态、不直接改 `GameState`、不直接调 `GameEngine`**；服务端为准。人物卡库是独立于游戏世界状态的资料库（**不进事件溯源**），其写入由 `CharacterCardService` 校验后落 `character_cards` 表；只有创建存档（`POST /games`）才由唯一写入者（Single Writer）`GameEngine` 提交 `game_created` 系统事件。
+
+**响应约定（v0.2 定稿；第 21、23 章按本节对齐）**：服务层方法仍返回 `Result`（6.1–6.5 的内部约定不变），但接入层对外**不使用 `ok`/`data` 信封**。
+
+- **成功响应**：HTTP 200/201（`DELETE` 用 204 无 body）+ **直接返回业务 payload**——`GET /character-cards/schema` → JSON Schema 对象本身；`GET /character-cards` → `{cards, total}`；`GET /character-cards/{card_id}` → `{card}`；`POST /character-cards/import` → 201 `{card_id, card, warnings}`；`POST /character-cards/validate` → 200 `{valid, errors}`；`POST /character-cards/generate` → 200 `{draft, validation, generated_by}`；`POST /character-cards`（保存）→ 201 `{card_id, card}`；`DELETE /character-cards/{card_id}` → 204 无 body；`POST /games` → 201 `{game_id, turn, version, snapshot_version}`；`GET /games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /games/{game_id}/replay` → 200 `{events, from_seq, to_seq}`。
+- **失败响应（所有端点统一）**：对应 4xx/5xx + `{"ok": false, "error_code": <ErrorCode>, "message": "...", "violations": [...]?}`；HTTP 映射：`INVALID_INPUT`→422（文件过大→413）、`SCHEMA_VIOLATION`→422（带 `violations`）、`NOT_FOUND`→404、`NOT_ALLOWED`→403、`CONFLICT`→409、`LLM_UNAVAILABLE`→503、`INTERNAL`→500；`OUT_OF_RANGE`：数值超范围→422，配额/限流→429（带 `Retry-After`）。
+- **既有 `POST /api/v1/turns` 例外**：保持第 9 章 `TurnResult` 不变，body 增补 `game_id`/`input`/`expected_version`；**`TurnResult` 增 `version`**（本次提交后的新 `row_version`，即下一次提交的 `expected_version`，第 9 章同步）。
+
+**对局版本链（CAS 乐观锁的唯一版本来源）**：`version` = 持久化状态行的 `row_version`，所有响应里返回的 `version` 统一表示**下一次提交的 `expected_version`**。`POST /games` 返回初始 `version`；每次 `POST /turns` 成功后以 `TurnResult.version` 刷新；前端提交 `POST /turns` 时必须带 `expected_version`（来自 `POST /games` 或最近一次 `TurnResult.version`）。`GET /games/{game_id}` 用于刷新/重连恢复（`{game_id, turn, version, snapshot_version, status, last_text}`，`status ∈ {"active","ended"}`，`last_text` 为最近一屏 80～150 字文本、尚未提交时为 `null`），不产生状态变更；版本冲突（`CONFLICT`）按新提交处理：前端重新 `GET /games/{game_id}` 取最新 `version` 后重提，可生成新 `Idempotency-Key`。
+
+端点总表（前缀 `/api/v1`；本组写操作 `POST`/`DELETE` 必带 `Idempotency-Key` 请求头，GET 不需要）：
+
+| 方法 | 路径 | 服务方法 | 成功状态 | 主要错误码 |
+| --- | --- | --- | --- | --- |
+| GET | `/character-cards/schema` | `CharacterCardService.get_schema` | 200 | `INTERNAL` |
+| GET | `/character-cards` | `list_cards`（`?query=&limit=&offset=`） | 200 | `INVALID_INPUT` |
+| GET | `/character-cards/{card_id}` | `get_card` | 200 | `NOT_FOUND`/`INVALID_INPUT` |
+| POST | `/character-cards/import` | `import_card`（multipart，≤64KB） | 201 | `INVALID_INPUT`/`SCHEMA_VIOLATION`/`NOT_ALLOWED`/`NOT_FOUND`/`CONFLICT` |
+| POST | `/character-cards/validate` | `validate_card`（无副作用） | 200 | `INVALID_INPUT` |
+| POST | `/character-cards/generate` | `generate_card`（返回未保存草稿） | 200 | `LLM_UNAVAILABLE`/`SCHEMA_VIOLATION`/`NOT_ALLOWED`/`INVALID_INPUT` |
+| POST | `/character-cards` | `create_card`（保存，**方案 A**） | 201 | `SCHEMA_VIOLATION`/`NOT_ALLOWED`/`NOT_FOUND`/`CONFLICT`/`INVALID_INPUT` |
+| DELETE | `/character-cards/{card_id}` | `delete_card`（软删除） | 204 | `NOT_FOUND`/`CONFLICT` |
+| POST | `/games` | `GameEngine.create_game`（返回初始 `version`） | 201 | `NOT_FOUND`（card）/`SCHEMA_VIOLATION`/`NOT_ALLOWED`/`CONFLICT` |
+| GET | `/games/{game_id}` | `QueryService.get_game_view`（v0.2 补充，刷新/重连恢复） | 200 | `NOT_FOUND`/`INVALID_INPUT` |
+| GET | `/games/{game_id}/replay` | `EventService.replay_range`（`?from_seq=&limit=`） | 200 | `NOT_FOUND`/`INVALID_INPUT` |
+| POST | `/turns` | 既有回合接口（第 9 章，返回 `TurnResult`） | 200 | 见第 9 章 |
+
+```python
+# services/card_service.py（v0.2 新增，第 16 章目录补登；只操作人物卡库，不接触 GameState）
+class CharacterCardService:
+    def get_schema(self, ctx: ToolContext) -> Result: ...
+    def list_cards(self, ctx: ToolContext, *, query: str | None = None,
+                   limit: int = 20, offset: int = 0) -> Result: ...
+    def get_card(self, ctx: ToolContext, card_id: CardId) -> Result: ...
+    def import_card(self, ctx: ToolContext, *, filename: str, content: bytes,
+                    idempotency_key: str) -> Result: ...
+    def validate_card(self, ctx: ToolContext, payload: dict[str, Any]) -> Result: ...
+    def generate_card(self, ctx: ToolContext, *, brief: str, schema_version: str = "1.0",
+                      options: dict[str, Any] | None = None,
+                      idempotency_key: str) -> Result: ...
+    def create_card(self, ctx: ToolContext, card: CharacterCard, *,
+                    idempotency_key: str) -> Result:
+        """方案 A 保存接口：服务端重新校验并强制 card_id=card_<ULID>、source 按入口判定。"""
+    def delete_card(self, ctx: ToolContext, card_id: CardId, *, idempotency_key: str) -> Result: ...
+
+
+# 开局：唯一写入者的 v0.2 补充签名（提交/CAS 细节见第 11、14 章）
+class GameEngine:
+    def create_game(self, ctx: ToolContext, *, card_id: CardId, seed: int | None = None,
+                    idempotency_key: str) -> Result: ...
+
+
+# 回放：6.3 EventService 的 v0.2 补充方法（只读，按全局 seq 分页）
+class EventService:
+    def replay_range(self, ctx: ToolContext, *, game_id: GameId, from_seq: int = 0,
+                     limit: int = 200) -> Result: ...
+
+
+# 对局视图：6.3 QueryService 的 v0.2 补充方法（只读；刷新/重连恢复用）
+class QueryService:
+    def get_game_view(self, ctx: ToolContext, game_id: GameId) -> Result: ...
+```
+
+约束与幂等：
+- **幂等**：本组 `POST`/`DELETE` 写操作必须带 `Idempotency-Key`（重试复用同一键，第 23 章）；**同键同参 → 返回首次的 HTTP 响应与 payload（含失败响应）**；**同键异参 → `CONFLICT`**；幂等表分开存储（人物卡库 / 第 11 章游戏）。
+- **warnings 结构**：统一为 `[{code, message, field?}]`（`code` 为稳定短码，如 `DUPLICATE_ITEM_MERGED`；`field` 为 JSON 路径，可选）；`POST /character-cards/import` 响应与 `POST /character-cards/generate` 的 `validation.warnings` 同构，第 21/23 章引用。
+- **文件与解析**：multipart 文件 ≤64KB；`Content-Length` 预检 + 流式读取上限双重校验；仅接受 `application/json`、UTF-8 严格解码、JSON 深度 ≤8、不收压缩包；超限/类型错 → `INVALID_INPUT`；重复键的 JSON 直接拒绝（第 15 章）。
+- **`source` 由服务端判定**：
+
+  | 入口 | 强制 `source` | 说明 |
+  | --- | --- | --- |
+  | `POST /character-cards/import` | `upload` | 客户端值被覆盖并记 warning |
+  | `POST /character-cards`（body.source=`llm`） | `llm` | LLM 真生成草稿确认保存 |
+  | `POST /character-cards`（body.source=`manual`） | `manual` | 手工创建 / 模板兜底草稿保存 |
+  | `POST /character-cards/generate` | 不入库：真生成 `llm`、模板兜底 `manual`（`generated_by=null`） | 只返回草稿 |
+  其他 source 值 → `INVALID_INPUT`；`POST /character-cards` 服务端重新执行 5.7 全部校验并强制 `card_id = card_<ULID>`（DTO 本身不含 id，响应以 `card_id` 返回），重复提交由幂等键兜底。
+- **生成限制**：`brief` ≤1000 字符、单用户 5 次/分钟（超限 → 429 + `OUT_OF_RANGE`）；LLM 调用按第 12 章唯一签名构造：`LLMClient.complete_json(LLMRequest(task="character_card_generate", output_schema=CharacterCard, agent_id="character_card", model_tier=ModelTier.STRONG, max_repair=1, timeout_s=20, turn_id=ctx.turn_id, idempotency_key=ctx.idempotency_key, messages=[...]))`（模型分级/重试/限流以第 12 章为准）；失败 → 模板兜底（`generated_by=null`）；内容安全 → `NOT_ALLOWED`（第 15 章）；**限流主体**：本地单机无账号按 `IP+session` 计，部署多用户时再加鉴权（第 23 章）。
+- **错误码**：只用既有 8 码；HTTP 映射与失败信封见上方响应约定。
+
+请求/响应示例（按本节响应约定：成功直接返回业务 payload；失败返回 `{ok:false, error_code, message, violations?}`）：
+
+（1）`GET /character-cards/schema` → 200：**直接返回 JSON Schema 对象本身**（顶层含 `$schema`/`$id`/`type`/`properties`/`required`/`additionalProperties`，即第 5 章 5.7 的 `CHARACTER_CARD_SCHEMA`，不再包一层；前端 Ajv2020 直接复用）。
+
+（2）`GET /character-cards?query=灰烬&limit=20&offset=0` → 200：`{"cards": [{"card_id": "card_01J9Z3K4Q7...", "name": "灰烬旅人", "source": "upload", "generated_by": null, "updated_at": "2026-11-08T12:00:00Z"}], "total": 1}`
+
+（3）`POST /character-cards/import`（multipart）：
+```http
+POST /api/v1/character-cards/import HTTP/1.1
+Idempotency-Key: 6f1c2f0a-9d33-4c2e-9a2f-3b7c6a1d0e55
+Content-Type: multipart/form-data; boundary=----tg
+
+------tg
+Content-Disposition: form-data; name="file"; filename="card.json"
+Content-Type: application/json
+
+{"schema_version":"1.0","name":"灰烬游侠","attributes":{"str":12,"dex":16,"con":10,"int":8,"wis":11,"cha":9,"max_hp":18},"hp":18,"starting_items":["item.rusty_sword","item_torch"],"background":"边境村庄的斥候，追踪灰烬平原的异动。","appearance":"披着褪色斗篷，左脸有旧疤。","source":"upload","generated_by":null}
+------tg--
+```
+→ `201`：`{"card_id": "card_01J9Z3K4Q7...", "card": {...CharacterCard...}, "warnings": [{"code": "DUPLICATE_ITEM_MERGED", "message": "duplicate starting item merged: item.rusty_sword", "field": "starting_items"}]}`
+
+（4）`POST /character-cards/validate` → 200：请求体为 card JSON（≤64KB），响应 `{"valid": false, "errors": [{"loc": ["hp"], "type": "value_error", "msg": "hp must be <= attributes.max_hp"}]}`；校验不通过仍返回 200（查询式校验），只有请求体非 JSON/超大才返回 422 `{"ok": false, "error_code": "INVALID_INPUT", "message": "body is not valid JSON", "violations": []}`。
+
+（5）`POST /character-cards/generate` → 200：请求 `{"brief":"一个在灰烬平原流浪的盲眼剑客，性格寡言","schema_version":"1.0","options":{"tone":"grim"}}`；响应 `{"draft": {"schema_version":"1.0","name":"盲眼剑客","attributes":{"str":13,"dex":14,"con":11,"int":9,"wis":15,"cha":8,"max_hp":17},"hp":17,"starting_items":["item.oak_cane"],"background":"……","appearance":null,"source":"llm","generated_by":"deepseek-chat"},"validation": {"valid": true, "errors": []}, "generated_by": "deepseek-chat"}`。**未保存、未开局**；保存走下一条。
+
+（6）`POST /character-cards`（方案 A 定稿：body 为已校验的 `CharacterCard`，前端“确认保存”）→ 201：请求 `{"schema_version":"1.0","name":"盲眼剑客","attributes":{"str":13,"dex":14,"con":11,"int":9,"wis":15,"cha":8,"max_hp":17},"hp":17,"starting_items":["item.oak_cane"],"background":"……","appearance":null,"source":"llm","generated_by":"deepseek-chat"}`；响应 `{"card_id": "card_01J9Z3K4Q7...", "card": {...}}`。服务端强制 `card_id` 与 `source`（见上表）；`source` 与入口不符或 Schema 不符 → 422 `{"ok": false, "error_code": "SCHEMA_VIOLATION", "message": "...", "violations": [{"loc": ["source"], "type": "value_error"}]}`。
+
+（7）`DELETE /character-cards/{card_id}` → **204 无 body**（软删除）。
+
+（8）`POST /games` → 201：请求 `{"card_id": "card_01J9Z3K4Q7..."}`；响应 `{"game_id": "game_01J9Z4A2B6...", "turn": 1, "version": 1, "snapshot_version": 1}`。
+
+（9）`GET /games/{game_id}` → 200：`{"game_id": "game_01J9Z4A2B6...", "turn": 7, "version": 12, "snapshot_version": 12, "status": "active", "last_text": "火把的光在湿漉漉的岩壁上摇晃。你蹲下身，泥地上有几枚模糊的脚印。"}`（`version` 即下一次 `POST /turns` 的 `expected_version`）。
+
+（10）`GET /games/{game_id}/replay?from_seq=41&limit=2` → 200：`{"events": [{"seq": 42, "turn_id": 7, "event_type": "CHARACTER_MOVED", "method": "move_to", "params": {"direction": "north"}, "result": {"from": "room_a", "to": "room_b"}}, {"seq": 43, "turn_id": 7, "event_type": "ITEM_TAKEN", "method": "take_item", "params": {"item_id": "item_..."}, "result": {"inventory_size": 3}}], "from_seq": 41, "to_seq": 43}`
+
+**前端只经 API 写入**：前端不得连接数据库、不得持有 `GameState`/`EventLog` 引用，也不得在本地“预提交”任何状态；游戏世界的写操作只能经 `POST /turns`/`POST /games` 进入 Resolver → `GameEngine`，人物卡库写操作只能经上述 API 由 `CharacterCardService` 校验后落库；读接口（列表/详情/回放/schema）只返回数据，供前端展示。
+
 ### 本章结论
 
 1. 服务层七个模块定稿：`QueryService`、`InventoryService`、`CharacterService`、`RuleService`、`ActionService`、`CraftService`、`EventService`，分别落 `services/query_service.py`、`inventory_service.py`、`character_service.py`、`rule_service.py`、`action_service.py`、`craft_service.py`、`event_service.py`（第 16 章目录权威命名）；`RuleEngine`（`domain/rules/`）与 `EventLog`（`domain/events.py`）保留第 4 章核心组件名，服务层只做门面。
-2. 硬边界：服务层不提交状态、不返回领域对象引用、不调 LLM；写方法返回 `Result(ok=True, events=[草稿 Event])`，失败 `events` 必空；提交只发生在 `GameEngine.submit(expected_version, events, idempotency_key)`。
+2. 硬边界：服务层不提交状态、不返回领域对象引用、不调 LLM；写方法返回 `Result(ok=True, events=[草稿 Event])`，失败 `events` 必空；提交只发生在 `GameEngine.submit(expected_version, events, idempotency_key)`。v0.2 前端只经 `/api/v1` 读写（见 6.7，成功直接返回业务 payload、失败返回 `{ok:false, error_code, message, violations?}`）：人物卡库写由 `CharacterCardService` 校验后落库、不进事件溯源（保存接口定稿方案 A：`POST /character-cards`，服务端强制 `card_id`/`source`）；开局由 `GameEngine.create_game` 提交 `game_created` 系统事件。
 3. 每个写方法必须同时具备：`idempotency_key`、`ToolContext.actor_id` 归属校验、`ErrorCode` 集合、事件 `method/params/result/rng_seed`（对照表见 6.4，第 22 章进度文档模板直接引用该表）。
 4. 确定性计算与智能体生成的边界：判定与常规制造是纯函数（同 `rng_seed` 同结果、零事件），自由制造草案必须过 JSON Schema + 状态一致性检查，失败返回 `SCHEMA_VIOLATION`/`NOT_ALLOWED` 且不写状态。
 5. 依赖结论：SQLAlchemy 2.0.x + `python-statemachine` 2 个 pip 依赖；`returns` 仅参考设计（且必须锁 0.26.x 才满足 3.10）、`result` 因仓库归档放弃、`dependency-injector` 因编译扩展与能力重叠放弃、`transitions` 因 6 个月无提交放弃。

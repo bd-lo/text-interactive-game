@@ -15,7 +15,7 @@
 - `openai/tiktoken`（https://github.com/openai/tiktoken）— 打开确认：许可证 MIT、最近提交 2026-11、star 约 19,619、PyPI 0.14.0 要求 `>=3.9`；确认要点：仅 OpenAI 系模型的 BPE 分词器。
 
 ### 12.1 结论先行
-业务代码只依赖统一封装 `LLMClient`，不得出现 `import litellm` / `import openai`。LLMClient 由 LiteLLM（协议/回退/成本）、instructor（Schema 提取+一次修复）、tenacity（网络重试）、cachetools（进程内缓存）、Jinja2（Prompt 渲染）拼接而成；pydantic-ai 因需 Python ≥3.11 且与 instructor 功能重叠而放弃，diskcache 因停止维护放弃，tiktoken 首版不引入。
+业务代码只依赖 `LLMClient`，不得出现 `import litellm`/`import openai`。LLMClient 由 LiteLLM（协议/回退/成本）、instructor（Schema 提取+一次修复）、tenacity（网络重试）、cachetools（进程内缓存）、Jinja2（Prompt 渲染）拼接而成；pydantic-ai 因需 Python ≥3.11 且与 instructor 功能重叠而放弃，diskcache 因停止维护放弃，tiktoken 首版不引入。
 
 ### 12.2 LLMClient 完整接口
 接口文件：`src/textgame/llm/client.py`。
@@ -29,9 +29,9 @@ class ModelTier(str, Enum):
 class LLMRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    task: str                        # 任务类型：intent_parse/narration/judge/conflict_resolve/craft_generate/memory_summary
+    task: str                        # 任务类型：intent_parse/narration/judge/conflict_resolve/craft_generate/memory_summary/character_card_generate
     output_schema: type[BaseModel] | None = Field(default=None, alias="schema")  # 结构化输出模型；纯文本任务为 None
-    agent_id: str                    # 调用者：parse/adjudicate/narrate/memory/role/craft
+    agent_id: str                    # 调用者：parse/adjudicate/narrate/memory/role/craft/character_card
     turn_id: int
     idempotency_key: str             # 调用方按 (turn_id, agent_id, task, 参数哈希) 计算
     model_tier: ModelTier
@@ -52,9 +52,9 @@ class LLMClient:
     async def complete_text(self, req: LLMRequest) -> Result: ...
     def estimate_cost(self, req: LLMRequest) -> Decimal: ...
 ```
-上面 `async def complete_json(self, req: LLMRequest) -> Result` 是**全队唯一权威签名**（第 21 章附录以此为准）：`LLMRequest` 全字段清单即上，其中 `task` 为任务类型、`output_schema` 为结构化输出模型（附录写作 `schema`；因 Pydantic v2 保留属性冲突，字段名用 `output_schema` + alias）、`agent_id` 为调用者、`model_tier` 为模型分级、`timeout_s` 为整条链 deadline。返回结构固定为 `Result`（见第 5 章）：成功时 `data={"parsed": <BaseModel>, "usage": ..., "call": LLMCallRecord}`；失败时 `error_code ∈ {LLM_UNAVAILABLE, SCHEMA_VIOLATION, INVALID_INPUT, INTERNAL}`、`events` 为空——LLM 调用本身不产生领域事件，但每次调用（含失败）都写入 `llm_call_log` 表，供成本归集与审计。
+上述 `complete_json(self, req: LLMRequest) -> Result` 为**全队唯一权威签名**（第 21 章附录以此为准）：字段清单见上；`task` 为任务类型、`output_schema` 为结构化模型（附录写作 `schema`，因 Pydantic v2 保留属性冲突改用 `output_schema`+alias）、`agent_id` 为调用者、`model_tier` 为模型分级、`timeout_s` 为整链 deadline。成功 `data={"parsed","usage","call"}`；失败 `error_code ∈ {LLM_UNAVAILABLE, SCHEMA_VIOLATION, INVALID_INPUT, INTERNAL}`、`events=[]`——LLM 调用不产生领域事件，但每次调用（含失败）写 `llm_call_log` 供成本归集与审计。
 
-必须内建的九项职责：总超时（`timeout_s` 是整条链的 deadline，单次尝试 ≤ 剩余时间）、网络重试（tenacity）、限流（按供应商的 token bucket，封顶 RPM/TPM）、幂等键（Idempotency Key）去重、结构化请求/响应日志（只落 prompt hash 与脱敏片段）、token 计量（优先用供应商返回的 usage 字段）、按 `agent_id` 与 `turn_id` 双维度成本归集、供应商回退链、熔断器（Circuit Breaker）。
+必须内建九项职责：总超时（整链 deadline，单次 ≤ 剩余时间）、网络重试（tenacity）、限流（按供应商 token bucket 封顶 RPM/TPM）、幂等键（Idempotency Key）去重、结构化日志（只落 prompt hash 与脱敏）、token 计量（优先供应商 usage）、按 `agent_id`/`turn_id` 双维成本归集、供应商回退链、熔断器（Circuit Breaker）。
 
 ### 12.3 重试所有权：避免三层重试叠加
 | 层 | 组件 | 是否开启 | 参数 | 职责 |
@@ -64,13 +64,15 @@ class LLMClient:
 | Schema 修复重试 | instructor | 开启 | `max_retries=1`（共 2 次请求） | 只处理校验失败 |
 | 业务降级 | 各 Agent 调用方 | 开启 | 确定性兜底（Deterministic Fallback） | 保证回合（Turn）可结束 |
 
-结论：单次请求最多 3 次网络尝试 + 1 次修复；任何一层不得私自重试。
+结论：单次请求最多 3 次网络尝试 + 1 次修复，各层不得私自重试。
 
 ### 12.4 模型分级与供应商回退
-按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**，给三方案：A. 单一供应商强/性价比双档（运维最简，推荐首版）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 网关托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.yaml`，按 `model_tier` 声明 `primary/fallback` 链。
+按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**：A. 单供应商双档（运维最简，推荐）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.yaml`，按 `model_tier` 声明 `primary/fallback` 链。
+
+人物卡生成任务（`task=character_card_generate`，v0.2 新增）：`model_tier=STRONG`、`timeout_s=20`、`max_repair=1`、缓存不适用（同 brief 可重复生成）；幂等分两层——HTTP 幂等键用客户端 UUID `Idempotency-Key`（第 6、23 章），服务端另算 `sha256(canonical payload)`（brief/schema_version/options）用于同键异参 `CONFLICT` 与审计；成本按 `agent_id=character_card` 归集，单用户限流 5 次/分钟；失败降级为确定性模板（brief+默认属性草稿），与第 6 章 `POST /api/v1/character-cards/generate` 对齐。
 
 ### 12.5 Prompt 模板管理
-模板放 `src/textgame/llm/prompts/<agent_id>/<task>@v3.j2`，同目录 `manifest.json` 记录 version、sha256、owner、changelog、适用模型。Jinja2 使用 `StrictUndefined`，变量必须显式传入，禁止模板内访问环境变量或执行表达式；玩家输入只能作为数据字段注入，不得拼进指令段（结构性防注入，见第 15 章）。每次变更必须过 Code Review 与固定种子回放（Replay）回归（见第 18 章），`prompt_version` 与模板 hash 写入 `LLMCallRecord` 和对应 Event，可追溯每回合所用 Prompt 版本。
+模板放 `src/textgame/llm/prompts/<agent_id>/<task>@v3.j2`，`manifest.json` 记录 version/sha256/owner/changelog/适用模型。Jinja2 用 `StrictUndefined`，变量必须显式传入，禁止访问环境变量/执行表达式；玩家输入只作数据字段注入，不得拼进指令段（结构性防注入，见第 15 章）。变更须过 Code Review 与固定种子回放（Replay）回归（见第 18 章），`prompt_version` 与模板 hash 写入 `LLMCallRecord` 与 Event，可追溯每回合版本。
 
 ### 12.6 结构化输出：校验 + 一次修复 + 确定性兜底
 步骤：① 原始输出 → `req.output_schema.model_validate_json`（strict、禁额外字段）；② 失败 → 把 pydantic 错误摘要回传，追加一次修正指令（instructor `max_retries=1`）；③ 仍失败 → 按 Agent 类型走确定性兜底：
@@ -82,6 +84,7 @@ class LLMClient:
 | 判定 Agent | RuleEngine 默认判定，不参考 LLM |
 | 制造 Agent | 走 `calculate_craft_result`（第 13 章）或返回 `NOT_FOUND` |
 | 记忆 Agent | 不更新记忆，保留原始对话 |
+| 人物卡生成任务 | 确定性模板：brief 名称/标题 + 默认属性（固定键集合）生成草稿，标 `source=manual`、`generated_by=null`（幂等见 12.4） |
 
 红线：未校验输出不写 Event/GameState，只记录 `SCHEMA_VIOLATION`。
 
@@ -92,14 +95,14 @@ class LLMClient:
 | 进程内缓存 | 低风险可复用响应 | cachetools `TTLCache(maxsize=1024, ttl=600)` | TTL / 模板版本 |
 | 供应商前缀缓存 | 长 System Prompt 前缀 | 经 LiteLLM 透传，需按供应商实测 | 供应商策略 |
 
-幂等缓存：`llm_call_log.idempotency_key` 唯一索引，同键已成功复用结果；执行中则等待或返回 `LLM_UNAVAILABLE`，不重复扣费。
+幂等缓存：`llm_call_log.idempotency_key` 唯一索引，同键成功复用结果；执行中等待或返回 `LLM_UNAVAILABLE`，不重复扣费。
 
-串行 vs 批量：默认串行。仅「同场景公共群演 NPC」允许一次调用批量生成（每批 ≤4 个 NPC 回应，输入只含公共感知），因为一次调用若含多个 NPC 的私有记忆，会破坏第 11 章的结构性防泄露；角色 Agent 的私有记忆与批量合并互斥。批量把 4 次 × 0.8 s 压到 1.2 s，但失败影响面从 1 个 NPC 扩大到 4 个，需配「单个解析失败只丢该 NPC 的回复」的降级。
+串行 vs 批量：默认串行。仅「同场景公共群演 NPC」允许一次调用批量生成（每批 ≤4 个 NPC 回应，输入只含公共感知），因一次调用含多个 NPC 私有记忆会破坏第 11 章结构性防泄露；角色 Agent 的私有记忆与批量合并互斥。批量把 4 次 × 0.8 s 压到 1.2 s，但失败影响面从 1 个 NPC 扩大到 4 个，需配「单个解析失败只丢该 NPC 的回复」的降级。
 
-休眠（Dormancy）：角色 Agent 状态机 `DORMANT → ARMED → ACTIVE → DORMANT`。唤醒仅三种：被玩家触发（对话/动作指向）、玩家进入同场景、计划触发点到达；活跃窗口 = 本回合 + 后续 2 回合，其余零调用。用 `agent_invocation_log` 断言「无唤醒即无调用」。
+休眠（Dormancy）：状态机 `DORMANT → ARMED → ACTIVE → DORMANT`；唤醒仅三种：被玩家触发、进入同场景、计划触发点到达；活跃窗口 = 本回合 + 2 回合，其余零调用。`agent_invocation_log` 断言「无唤醒即无调用」。
 
 ### 12.8 成本与延迟预算（全队权威口径）
-预算口径（与第 9 章一致）：单回合关键路径默认 **2 次**调用（解析+叙事），最多 **3 次**（含裁判）；P95 首版 ≤8 s，M2 缓存命中目标 ≤3 s。
+预算口径（同第 9 章）：单回合关键路径默认 **2 次**调用（解析+叙事），最多 **3 次**（含裁判）；P95 首版 ≤8 s，M2 缓存命中目标 ≤3 s。
 
 | 指标 | 口径 | 超限动作 |
 | --- | --- | --- |
@@ -109,11 +112,11 @@ class LLMClient:
 | 单会话成本 | ≤ ¥3 | 关闭自由制造生成路径 |
 | 单日成本 | ≤ ¥200 | 全局只走缓存/确定性路径 |
 
-熔断：单供应商 60 秒窗口错误率 > 50% 或连续 5 次失败 → open 60 秒 → half-open 1 次探测；预算消耗 80% 告警，100% 强制降级。
+熔断：单供应商 60 秒错误率 >50% 或连续 5 次失败 → open 60 秒 → half-open 探测 1 次；预算 80% 告警、100% 强制降级。
 
 ### 12.9 失败降级决策树
 1. 输入解析失败 → `INVALID_INPUT`，不发起调用；
-2. 预算/熔断检查超限 → 确定性兜底，不发起调用；
+2. 预算/熔断超限 → 确定性兜底，不发起调用；
 3. 幂等键命中成功记录 → 直接复用结果；
 4. 缓存命中 → 返回（`cache_hit=true`）；
 5. LiteLLM 调用（tenacity 包裹，≤3 次）→ 超时/5xx/429 → 重试；
@@ -121,7 +124,7 @@ class LLMClient:
 7. 输出 Schema 校验失败 → instructor 一次修复重试；
 8. 修复仍失败 → `SCHEMA_VIOLATION` → 确定性兜底或「无法处理」；
 9. 状态一致性检查失败（第 15 章）→ 视为校验失败，回到第 8 步；
-10. 全程写 `LLMCallRecord`（含失败与 token/成本）并告警；只有通过校验的数据才进入 ProposalQueue（提案队列）。
+10. 全程写 `LLMCallRecord`（含失败与 token/成本）并告警；通过校验的数据才进入 ProposalQueue（提案队列）。
 
 ### 候选轮子表
 | 仓库 | 定位 | 可复用部分 | 许可证 | 活跃度 | 建议 |

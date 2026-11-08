@@ -61,9 +61,15 @@ class Resolver:
 class GameEngine:
     def submit(self, expected_version: int, events: list[Event],
                idempotency_key: str) -> Result: ...
+    def create_game(self, ctx: ToolContext, *, card_id: CardId,
+                    seed: int | None = None, idempotency_key: str) -> Result: ...
+
+class EventService:
+    def replay_range(self, ctx: ToolContext, *, game_id: GameId,
+                     from_seq: int = 0, limit: int = 200) -> Result: ...
 ```
 
-`GameEngine.submit` 签名与第 21 章 §21.2.1 一致：`submit(expected_version: int, events: list[Event], idempotency_key: str) -> Result`；`expected_version` 为持久化层状态行的 `version_id`，不写入 `GameState` 基线字段。`Resolver.resolve` 必须是纯函数：不调模型、不写库、不读时钟；同一输入必得同一 `Resolution` 列表，否则回放会漂移。
+`GameEngine.submit` 签名与第 21 章 §21.2.1 一致：`submit(expected_version: int, events: list[Event], idempotency_key: str) -> Result`；`expected_version` 为持久化层状态行的 `version_id`，不写入 `GameState` 基线字段。`GameEngine.create_game` 用已保存的 `card_id` 创建存档，返回 `Result.data={game_id, turn, version, snapshot_version}`（`version` 为下一次提交的 `expected_version`），并在同一事务内提交 `game_created` 系统事件（事件类型见第 14 章 §14.7：`game_created`）；写操作必带 `Idempotency-Key`。`EventService.replay_range(ctx, *, game_id, from_seq=0, limit=200)` 为只读分页回放，签名与第 6 章 §6.7 一致，按全局 `seq` 升序返回。`Resolver.resolve` 必须是纯函数：不调模型、不写库、不读时钟；同一输入必得同一 `Resolution` 列表，否则回放会漂移。
 
 `Resolver.resolve` 的 `judgements` 由编排层在第 9 章步骤 6 调用 `JudgeAgent` 并完成 Schema 校验后传入（与 `proposals` 顺序对齐，可为空）；`needs_judge` 分支只对 `confidence >= 0.7` 且 `reason` 非空的证据调用 `RuleEngine.verify_agent_override(ctx, proposal, judge)` 复核，证据缺失或低置信时调用 `RuleEngine.deterministic_fallback(ctx, proposal, snapshot)` 做确定性兜底（保守、不产生有利效果）。这两个 `RuleEngine` 方法均为纯计算、零事件，返回 `Outcome`；`Resolver` 本身仍不调模型、不写库、不读时钟。
 

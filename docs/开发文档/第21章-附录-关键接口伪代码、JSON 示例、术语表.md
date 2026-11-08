@@ -30,10 +30,13 @@
 | `ToolContext` | 第 6 章 §6.2 | 工具层透传、服务层消费 |
 | `ToolSpec` 及 `_first_sentence` / `generate_json_schema` / `build_params_model` | 第 7 章 §7.3–7.4 | `ToolRegistry.register` |
 | `ProposalQueue` / `Resolver` / `GameEngine` 协议 | 第 11 章 §11.2–11.4 | 排队、裁决、提交 |
+| `GameEngine.create_game` / `EventService.replay_range` / `game_created` | 第 6 章 §6.7、第 11 章 §11.2、第 14 章 §14.7（v0.2） | 开局写入与回放分页 |
+| `QueryService.get_game_view` | 第 6 章 §6.7（v0.2） | `GET /games/{game_id}` 存档状态示例 |
 | `LLMRequest` / `LLMCallRecord` / `ModelTier` | 第 12 章 §12.2 | `LLMClient.complete_json` |
 | `ParseOutput` / `ToolCall` / `ActionIntent` / `JudgeOutput` / `MemoryStore` / `MemoryOp` | 第 8 章 §8.2 | 解析、裁判、记忆 |
 | `verify_agent_override` / `deterministic_fallback`（RuleEngine 裁决接口） | 第 7 章 §7.4、第 11 章 §11.2 | 裁判证据复核、确定性兜底 |
 | `CraftRequest` / `CraftMode` / `CraftDraft` / `CraftStateSlice` / `Recipe` / `CraftResult` | 第 13 章 §13.2–13.5 | `CraftService.craft` |
+| `CharacterCard` / 卡片 API DTO（import/generate 请求与响应） | 第 5 章 §5.7、第 6 章 §6.7（v0.2） | 人物卡与卡片接口示例 |
 | `Event` / `EventLog.stamp` / `RandomSource.derive_seed` / `RandomSource.mask_seed` | 第 5、6、10 章 | 草稿事件、盖章、种子派生 |
 | `Result` / `ErrorCode` | 第 5 章 | 统一返回 |
 
@@ -155,7 +158,7 @@ class Resolver:
         return results
 ```
 
-裁判覆盖归属（第 7 章 §7.4、第 8 章 §8.2、第 11 章 §11.2）：`JudgeAgent` 由编排层调用并完成 Schema 校验，产出 `JudgeOutput` 后随 `judgements` 传入；`confidence >= 0.7` 且带 `reason` 时由 `verify_agent_override` 复核采纳，否则 `deterministic_fallback` 保守处理。Resolver 不调模型、不写库，回放可复现。
+裁判覆盖归属（第 7 章 §7.4、第 11 章 §11.2）：`JudgeAgent` 由编排层调用并完成 Schema 校验后随 `judgements` 传入；`confidence >= 0.7` 且带 `reason` 才允许 `verify_agent_override` 复核采纳，否则 `deterministic_fallback`。Resolver 不调模型、不写库。
 
 #### 21.2.3 ToolRegistry（register / visible_tools / invoke / build_proposal，以第 7 章为准）
 ```python
@@ -252,10 +255,11 @@ class ToolRegistry:
 ```python
 class LLMClient:
     async def complete_json(self, req: LLMRequest) -> Result:
-        # req 即第 12.2 节 LLMRequest：agent(=agent_id)/purpose/tier(=model_tier)/messages/
-        # response_model(=schema)/turn_id/actor_id/idempotency_key/timeout_s/cache_ttl_s
-        if req.response_model is None:
-            return Result.fail(ErrorCode.INVALID_INPUT, "response_model required for complete_json")
+        # req 即第 12.2 节 LLMRequest（v0.2 权威字段）：
+        # task / output_schema（alias "schema"）/ agent_id / turn_id / idempotency_key /
+        # model_tier / messages / timeout_s / cache_ttl_s / max_repair
+        if req.output_schema is None:
+            return Result.fail(ErrorCode.INVALID_INPUT, "output_schema required for complete_json")
         # 1) 幂等：同键已成功直接复用（llm_call_log 唯一索引），不重复扣费
         if (hit := await self.calls.find_succeeded(req.idempotency_key)) is not None:
             return Result.ok(data={"parsed": hit.parsed, "usage": hit.usage, "call": hit.call})
@@ -264,23 +268,23 @@ class LLMClient:
         raw = await self._call(req)
         if not raw.ok:                                   # LLM_UNAVAILABLE：超时/限流/供应商全挂
             return raw
-        # 3) 校验 + 一次修复重试（instructor max_retries=1，共 2 次请求）
+        # 3) 校验 + 修复重试（instructor，次数 = req.max_repair，固定 1，共 2 次请求）
         try:
-            parsed = req.response_model.model_validate_json(raw.text)
+            parsed = req.output_schema.model_validate_json(raw.text)
         except ValidationError as first_error:
             raw = await self._call(req, repair_hint=first_error)
             if not raw.ok:
                 return raw
             try:
-                parsed = req.response_model.model_validate_json(raw.text)
+                parsed = req.output_schema.model_validate_json(raw.text)
             except ValidationError as second_error:
                 self.calls.log_schema_failure(req, second_error)   # 写 llm_call_log，events 为空
                 return Result.fail(ErrorCode.SCHEMA_VIOLATION, "schema validation failed twice")
-        call = self.calls.record(req, raw, parsed)       # LLMCallRecord：token/成本/延迟/prompt_version
+        call = self.calls.record(req, raw, parsed)       # LLMCallRecord：task/agent_id/model_tier/token/成本/延迟/prompt_version
         return Result.ok(data={"parsed": parsed, "usage": raw.usage, "call": call})
         # 失败码固定四类：LLM_UNAVAILABLE / SCHEMA_VIOLATION / INVALID_INPUT / INTERNAL；
         # LLMClient 不产生领域事件，也不做业务兜底——确定性兜底由调用方按第 12.6 节执行
-        # （解析→关键词、叙事→模板、判定→RuleEngine、制造→calculate_craft_result）。
+        # （解析→关键词、叙事→模板、判定→RuleEngine、制造→calculate_craft_result、人物卡→模板草稿）。
 ```
 
 #### 21.2.5 CraftService.craft（服务层返回草稿事件，不提交）
@@ -325,10 +329,10 @@ class TurnOrchestrator:
                           idempotency_key=req.idempotency_key, caller="player")
         slice_ = self.query.build_perception_slice(ctx.actor_id, ctx.turn_id, ctx.save_seed)  # 第 6 章
         resp = await self.llm.complete_json(LLMRequest(
-            agent="parse", purpose="intent_parse", tier=ModelTier.ECONOMY,
-            messages=self.prompt.parse(req.text, slice_), response_model=ParseOutput,
-            turn_id=ctx.turn_id, actor_id=ctx.actor_id,
-            idempotency_key=ctx.idempotency_key, timeout_s=8.0))
+            task="intent_parse", agent_id="parse", model_tier=ModelTier.ECONOMY,
+            messages=self.prompt.parse(req.text, slice_), output_schema=ParseOutput,
+            turn_id=ctx.turn_id, idempotency_key=ctx.idempotency_key,
+            timeout_s=8.0, max_repair=1))
         if not resp.ok:                                           # LLM_UNAVAILABLE / SCHEMA_VIOLATION
             return TurnResult.clarify(self.fallback.parser_prompt(resp.error_code))
         parsed: ParseOutput = resp.data["parsed"]                 # 已过 Schema 校验与修复重试
@@ -340,7 +344,10 @@ class TurnOrchestrator:
                                              reason=str(parsed.intent.action), priority=100)
         if proposal is None:                                      # 白名单/参数校验不通过或只读工具
             return TurnResult.clarify("这个行动在当前场景不可用，你想做什么？")
-        resolutions = self.resolver.resolve([proposal], state)    # 纯函数裁决
+        # 第 9 章步骤 6：规则空白且 resolution_policy=agent_assisted 时才调裁判 Agent，
+        # 输出已过 Schema 校验的 JudgeOutput；无规则空白时为空列表
+        judgements = await self.judge.evaluate(proposal, state)
+        resolutions = self.resolver.resolve([proposal], state, judgements)  # 纯函数裁决（judgements 随裁决传入）
         events = [e for r in resolutions if r.verdict == "applied" for e in r.applied_events]
         if not events:                                            # rejected / deferred / conflict
             return TurnResult.from_resolution(resolutions[0],
@@ -361,6 +368,33 @@ class ProposalQueue:
     def enqueue(self, proposal: Proposal) -> None: ...          # 同 actor 同回合去重；proposal_id 由队列内部派生
     def drain(self, max_items: int = 8) -> list[Proposal]: ...  # 顺序 (priority desc, 入队序号 asc, actor_id asc)，队列内部维护
 ```
+
+#### 21.2.8 GameEngine.create_game / EventService.replay_range（v0.2 开局与回放）
+```python
+class GameEngine:
+    def create_game(self, ctx: ToolContext, *, card_id: CardId,
+                    seed: int | None = None, idempotency_key: str) -> Result:
+        """第 6 章 §6.7 / 第 14 章 §14.7：校验人物卡 → 映射 Character → 组装 `game_created` 首事件
+        （`method` 即 reducer 路由键 event_type；turn_id=1）→ 内部仍经 submit 原子落库（第 11 章 §11.2）。"""
+        card = self.cards.get_verified(ctx, card_id)  # 第 5 章 §5.7 已校验的 CharacterCard
+        events = [Event(turn_id=1, actor_id="system", method="game_created",
+                        params={"card_id": card_id,
+                                "card_snapshot": card.model_dump(mode="json"),  # 开局卡面快照，回放据此重建
+                                "starting_room_id": self.default_room_id,
+                                "initial_character_id": f"char_{self.new_ulid()}",
+                                "snapshot_version": 1,
+                                "save_seed": ctx.save_seed})]
+        return self.submit(expected_version=0, events=events, idempotency_key=idempotency_key)
+        # 返回 Result，data={game_id, turn, version, snapshot_version}（第 6 章 §6.7；version 为存档状态版本）
+
+
+class EventService:
+    def replay_range(self, ctx: ToolContext, *, game_id: GameId,
+                     from_seq: int = 0, limit: int = 200) -> Result:
+        """只读回放分页（按全局 seq）：data={"events", "from_seq", "to_seq"}（第 6 章 §6.7）。"""
+```
+
+对应 HTTP 成功形状（v0.2 前端）：`POST /api/v1/games` → 201 `{game_id, turn, version, snapshot_version}`；`GET /api/v1/games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /api/v1/games/{game_id}/replay?from_seq=&limit=` → 200 `{events, from_seq, to_seq}`（第 6 章 §6.7）。
 
 ### 21.3 JSON 示例
 
@@ -492,6 +526,176 @@ ACTION_INTENT_SCHEMA = ActionIntent.model_json_schema()   # 交给工具层/LLM 
 PARSE_OUTPUT_SCHEMA = ParseOutput.model_json_schema()
 ```
 
+（8）CharacterCard（人物卡 DTO，字段与第 5 章 §5.7 / 第 23 章前端契约一致；`extra="forbid"`、`frozen`；`hp ≤ attributes.max_hp`，`starting_items` ≤8 且元素为模板 ID（如 `item.rusty_sword`），`background` ≤2000，`appearance` 可为 null 或 ≤500）
+```json
+{
+  "schema_version": "1.0",
+  "name": "灰烬旅人",
+  "attributes": {"str": 12, "dex": 14, "con": 11, "int": 10, "wis": 9, "cha": 13, "max_hp": 30},
+  "hp": 30,
+  "starting_items": ["item.rusty_sword", "item.leather_cloak"],
+  "background": "来自北境废墟的拾荒者，靠辨认旧时代的金属残片换取口粮。",
+  "appearance": "披着打补丁的斗篷，左手缠着旧布条。",
+  "source": "manual",
+  "generated_by": null
+}
+```
+`attributes` 键集合固定为 `{str, dex, con, int, wis, cha, max_hp}`；`source ∈ {upload, llm, manual}`。**`generated_by` 语义**（第 12 章 §12.6）：仅 LLM 真实生成时填模型/供应商标识（如 `"deepseek-chat"`）；上传、手工填写、模板兜底一律为 `null`（模板兜底不改 `generated_by`、不填 `"template"`）。
+
+（9）`POST /api/v1/character-cards/import`（multipart/form-data；表单字段 `file`，仅 `application/json`、UTF-8 严格解码、`Content-Length` 预检 + 流式读取上限双重校验 ≤64KB、JSON 深度 ≤8、不收压缩包；写操作带 `Idempotency-Key`）
+请求不是 JSON：`Content-Type: multipart/form-data`，`file=@card.json`（≤64KB）。服务端解析 + strict 校验 + 规范化；**成功响应 HTTP 201，直接返回业务 payload**（前端接口不使用 `Result` 信封，第 6 章 §6.7）。
+成功响应（201）：
+```json
+{
+  "card_id": "card_01J9Z3K4Q7ABCDEFGHJKMNPQRS",
+  "card": {
+    "schema_version": "1.0",
+    "name": "灰烬旅人",
+    "attributes": {"str": 12, "dex": 14, "con": 11, "int": 10, "wis": 9, "cha": 13, "max_hp": 30},
+    "hp": 30,
+    "starting_items": ["item.rusty_sword"],
+    "background": "来自北境废墟的拾荒者。",
+    "appearance": null,
+    "source": "upload",
+    "generated_by": null
+  },
+  "warnings": [{"code": "DUPLICATE_ITEM_MERGED", "message": "duplicate starting item merged: item.rusty_sword", "field": "starting_items"}]
+}
+```
+`warnings` 统一形状为 `[{code, message, field?}]`（import 必带；保存/generate 如产生 warning 也沿用同形，第 6 章 §6.7）。
+失败响应（HTTP 422/403/404/409/413/5xx，统一体 `{"ok": false, "error_code", "message", "violations"?, "request_id"?}`；`request_id` 可选、用于排障；错误码见第 5 章 §5.7 / 第 6 章 §6.7：文件过大 → `INVALID_INPUT` + HTTP 413，非 JSON/类型错 → `INVALID_INPUT` + 422，Schema 不符 → `SCHEMA_VIOLATION`，内容安全拒绝 → `NOT_ALLOWED`，模板不存在 → `NOT_FOUND`，幂等冲突 → `CONFLICT`）：
+```json
+{
+  "ok": false,
+  "error_code": "SCHEMA_VIOLATION",
+  "message": "人物卡校验失败",
+  "violations": [
+    {"loc": ["hp"], "type": "value_error", "msg": "hp must be <= attributes.max_hp"},
+    {"loc": ["attributes", "max_hp"], "type": "value_error", "msg": "attribute values must be within [-10, 100]"}
+  ],
+  "request_id": "req_01J9Z3M8C4ABCDEFGHJKMNPQRS"
+}
+```
+
+（10）`POST /api/v1/character-cards/generate`（JSON 请求 `{brief, schema_version, options?}`；`task=character_card_generate`、模型档 STRONG、`timeout_s=20`、`max_repair=1`、单用户 5 次/分钟、brief ≤1000 字；**幂等两层**：HTTP 幂等键 = 客户端 `Idempotency-Key`（UUID），服务端另算 `sha256(canonical payload)` 用于「同键异参 → `CONFLICT`」与审计；返回未保存的 `draft` + `validation` + `generated_by`）
+请求：
+```json
+{
+  "brief": "一个在废土上修理旧机械为生的独行工匠，谨慎但心软，左手有烧伤。",
+  "schema_version": "1.0",
+  "options": {"tone": "grim"}
+}
+```
+成功响应（HTTP 200，直接返回业务 payload；草稿未保存，内容安全通过后才返回）：
+```json
+{
+  "draft": {
+    "schema_version": "1.0",
+    "name": "废土机匠",
+    "attributes": {"str": 11, "dex": 12, "con": 12, "int": 15, "wis": 13, "cha": 8, "max_hp": 28},
+    "hp": 28,
+    "starting_items": ["item.wrench", "item.oil_can"],
+    "background": "在废土边缘开了一间修理铺，靠修补旧机械换口粮。",
+    "appearance": "左手缠着焦黑的绷带，腰间挂满扳手。",
+    "source": "llm",
+    "generated_by": "deepseek-chat"
+  },
+  "validation": {"valid": true, "errors": []},
+  "generated_by": "deepseek-chat"
+}
+```
+兜底与失败：LLM 不可用或 Schema 修复仍失败 → 确定性模板兜底（第 12 章 §12.6）：HTTP 200 + `draft.source="manual"`、`draft.generated_by=null`、`generated_by=null`（不填 `"template"`），`validation` 照常返回、草稿仍不保存；模板兜底也失败 → 5xx/422 + 统一失败体（`LLM_UNAVAILABLE` / `SCHEMA_VIOLATION`）；生成限流 → HTTP 429 + `OUT_OF_RANGE` + `Retry-After`（第 6 章 §6.7）。
+
+（11）`POST /api/v1/character-cards`（保存人物卡；`Content-Type: application/json`，body 为已校验的 `CharacterCard`（字段同（8），DTO 不含 id），必带 `Idempotency-Key`；成功 HTTP 201 返回 `{card_id, card}`；服务端重新执行第 5 章 §5.7 全部校验并强制生成 `card_id=card_<ULID>`，`source` 按入口判定：上传 `upload`、LLM 真生成草稿 `llm`、手工/模板兜底 `manual`；人物卡库不参与事件溯源，不产生 Event）
+请求（保存 LLM 生成后确认的草稿）：
+```json
+{
+  "schema_version": "1.0",
+  "name": "废土机匠",
+  "attributes": {"str": 11, "dex": 12, "con": 12, "int": 15, "wis": 13, "cha": 8, "max_hp": 28},
+  "hp": 28,
+  "starting_items": ["item.wrench", "item.oil_can"],
+  "background": "在废土边缘开了一间修理铺，靠修补旧机械换口粮。",
+  "appearance": "左手缠着焦黑的绷带，腰间挂满扳手。",
+  "source": "llm",
+  "generated_by": "deepseek-chat"
+}
+```
+成功响应（201）：
+```json
+{
+  "card_id": "card_01J9Z3K4Q7MNOPQRSTUVWXYZAB",
+  "card": {
+    "schema_version": "1.0",
+    "name": "废土机匠",
+    "attributes": {"str": 11, "dex": 12, "con": 12, "int": 15, "wis": 13, "cha": 8, "max_hp": 28},
+    "hp": 28,
+    "starting_items": ["item.wrench", "item.oil_can"],
+    "background": "在废土边缘开了一间修理铺，靠修补旧机械换口粮。",
+    "appearance": "左手缠着焦黑的绷带，腰间挂满扳手。",
+    "source": "llm",
+    "generated_by": "deepseek-chat"
+  }
+}
+```
+（12）`POST /api/v1/games`（创建存档；请求体 `{card_id}`，必带 `Idempotency-Key`；`game_created` 系统事件随事务落 `EventLog`，第 6 章 §6.7）
+请求：
+```json
+{"card_id": "card_01J9Z3K4Q7ABCDEFGHJKMNPQRS"}
+```
+成功响应（201）：
+```json
+{"game_id": "game_01J9Z4A2B6CDEFGHJKMNPQRSTU", "turn": 1, "version": 1, "snapshot_version": 1}
+```
+
+（13）`GET /api/v1/games/{game_id}`（存档状态；前端进入游戏/刷新时调用，只读，第 6 章 §6.7）
+成功响应（200）：
+```json
+{
+  "game_id": "game_01J9Z4A2B6CDEFGHJKMNPQRSTU",
+  "turn": 2,
+  "version": 2,
+  "snapshot_version": 2,
+  "status": "active",
+  "last_text": "你握紧锈剑，朝哥布林劈下。哥布林踉跄后退。"
+}
+```
+
+（14）`POST /api/v1/turns`（回合提交；请求头必带 `Idempotency-Key`；body 为 `{game_id, input, expected_version}`；响应为 `TurnResult`，v0.2 增 `version`，第 9 章 §9.1）
+请求：
+```json
+{
+  "game_id": "game_01J9Z4A2B6CDEFGHJKMNPQRSTU",
+  "input": "用锈剑砍哥布林",
+  "expected_version": 1
+}
+```
+成功响应（200，`TurnResult`）：
+```json
+{
+  "ok": true,
+  "turn_id": 2,
+  "version": 2,
+  "text": "你握紧锈剑，朝哥布林劈下。哥布林踉跄后退。",
+  "events": [
+    {
+      "id": "evt_000042",
+      "turn_id": 2,
+      "seq": 42,
+      "actor_id": "player_01",
+      "method": "attack_target",
+      "params": {"target_id": "npc_goblin_01"},
+      "result": {"hit": true, "damage": 5},
+      "rng_seed": 5483726150938472911,
+      "ts": "2026-11-08T12:00:06Z"
+    }
+  ],
+  "error_code": null
+}
+```
+
+前端 API 错误响应统一为 4xx/5xx + `{"ok": false, "error_code", "message", "violations"?, "request_id"?}`（`request_id` 可选、用于排障）；HTTP 映射：`INVALID_INPUT` → 422（文件过大 → 413）、`SCHEMA_VIOLATION` → 422、`NOT_FOUND` → 404、`NOT_ALLOWED` → 403、`CONFLICT` → 409、`LLM_UNAVAILABLE` → 503、`INTERNAL` → 500；`OUT_OF_RANGE`：输入数值超范围 → 422，配额/限流 → 429（带 `Retry-After`）；既有 `POST /api/v1/turns` 例外（保持第 9 章 `TurnResult`）。
+
 ### 21.4 错误码与失败分支对照
 
 | ErrorCode | 触发场景 | 处理方式 | 是否写状态 |
@@ -499,7 +703,7 @@ PARSE_OUTPUT_SCHEMA = ParseOutput.model_json_schema()
 | `INVALID_INPUT` | 参数类型/范围错误 | 返回结构化错误，提示玩家重述 | 否 |
 | `NOT_FOUND` | 目标角色/房间/物品不存在 | 重新构建感知切片后重试一次 | 否 |
 | `NOT_ALLOWED` | actor_scope 越权、工具不可见 | 记录审计事件并拒绝 | 否 |
-| `OUT_OF_RANGE` | 距离、数量、回合窗口越界 | 返回约束说明，可由叙事 Agent 改写 | 否 |
+| `OUT_OF_RANGE` | 距离、数量、回合窗口越界；配额/限流 | 422（数值超范围）或 429 + `Retry-After`（配额/限流）；返回约束说明，可由叙事 Agent 改写 | 否 |
 | `CONFLICT` | CAS 版本不一致或并发写冲突 | 重读快照并重跑裁决（不重调模型），最多 3 次提交尝试（首次 + 2 次重试） | 否 |
 | `SCHEMA_VIOLATION` | LLM 输出未通过 JSON Schema | 一次修复重试 → 由调用方确定性兜底（第 12.6 节） | 否 |
 | `LLM_UNAVAILABLE` | 超时、限流、供应商不可用 | 回退供应商 → 规则兜底 → “无法处理” | 否 |
@@ -549,15 +753,15 @@ PARSE_OUTPUT_SCHEMA = ParseOutput.model_json_schema()
 | 动作意图 | ActionIntent | 解析 Agent 对玩家输入的结构化理解 |
 | 解析输出 | ParseOutput | IntentParseAgent 校验后输出：intent / tool / candidate_narrative / clarify_question |
 | 工具上下文 | ToolContext | 第 6 章新增约定：actor_id / actor_tags / turn_id / save_seed / idempotency_key / caller |
-| 大模型请求 | LLMRequest | LLMClient 的结构化请求：agent / purpose / tier / messages / response_model / turn_id / idempotency_key 等 |
-| 调用记录 | LLMCallRecord | 每次 LLM 调用的模型、token、成本、延迟与 prompt_version |
+| 大模型请求 | LLMRequest | 第 12 章 v0.2：task / output_schema（alias schema）/ agent_id / turn_id / idempotency_key / model_tier / messages / timeout_s / cache_ttl_s / max_repair |
+| 调用记录 | LLMCallRecord | request_id / task / agent_id / model_tier / provider / model / prompt_version / attempt / cache_hit / tokens / 成本 / 延迟 / error_code |
 | 工具规格 | ToolSpec | 名称、描述、Schema、可见范围、副作用、裁决策略 |
+| 人物卡 | CharacterCard | 前端人物卡 DTO（v0.2）：schema_version/name/attributes/hp/starting_items/background/appearance/source/generated_by |
 | 结果对象 | Result | 写方法统一返回：ok / data / error_code / message / events |
 
 ### 21.6 使用方式
-- 新人先读 21.2 的六个接口（ToolRegistry 含 register / visible_tools / invoke / build_proposal），再对照第 5–7、11、12 章理解字段来源，最后看第 9 章调用链。
-- 评审用 21.3 的七个 JSON 作为“契约样例”：实现与样例字段不一致即阻断合入。
-- 新增工具或服务方法时，先改第 6、7 章 → 再改本附录样例 → 最后写代码，禁止反向操作。
+- 新人先读 21.2 的核心接口（含 v0.2 的 21.2.8 开局/回放），再对照第 5–7、11、12 章理解字段来源，最后看第 9 章调用链。
+- 评审用 21.3 的 JSON 样例作为“契约样例”（含 v0.2 人物卡与卡片接口）：实现与样例字段不一致即阻断合入；新增接口先改第 6 章 → 再改本附录 → 最后写代码。
 
 ### 21.7 本附录涉及的候选轮子
 
@@ -568,12 +772,12 @@ PARSE_OUTPUT_SCHEMA = ParseOutput.model_json_schema()
 | `langchain-ai/langgraph` | 状态化 Agent 编排 | StateGraph 节点契约、中断与检查点思想 | MIT | 2026-11 有提交，star 约 44.6k；1.2.20 要求 ≥3.10 | pip 依赖 |
 | `pydantic/pydantic-ai` | 类型化 Agent 框架 | “输出类型 → 校验 → 修复重试”模式 | MIT | 2026-11 有提交，star 约 21.1k，open issues 约 1.8k | 参考设计 |
 
-复用判断与拼接边界：接口契约全部用 Pydantic v2 模型定义，Schema 由 `model_json_schema()` 生成后同时交给 LLM 侧与工具层，禁止再手写第二份 JSON Schema；`jsonschema` 只用于第三方工具协议（MCP/OpenAPI）接入时的二次校验，项目内部仍以 Pydantic 校验为主。若选用 LangGraph，节点输入输出必须是本附录类型，不允许把 `GameState` 直接塞进图状态；pydantic-ai 仅参考其校验重试模式，不进入依赖。
+复用判断与拼接边界：接口契约全部用 Pydantic v2 模型定义，Schema 由 `model_json_schema()` 生成后同时交给 LLM 侧与工具层，禁止再手写第二份；`jsonschema` 只用于第三方工具协议（MCP/OpenAPI）的二次校验。若选用 LangGraph，节点输入输出必须是本附录类型，不得把 `GameState` 塞进图状态；pydantic-ai 仅参考校验重试模式，不进入依赖。
 
 ### 本章结论
-1. 六个核心接口已与正文对齐（第 5–15 章）：GameEngine.submit、Resolver.resolve、ToolRegistry（register/visible_tools/invoke/build_proposal）、LLMClient.complete_json(req: LLMRequest) -> Result、CraftService.craft、TurnOrchestrator.run。
-2. 写路径只有一个入口：`GameEngine.submit(expected_version, events, idempotency_key)`（第 11 章）；`Resolver` 按 ProposalQueue 给定顺序裁决、只消费编排层传入的已校验裁判证据、`applied_events` 只能是草稿态 Event；服务层（含 CraftService）只返回 `Result(events=[草稿 Event])`，不提交、不写库；`EventLog.stamp` 负责 id/seq/ts 与种子派生。
-3. 叙事顺序：候选叙事在 resolve 之后、submit 之前生成并校验，提交成功后返回，提交失败则丢弃候选（第 4、9 章）。
-4. 预算与重试口径：单回合默认 2 次、最多 3 次模型调用；首版 P95 ≤ 8 s，M2 缓存命中路径 ≤ 3 s；CAS 最多 3 次提交尝试（首次 + 2 次重试），重试只重裁决、不重调模型。
-5. 所有智能体输出必须被标注：示例（6）区分“未校验原始输出（会失败）”与“通过 `ParseOutput` 校验后的输出”；`LLMClient` 成功返回 `data={"parsed","usage","call"}`，失败错误码限定 `LLM_UNAVAILABLE` / `SCHEMA_VIOLATION` / `INVALID_INPUT` / `INTERNAL`。
-6. 词表分离：`verdict` 与审计状态 `{committed, conflicted, aborted}` 不得混用；基线术语沿用第 4 章约定，新增 `ToolContext`、`ParseOutput`、`LLMRequest`、`LLMCallRecord` 等已登记来源章节。
+1. 六个核心接口 + v0.2 的 `GameEngine.create_game` / `EventService.replay_range` 已与正文对齐（第 5–15 章）：GameEngine.submit、Resolver.resolve、ToolRegistry（register/visible_tools/invoke/build_proposal）、LLMClient.complete_json(req: LLMRequest) -> Result、CraftService.craft、TurnOrchestrator.run。
+2. 写路径与叙事顺序：唯一入口 `GameEngine.submit(expected_version, events, idempotency_key)`（第 11 章）；`Resolver` 按 ProposalQueue 顺序裁决、只消费编排层传入的已校验裁判证据、`applied_events` 只能是草稿态 Event；服务层（含 CraftService）只返回 `Result(events=[草稿 Event])`，不提交、不写库；候选叙事在 resolve 之后、submit 之前生成并校验，提交成功后返回、失败丢弃（第 4、9 章）；`EventLog.stamp` 负责 id/seq/ts 与种子派生。
+3. 预算与重试口径：单回合默认 2 次、最多 3 次模型调用；首版 P95 ≤ 8 s，M2 缓存命中路径 ≤ 3 s；CAS 最多 3 次提交尝试（首次 + 2 次重试），重试只重裁决、不重调模型。
+4. 所有智能体输出必须被标注：示例（6）区分“未校验原始输出（会失败）”与“通过 `ParseOutput` 校验后的输出”；`LLMClient` 成功返回 `data={"parsed","usage","call"}`，失败错误码限定 `LLM_UNAVAILABLE` / `SCHEMA_VIOLATION` / `INVALID_INPUT` / `INTERNAL`。
+5. 词表分离：`verdict` 与审计状态 `{committed, conflicted, aborted}` 不得混用；基线术语沿用第 4 章约定，新增 `ToolContext`、`ParseOutput`、`LLMRequest`、`LLMCallRecord` 等已登记来源章节。
+6. v0.2 前端接口已补样例：`CharacterCard`（第 5 章 §5.7）、import（201 `{card_id, card, warnings}`）、generate（200 `{draft, validation, generated_by}`）、保存 `POST /character-cards`（201 `{card_id, card}`）、游戏开局/存档状态/回合（`POST /games`、`GET /games/{game_id}`、`POST /turns`，含 `version` 与 `TurnResult`）；warnings 统一 `[{code, message, field?}]`，成功直接返回业务 payload，失败统一 4xx/5xx + `{ok:false, error_code, message, violations?, request_id?}`（HTTP 映射见 §21.3）；`generated_by` / `source` 语义与第 12 章一致。

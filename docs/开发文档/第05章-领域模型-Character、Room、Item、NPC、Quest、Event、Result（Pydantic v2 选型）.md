@@ -17,7 +17,8 @@
 2. **SQLAlchemy 只允许在 `persistence/` 被 import，锁 `SQLAlchemy>=2.0.57,<2.1`**；`2.1.8` 已要求 Python ≥3.11，与 3.10 下限冲突（第 4 章已记录该约束，本章再次确认）。
 3. **不采用 SQLModel 作为领域模型**：它把 ORM 表模式与校验模式合成一个类，等于让 `domain/` 依赖 SQLAlchemy，破坏“domain 零外部依赖”的依赖方向；且版本仍为 0.0.x（README 自述为薄层），不宜作为基线。
 4. **不可变边界**：`Event`、`Result`、`Proposal`、`Resolution`、`ToolSpec`、`PerceptionSlice` 用 `frozen=True`；世界实体（`Character`/`Room`/`Item`/`NPC`/`Quest`）同样 `frozen=True`，所有变更经 `GameState.apply(events)` 做纯投影（实现见第 14 章），任何服务方法不得原地改状态。
-5. **模型版本号不塞进 `Event` 基线字段**：事件 payload 的版本登记在 `EventLog` 侧的 upcaster 注册表，快照（Snapshot）版本随快照包装记录（方案见 5.8；第 14 章已采纳方案 B）。
+5. **模型版本号不塞进 `Event` 基线字段**：事件 payload 的版本登记在 `EventLog` 侧的 upcaster 注册表，快照（Snapshot）版本随快照包装记录（方案见 5.9；第 14 章已采纳方案 B）。
+6. **v0.2 新增 `CharacterCard` 人物卡 DTO（5.7）**：前端上传 / LLM 生成 / 手填共用同一份 JSON 契约（`extra="forbid"`），由 `build_character_card_schema()` 产出与前端共享的 JSON Schema；服务端在开局时把它映射为 `Character`（id 服务端生成、location 由开局场景决定、inventory 由 `starting_items` 实例化），人物卡本身不进入 `GameState` 与事件链。
 
 ### 5.2 基础类型、Event 与 Result
 
@@ -421,7 +422,7 @@ class ToolSpec(BaseModel):
 | --- | --- | --- | --- | --- | --- |
 | `ParseOutput` | 第 8 章 §8.2 | `intent: ActionIntent`、`tool: ToolCall \| None`、`candidate_narrative: str \| None`（≤200 字）、`clarify_question: str \| None`（≤80 字） | `agents/schemas.py`（回合内 DTO） | 不进入；只有 `intent` 经第 7 章转成 `Proposal` 后进队列 | 第 12 章 LLMClient Schema 校验 + 第 8 章语义校验；原始文本不可解析 → `SCHEMA_VIOLATION`；工具参数不符 → `INVALID_INPUT`；越权 → `NOT_ALLOWED` |
 | `JudgeOutput` | 第 8 章 §8.2 | `verdict`、`reason`、`evidence_refs`、`confidence`；不产出数值 | `agents/schemas.py` | 不进入；只进 `Resolution.reason` 与审计 | Schema + 第 10 章置信度阈值（<0.7 强制保守裁决）；失败 → `SCHEMA_VIOLATION`，降级为确定性兜底 |
-| `NarrativeOutput` | 第 8 章 §8.2 | `narrative`（80～150 字）、`tone` | `agents/schemas.py` | 不进入 `GameState`；文本进 `TurnResponse`，来源记 `narrative_source ∈ {llm, template}` | 第 8 章字数/字符校验 + Schema；失败 → 模板兜底，不改状态 |
+| `NarrativeOutput` | 第 8 章 §8.2 | `narrative`（80～150 字）、`tone` | `agents/schemas.py` | 不进入 `GameState`；文本进 `TurnResult`，来源记 `narrative_source ∈ {llm, template}` | 第 8 章字数/字符校验 + Schema；失败 → 模板兜底，不改状态 |
 | `MemoryOutput` | 第 8 章 §8.2 | `ops: list[MemoryOp]`、`summary` | `agents/schemas.py`；`MemoryOp` 由 `MemoryStore` 应用（接口见第 8 章记忆 Agent） | 不进入 `GameState`；写入按 `actor_id` 隔离的私有记忆库 | Schema + 命名空间归属校验；失败 → `SCHEMA_VIOLATION`，丢弃本次记忆（不阻塞回合） |
 | `CharacterOutput` | 第 8 章 §8.2 | `proposals: list[Proposal]`（≤2）、`dialogue`、`memory_ops` | `agents/schemas.py` | 不直接进入；提案进 `ProposalQueue`（第 11 章） | Schema + 第 7 章工具门 + 第 11 章 Resolver；失败 → `SCHEMA_VIOLATION`/`NOT_ALLOWED`，本回合不行动 |
 | `CraftOutput` | 第 8 章 §8.2 | `item_name`、`slots`、`materials`、`steps`；**无任何数值字段** | `agents/schemas.py`，第 13 章规范化为 `CraftProposal` | 不进入；产物经 `CraftService` 校验后转 `Proposal` | Schema + 第 13 章状态一致性检查；失败 → `SCHEMA_VIOLATION`/`NOT_ALLOWED`，退回确定性路径 |
@@ -486,7 +487,142 @@ class RandomSource(Protocol):
 
 依赖方向落地：`domain/` 不 import `agents/`、不 import `llm/`；`agents/` 可以 import `domain/`（值对象与 `ActionIntent`/`Proposal`）与 `llm/`；`services/` 只 import `domain/` 与仓储接口，永远看不到 `ParseOutput` 这类 LLM 契约。跨层传递一律走 `Result.data` 里的纯 `dict`（第 6 章），不传 Pydantic 契约对象。
 
-### 5.7 校验规则清单与校验边界
+### 5.7 CharacterCard DTO：人物卡导入/生成的前端 JSON 契约（v0.2）
+
+`CharacterCard` 是 v0.2 前端（Vue 3 SPA，第 23 章）与后端共享的**人物卡 JSON 契约**（character card DTO），不是领域实体：它只在 API 边界存在，先由服务端校验，再在开局时映射为本章 `Character` 并写入新存档。字段在本节定稿，与第 23 章前端契约完全一致；第 6 章 6.7 的接口、第 21 章示例、第 23 章前端 Ajv 校验都引用本节，**不得增删字段**。
+
+```python
+from typing import Any, Callable
+
+# v0.2 新增的 API 层 ID：由服务端生成，不接受前端指定
+CardId = Annotated[str, Field(pattern=rf"^card_{_ULID}$")]
+GameId = Annotated[str, Field(pattern=rf"^game_{_ULID}$")]
+ItemTemplateId = Annotated[str, Field(pattern=r"^item[._][a-z][a-z0-9_.]{1,63}$")]  # 模板 ID（两种写法）
+
+AttributeKey = Literal["str", "dex", "con", "int", "wis", "cha", "max_hp"]
+CardSource = Literal["upload", "llm", "manual"]
+# max_hp 是生命上限，必须 ≥1（否则 hp>=0 与 hp<=max_hp 无解、卡片永不可能合法）；其余六键 -10..100
+_ATTRIBUTE_BOUNDS: dict[str, tuple[int, int]] = {
+    "str": (-10, 100), "dex": (-10, 100), "con": (-10, 100), "int": (-10, 100),
+    "wis": (-10, 100), "cha": (-10, 100), "max_hp": (1, 100),
+}
+_ATTRIBUTE_KEYS = frozenset(_ATTRIBUTE_BOUNDS)
+
+
+class CharacterCard(BaseModel):
+    """人物卡 DTO（v0.2）：上传 / LLM 生成 / 手填共用同一份 JSON 契约；不进入 GameState。"""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"]
+    name: str = Field(min_length=1, max_length=24)
+    attributes: dict[AttributeKey, int]
+    hp: int = Field(ge=0)
+    starting_items: list[ItemTemplateId] = Field(max_length=8)
+    background: str = Field(max_length=2000)
+    appearance: str | None = Field(default=None, max_length=500)
+    source: CardSource
+    generated_by: str | None = Field(default=None, max_length=120)
+
+    @field_validator("name", "background")
+    @classmethod
+    def _trim(cls, v: str) -> str:
+        return v.strip()
+
+    @field_validator("attributes")
+    @classmethod
+    def _exact_keys_and_range(cls, v: dict[AttributeKey, int]) -> dict[AttributeKey, int]:
+        if set(v) != _ATTRIBUTE_KEYS:
+            missing = sorted(_ATTRIBUTE_KEYS - set(v))
+            extra = sorted(set(v) - _ATTRIBUTE_KEYS)
+            raise ValueError(f"attributes keys must be exactly 7 known keys; missing={missing} extra={extra}")
+        for key, value in v.items():
+            low, high = _ATTRIBUTE_BOUNDS[key]
+            if not (low <= value <= high):
+                raise ValueError(f"attribute {key} must be within [{low}, {high}]")
+        return v
+
+    @model_validator(mode="after")
+    def _hp_within_max(self) -> "CharacterCard":
+        if self.hp > self.attributes["max_hp"]:
+            raise ValueError("hp must be <= attributes.max_hp")
+        return self
+
+
+def build_character_card_schema() -> dict[str, Any]:
+    """生成与前端共享的 JSON Schema（draft 2020-12；前端 Ajv2020 直接复用同一份）。"""
+    schema = CharacterCard.model_json_schema(mode="validation", ref_template="#/$defs/{model}")
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["$id"] = "https://textgame.local/schemas/character-card-1.0.json"
+    # attributes 是 dict[Literal, int]，Pydantic 只给 propertyNames + additionalProperties；
+    # 这里显式展开为逐键 properties，让前端 Ajv 也能校验每个键的取值范围（max_hp minimum:1）
+    attrs = schema["properties"]["attributes"]
+    attrs.pop("additionalProperties", None)
+    attrs.pop("propertyNames", None)
+    attrs["properties"] = {
+        key: {"type": "integer", "minimum": low, "maximum": high}
+        for key, (low, high) in _ATTRIBUTE_BOUNDS.items()
+    }
+    attrs["required"] = sorted(_ATTRIBUTE_KEYS)
+    attrs["additionalProperties"] = False
+    return schema
+
+
+CHARACTER_CARD_SCHEMA: dict[str, Any] = build_character_card_schema()
+```
+
+`build_character_card_schema()` 是唯一的 Schema 生成入口：`GET /api/v1/character-cards/schema` 直接返回 `CHARACTER_CARD_SCHEMA`，`web/src/schemas/character-card.schema.json` 与之做契约测试（第 18 章）。生成物中 `additionalProperties: false`、`starting_items.items.pattern`，以及显式展开的 `attributes` 逐键 `properties`（含 `max_hp` 的 `minimum: 1`、其余键 `-10..100`）与 `required`，让**前端 Ajv 预校验与服务端 Pydantic 校验等价**；前端校验只改善体验，服务端为最终权威。
+
+校验规则与错误码（错误码定义见 5.2，API 入口见第 6 章 6.7）：
+
+| 字段 | 规则 | 失败码 |
+| --- | --- | --- |
+| `schema_version` | 必须为 `"1.0"` | `SCHEMA_VIOLATION` |
+| `name` | trim 后 1–24 字符 | `SCHEMA_VIOLATION` |
+| `attributes` | 恰好 7 键（`str/dex/con/int/wis/cha/max_hp`）；前六键 -10..100，**`max_hp` 必须 1..100**（否则 `hp>=0` 与 `hp<=max_hp` 无解） | `SCHEMA_VIOLATION` |
+| `hp` | `0 <= hp <= attributes.max_hp`（`max_hp>=1` 保证该区间至少含 `hp=0`） | `SCHEMA_VIOLATION` |
+| `starting_items` | ≤8 项，元素为物品模板 ID（`item.<name>` 或 `item_<name>`，如 `item.rusty_sword`/`item_torch`；`item_<26位ULID>` 是实例 ID，不接受），可为空数组；重复模板合并并记 warning | `SCHEMA_VIOLATION`；模板不存在 → `NOT_FOUND` |
+| `background` | ≤2000 字符（可为空字符串） | `SCHEMA_VIOLATION` |
+| `appearance` | `null` 或 ≤500 字符 | `SCHEMA_VIOLATION` |
+| `source` | `upload` / `llm` / `manual` | `SCHEMA_VIOLATION` |
+| `generated_by` | `null` 或 ≤120 字符 | `SCHEMA_VIOLATION` |
+| 多余字段 | `extra="forbid"` 直接拒绝 | `SCHEMA_VIOLATION` |
+| JSON 语法 / 文件大小 | 非 JSON、或上传文件 >64KB | `INVALID_INPUT` |
+| 内容安全 | HTML/URL/base64/提示注入等 | `NOT_ALLOWED`（第 15 章 GuardPipeline） |
+
+**`CharacterCard → Character` 映射规则**（服务端在开局事务内执行，前端不参与）：
+
+```python
+def to_character(card: CharacterCard, *, location: RoomId, created_turn: int,
+                 new_ulid: Callable[[], str],
+                 instantiate_item: Callable[[ItemTemplateId, ItemId], Item]) -> Character:
+    """把校验通过的 CharacterCard 映射为开局 Character；Item 实例同时写入 GameState.items。"""
+    instances = [instantiate_item(tid, f"item_{new_ulid()}") for tid in card.starting_items]
+    return Character(
+        id=f"char_{new_ulid()}",
+        name=card.name,
+        attributes=dict(card.attributes),
+        inventory=[item.id for item in instances],
+        location=location,
+        hp=card.hp,
+        status=[],
+        private_memory_ref=None,
+        created_turn=created_turn,
+    )
+```
+
+| `CharacterCard` 字段 | 目标 | 规则 |
+| --- | --- | --- |
+| `name` / `attributes`（含 `max_hp`）/ `hp` | `Character.name` / `attributes` / `hp` | 原样映射；`max_hp` 已校验 1..100、`hp ≤ max_hp` 已在模型层校验（`to_character` 不重复计算） |
+| `starting_items` | `Character.inventory` + `GameState.items` | 按物品模板实例化为 `Item`（`id = item_<ULID>`），最多 8 件；重复模板合并数量 |
+| （DTO 无 id） | `Character.id` | 服务端生成 `char_<ULID>`，前端不得指定 |
+| （DTO 无 location） | `Character.location` | 由开局场景决定（第 6 章 6.7 的 `POST /games`，默认新手房间），不接受前端传坐标 |
+| `background` / `appearance` | 不入 `Character` | 存人物卡记录（展示用），可选写入该角色初始私有记忆（第 8 章） |
+| `source` / `generated_by` | 审计字段 | 存人物卡记录，仅展示与审计，不参与判定 |
+| `schema_version` | 仅校验 | 不进入任何领域模型 |
+
+边界：① `CharacterCard` **不参与事件溯源**——它不产生 `Event`、不进入 `GameState`，只有开局后的 `Character`/`GameState`/`Event` 进入事件链；② 该 DTO **不是 `ToolSpec`**、不注册进工具层（第 7 章 7.3 边界）；③ 模型层只做长度/类型/键约束，HTML/URL/base64 等内容安全由第 15 章 GuardPipeline 在 `CharacterCardService` 内执行。
+
+### 5.8 校验规则清单与校验边界
 
 | 校验类别 | 实例 | 失败处理 |
 | --- | --- | --- |
@@ -498,7 +634,7 @@ class RandomSource(Protocol):
 
 边界原则：**模型层只保证“结构上不可能非法”，业务合法性一律下沉到服务层（`RuleService`）与 `domain/rules/` 的 `RuleEngine`**；否则每加一条玩法规则都要改模型、加字段版本。模型层也不做 JSON 可序列化深校验（`params`/`result` 的序列化校验放在 `EventLog.stamp()` 里做一次 `json.dumps(..., allow_nan=False)`，失败返回 `SCHEMA_VIOLATION`），避免每个事件都跑一遍递归。
 
-### 5.8 序列化、模型版本与迁移策略
+### 5.9 序列化、模型版本与迁移策略
 
 - 对外/入库统一 `model_dump(mode="json")`；回放统一 `model_validate_json()`。禁止 pickle、禁止 `model_dump()` 直接入库（会留下 `datetime` 等非 JSON 类型，SQLite/Postgres JSON 列行为不一致）。
 - `extra="forbid"` 全开：字段多了要显式报错，而不是静默吞掉；前向兼容靠 upcaster，不靠 `extra="allow"`。
@@ -516,7 +652,7 @@ class RandomSource(Protocol):
 
 迁移流程固定四步：**读原始 JSON → 按 `(method, version)` 串行执行 upcaster 链 → 用当前模型校验 → 校验失败终止回放并告警**（不静默跳过、不猜测默认值）。禁止在模型里写 `if version == 1` 分支，迁移逻辑只允许存在于 `persistence/migrations/`。
 
-### 5.9 候选轮子与拼接判断
+### 5.10 候选轮子与拼接判断
 
 | 仓库 | 定位 | 可复用部分 | 许可证 | 活跃度 | 建议 |
 | --- | --- | --- | --- | --- | --- |
@@ -538,6 +674,6 @@ class RandomSource(Protocol):
 1. 领域模型定稿为 Pydantic v2（`pydantic>=2.14,<3`）单一实现；`domain/` 零外部依赖，SQLAlchemy 只允许进 `persistence/`，且必须锁 `SQLAlchemy>=2.0.57,<2.1`（2.1 系列要求 Python ≥3.11）。
 2. `Event` 采用“草稿态/盖章态 + 全有或全无”校验：服务层只产草稿事件，`id`/`seq`/`ts`/`rng_seed` 由 `GameEngine` 在提交链上补全，`Result.events` 因此不需要两种类型。
 3. 不可变边界：`Event`/`Result`/`Proposal`/`Resolution`/`ToolSpec`/`PerceptionSlice` 与全部世界实体均为 `frozen=True`，任何状态变更只能经 `GameState.apply(events)`；服务层禁止返回内部容器引用。
-4. 模型层只做结构校验（类型、范围、跨字段、引用完整性），业务前置条件放服务层与 `RuleEngine`；跨章类型归属已定稿（5.6）：第 8 章 Agent 输出契约不进 `domain/`，第 10 章判定值对象 `CheckResult`/`DiceRoll`/`Modifier` 放 `domain/rules/types.py`；事件 `params`/`result` 的 JSON 可序列化校验在 `EventLog.stamp()` 做一次。
+4. 模型层只做结构校验（类型、范围、跨字段、引用完整性），业务前置条件放服务层与 `RuleEngine`；跨章类型归属已定稿（5.6）：第 8 章 Agent 输出契约不进 `domain/`，第 10 章判定值对象 `CheckResult`/`DiceRoll`/`Modifier` 放 `domain/rules/types.py`；v0.2 的 `CharacterCard` DTO（5.7）同样 `extra="forbid"` + 冻结，只存在于 API 边界；事件 `params`/`result` 的 JSON 可序列化校验在 `EventLog.stamp()` 做一次。
 5. 事件版本策略方案 B 已被第 14 章采纳（`EventLog` 侧 `event_schema` upcaster 注册表，不改 `Event` 基线；快照版本记在 `Snapshot` 包装），迁移固定“读原始 JSON → upcast 链 → 当前模型校验 → 失败终止回放”四步，M1 按此实现。
 6. 不建议引入 SQLModel / msgspec：前者破坏 domain 依赖方向，后者造成双校验栈；eventsourcing 只作参考设计（BSD-3-Clause，无传染性风险）。
