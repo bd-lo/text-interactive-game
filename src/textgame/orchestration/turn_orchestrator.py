@@ -8,7 +8,7 @@ M2 流程（跳过项以 TODO 标注）：
 1. 幂等表命中 → 同参回放首次 ``TurnResult``（零写入）/ 异参 ``CONFLICT``；
 2. 载入存档 → ``NOT_FOUND``；CAS 版本不符 → ``CONFLICT``；
 3. 构造 ``ToolContext`` 与感知切片；4. 解析失败 → ``INVALID_INPUT``（零写入）；
-5. TODO(006) 规则引擎前置判定（``rules`` 预留）；
+5. 规则引擎前置判定（``rules`` 注入时对写工具执行 L0 硬约束，007 接线）；
 6. 工具门 → ActionService 草稿事件；7. 叙事 → 合并进事件 ``result``；
 8. 无事件（READ_ONLY）→ 直接成功；有事件 → ``GameEngine.submit`` 原子提交；
 9. 成功结果写幂等表；任何异常 → ``INTERNAL``（零写入）。
@@ -86,12 +86,19 @@ class IntentParserLike(Protocol):
 
 
 class RuleEngineLike(Protocol):
-    """007 ``RuleEngine`` 的最小前置判定接口（M2 默认 ``None``，跳过）。"""
+    """007 ``RuleEngine`` 的前置判定接口（签名与 ``domain.rules.engine.RuleEngine`` 一致）。"""
 
     def evaluate_preconditions(
-        self, ctx: ToolContext, tool: str, args: dict[str, Any], state: GameState
+        self,
+        *,
+        tool: str,
+        args: dict[str, Any],
+        actor_id: str,
+        turn_id: int,
+        save_seed: str,
+        state: GameState,
     ) -> Result:
-        """确定性前置判定；失败返回 ``Result.fail(...)``。"""
+        """确定性前置判定；失败返回 ``Result.fail(...)``，成功 ``data={"allowed": True}``。"""
         ...
 
 
@@ -389,8 +396,25 @@ class TurnOrchestrator:
                 text=gate_result.message or _ACTION_REJECTED_TEXT,
             )
 
-        # TODO(007): rules 非 None 时先做确定性前置判定（M2 默认跳过，由服务层 L0 自检兜底）。
+        # 007 接线（契约 §4.5 步骤 7）：写工具在 gate 产出草稿事件后、提交前再过一次
+        # RuleEngine 的 L0 硬约束（只读工具不产事件，不需要前置判定）；失败零写入。
         drafts = list(gate_result.events)
+        if self._rules is not None and drafts:
+            preconditions = self._rules.evaluate_preconditions(
+                tool=outcome.tool,
+                args=outcome.args,
+                actor_id=ctx.actor_id,
+                turn_id=ctx.turn_id,
+                save_seed=ctx.save_seed,
+                state=state,
+            )
+            if not preconditions.ok:
+                return TurnResult.failed(
+                    preconditions.error_code or ErrorCode.INTERNAL,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=preconditions.message or _ACTION_REJECTED_TEXT,
+                )
         result_data = dict(gate_result.data or {})
         text = self._render(action=outcome, events=drafts, state=state, result_data=result_data)
 

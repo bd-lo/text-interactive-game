@@ -16,9 +16,11 @@ from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.rng import save_seed_from_settings
 from textgame.config.settings import get_settings
+from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import PLAYER_ID
 from textgame.llm.client import DisabledLLMClient
 from textgame.orchestration.intent import DeterministicIntentParser
+from textgame.orchestration.narrator import TemplateNarrator
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.persistence.memory import InMemoryRepository
 from textgame.services.action_service import ActionService
@@ -48,6 +50,8 @@ def _build_app() -> FastAPI:
         action=action,
         parser=parser,
         gate=ToolGate(registry=registry, query=query, action=action),
+        narrator=TemplateNarrator(),
+        rules=RuleEngine(),
         save_seed_default=save_seed_from_settings(settings.seed),
     )
     return create_app(orchestrator=orchestrator, query_service=query)
