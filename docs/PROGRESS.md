@@ -47,7 +47,7 @@
 
 ## 7. 当前状态与下一步
 
-- 当前状态：开发文档 v0.2 已产出（`docs/开发文档.md`，23 章，含 Vue 3 前端设计；待评审）；代码骨架尚未开始。
+- 当前状态：开发文档 v0.3 已产出（`docs/开发文档.md`，23 章，含 Vue 3 前端设计；开发计划已按 vibe coding 重构）；代码骨架尚未开始。
 - 当前阻塞：无。
-- 下一步：评审通过后进入 M1 骨架，新建 `docs/progress/001-2026-<日期>-bootstrap-skeleton.md`（主题用 ASCII kebab-case，见开发文档 22.2）。
+- 下一步：评审通过后进入 M1 骨架，按 vibe 切片推进（每切片一个 `docs/progress/NNN-YYYY-MM-DD-<主题>.md`，主题用 ASCII kebab-case，见开发文档 17、22 章）。
 - 需要 lead 决策：无。
