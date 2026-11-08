@@ -2,7 +2,7 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已完成（开发计划按 vibe coding 重构，待评审），代码骨架尚未开始
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架进行中** —— 001-walking-skeleton 已交付（uv 可复现环境 + 最小 FastAPI `/healthz` + 质量门配置），下一个切片 002-domain-models。
 
 ## 开发模式（v0.3）
 
@@ -23,26 +23,45 @@
 
 | 层 | 选型 |
 | --- | --- |
-| 语言 | Python 3.10+ |
+| 语言 | Python 3.10+（运行时 3.12，源码保持 3.10 语法兼容） |
+| 环境 / 依赖锁定 | uv 0.13.x：`uv.lock` + `uv sync --frozen`（运行时与 dev 依赖同锁） |
 | 领域模型 / 校验 | Pydantic v2 |
-| 持久化 | SQLAlchemy |
+| 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`） |
 | 接入层 | FastAPI |
 | 编排 | LangGraph（待评估是否改用自建 loop） |
 | 模型调用 | 统一 LLMClient 封装（仅 API 调用，不做本地训练 / RL，不直接调用 SDK） |
 | Web 前端（M6） | Vue 3 + TypeScript + Vite + Pinia + Vue Router（构建期 Node，产物由 FastAPI 托管） |
 
-## 目录结构（规划）
+## 本地开发环境（M1-001 已就绪）
+
+前置：安装 [uv](https://github.com/astral-sh/uv)（本机 0.13.7，位于 `%USERPROFILE%\.local\bin` 并已在 PATH）。Python 3.12 由 uv 自动下载管理；本仓库**不使用**全局 Python 或全局 Anaconda 环境装依赖，所有命令都在仓库根目录执行：
+
+```bash
+uv sync --frozen                                          # 按 uv.lock 安装 runtime + dev 依赖（首次会拉取 Python 3.12）
+uv run uvicorn textgame.main:app --reload --port 8000     # 启动服务
+curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"ok"}
+uv run ruff format --check . && uv run ruff check .        # lint / format
+uv run mypy src/textgame                                   # 类型检查（strict）
+uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
+uv run pytest -q                                           # 单测 + 集成测试
+uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
+```
+
+环境变量见 [.env.example](.env.example)（前缀 `TEXTGAME_`，默认值见开发文档第 16 章 16.5 表）；`.env` 不入库，禁止提交真实密钥。
+
+> **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
+
+## 目录结构（M1-001 现状）
 
 ```text
 .
-├── docs/
-│   ├── 开发文档.md          # 权威单文件（v0.2，23 章）
-│   ├── 开发文档/            # 按章拆分版（由单文件生成）
-│   ├── PROGRESS.md          # 总体进展总览
-│   └── progress/            # 单次开发进度文档 NNN-YYYY-MM-DD-<主题>.md
-├── src/                     # （待建立）领域层 / 服务层 / 工具层 / 编排层
-├── web/                     # （待建立，M6）Vue 3 + TypeScript 前端
-├── tests/                   # （待建立）
+├── docs/                 # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档
+├── src/textgame/         # 包根：main.py（uvicorn 入口）、api/（应用工厂 + /healthz）、config/（pydantic-settings）
+│   └── domain/ services/ tools/ agents/ orchestration/ llm/ persistence/   # M1–M5 占位包
+├── tests/                # unit/、integration/（replay/、security/ 随 M2/M3 建立）
+├── pyproject.toml        # 三层依赖分组 + ruff/mypy/pytest/coverage/import-linter 配置
+├── uv.lock               # 依赖锁定（验收一律 uv sync --frozen）
+├── .env.example          # 环境变量样例（可复制为 .env）
 └── README.md
 ```
 

@@ -1,0 +1,29 @@
+# textgame 质量门（开发文档第 16 章 16.5、第 17 章 004-ci-license-gate）
+# 只使用 uv 环境中的 ruff / mypy，不引入第二套工具版本；CI 门禁复用同一组命令。
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check --fix（lint，自动修复）
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format（格式化）
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy（strict 类型检查）
+        entry: uv run mypy src/textgame
+        language: system
+        pass_filenames: false
+        types: [python]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
