@@ -75,6 +75,8 @@ uv run pytest -q                                      # 单元 + 集成 + 回放
 uv run pre-commit run --all-files                     # 9 个 hook（含 secret-scan）
 
 # 依赖门禁（第 19 章 19.5）
+mkdir -p artifacts
+uv export --frozen --no-hashes --format requirements-txt > artifacts/requirements.lock.txt
 uv run pip-licenses --format=json --with-urls > artifacts/licenses.json
 uv run python scripts/check_licenses.py artifacts/licenses.json   # GPL/AGPL/LGPL/UNKNOWN → 阻断
 uv run pip-audit -r artifacts/requirements.lock.txt               # 已知漏洞
