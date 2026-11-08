@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,11 +23,16 @@ class TurnRequestBody(BaseModel):
 
 
 class CreateGameBody(BaseModel):
-    """``POST /api/v1/games`` 请求体；可省略，``seed`` 缺省用服务端默认种子。"""
+    """``POST /api/v1/games`` 请求体；可省略，``seed`` 缺省用服务端默认种子。
+
+    M3 新增可选 ``scenario``（``m2`` 单场景 / ``m3`` 多角色场景），缺省 ``m2``
+    保持 M2 契约与回放不变（D-M3-3）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     seed: int | None = Field(default=None, ge=0)
+    scenario: Literal["m2", "m3"] = "m2"
 
 
 class CreatedGameResponse(BaseModel):
@@ -55,7 +60,37 @@ class GameViewResponse(BaseModel):
     last_text: str | None = None
 
 
+class AuditRecordResponse(BaseModel):
+    """``GET /api/v1/games/{game_id}/audit`` 单条审计记录（读模型）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn_id: int
+    attempt: int
+    proposal_id: str
+    resolution_id: str | None = None
+    actor_id: str
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    reason: str
+    priority: int
+    source: str
+    verdict: str | None = None
+    verdict_reason: str
+    status: Literal["committed", "conflicted", "aborted"]
+
+
+class AuditListResponse(BaseModel):
+    """``GET /api/v1/games/{game_id}/audit`` 200 响应（只读，零写入）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[AuditRecordResponse]
+
+
 __all__ = [
+    "AuditListResponse",
+    "AuditRecordResponse",
     "CreateGameBody",
     "CreatedGameResponse",
     "GameViewResponse",

@@ -1,36 +1,45 @@
 """内存仓储实现（M2 005 的默认 ``GameRepository``；008 的 SQLite 实现之前的过渡）。
 
-实现契约 §2.2/§6 的语义：
+实现契约 §2.2/§6 与 M3 §3.5 的语义：
 - ``commit``：CAS 版本 + 事件 ``seq`` 连续 + 事件 ``id`` 与序号一致，全部校验通过后
   一次性更新内存结构，失败**不部分写入**；
 - ``load``：当前状态行缺失时用「最新快照 + 之后事件」重建，无快照则从事件流（首条必须
-  是 ``game_created``）重建；两者都没有返回 ``None``；
-- 幂等表与快照表独立存储，不参与事务正确性（快照可随时删除重建）。
+  是 ``game_created``）重建；两者都没有返回 ``None``。重建出的 ``version`` 与 SQLite
+  实现同一规则（M3 D-M3-6，见 ``persistence.versioning``）：快照 ``version`` +
+  快照后 distinct ``turn_id`` 数，旧快照（version=0）以 ``last_seq`` 为 base 兜底；
+- 幂等表、快照表、M3 审计表独立存储，不参与事务正确性（快照可随时删除重建）；
+  审计只增（``save_audit`` 不覆盖、不删除，同 ``audit_uid`` 重投幂等）。
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from textgame.domain.events import Event
 from textgame.domain.reducers import apply_events
 from textgame.services.ports import (
+    AuditRecord,
     CommitPayload,
     GameRecord,
     IdempotencyRecord,
     SnapshotRecord,
 )
 
+from .versioning import rebuild_version
+
 
 class InMemoryRepository:
     """进程内 ``GameRepository``；单进程单写者使用，不做跨进程并发控制。"""
 
     def __init__(self) -> None:
-        """创建空仓储（无存档、无事件、无快照、无幂等记录）。"""
+        """创建空仓储（无存档、无事件、无快照、无幂等/审计记录）。"""
         self._current: dict[str, GameRecord] = {}
         self._events: dict[str, list[Event]] = {}
         self._snapshots: dict[str, list[SnapshotRecord]] = {}
         self._idempotency: dict[str, IdempotencyRecord] = {}
-        # current 行被删除后重建时仍需版本号与 last_seq（契约 §6 的“空档重建”）。
-        self._versions: dict[str, int] = {}
+        self._audit: dict[str, list[AuditRecord]] = {}
+        self._audit_keys: set[tuple[str, int, int, str]] = set()
+        # current 行被删除后重建时仍需 last_seq（契约 §6 的“空档重建”）。
         self._last_seqs: dict[str, int] = {}
 
     # ------------------------------------------------------------------
@@ -44,12 +53,13 @@ class InMemoryRepository:
         events = self._events.get(game_id, [])
         if not events:
             return None
-        version = self._versions.get(game_id, 0)
+        version = rebuild_version(events)
         last_seq = self._last_seqs.get(game_id, events[-1].seq or 0)
         snapshot = self.latest_snapshot(game_id)
         if snapshot is not None:
             remaining = [event for event in events if (event.seq or 0) > snapshot.last_seq]
             state = apply_events(snapshot.state, remaining)
+            version = rebuild_version(events, snapshot=snapshot)
         else:
             state = apply_events(None, events)
         return GameRecord(
@@ -107,7 +117,6 @@ class InMemoryRepository:
             last_seq=payload.last_seq,
         )
         self._events[payload.game_id] = stored
-        self._versions[payload.game_id] = payload.new_version
         self._last_seqs[payload.game_id] = payload.last_seq
         return True
 
@@ -123,6 +132,32 @@ class InMemoryRepository:
     def save_idempotent(self, record: IdempotencyRecord) -> None:
         """保存幂等记录；同键覆盖（同键异参判定由编排层负责）。"""
         self._idempotency[record.key] = record
+
+    # ------------------------------------------------------------------
+    # 审计（M3 D-M3-7：只增）
+    # ------------------------------------------------------------------
+    def save_audit(self, records: Sequence[AuditRecord]) -> None:
+        """只追加审计行；同 ``audit_uid``（game/turn/attempt/proposal）已存在时跳过。"""
+        for record in records:
+            key = self._audit_key(record)
+            if key in self._audit_keys:
+                continue
+            self._audit_keys.add(key)
+            self._audit.setdefault(record.game_id, []).append(record)
+
+    def read_audit(self, game_id: str, *, turn_id: int | None = None) -> list[AuditRecord]:
+        """按 ``(turn_id, proposal_id, attempt)`` 升序返回；无存档返回空列表。"""
+        records = self._audit.get(game_id, [])
+        if turn_id is not None:
+            records = [record for record in records if record.turn_id == turn_id]
+        return sorted(
+            records, key=lambda record: (record.turn_id, record.proposal_id, record.attempt)
+        )
+
+    @staticmethod
+    def _audit_key(record: AuditRecord) -> tuple[str, int, int, str]:
+        """与 SQLite 审计主键 ``audit_uid`` 等价的去重键（保证只增语义一致）。"""
+        return (record.game_id, record.turn_id, record.attempt, record.proposal_id)
 
     # ------------------------------------------------------------------
     # 测试辅助（不属于协议）

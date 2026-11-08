@@ -1,30 +1,35 @@
 """进程入口: 组装依赖并暴露 uvicorn 目标 ``textgame.main:app``。
 
-组合根: ``Settings`` → SQLite 仓储（``prepare_db`` + ``init_schema`` +
-``SqliteRepository``）→ ``GameEngine`` → ``QueryService``/``ActionService`` →
-``ToolRegistry``（M2 六工具声明）→ ``IntentParseAgent``（M2 默认
-``DisabledLLMClient`` 离线 + 确定性关键词兜底）→ ``ToolGate`` → ``TurnOrchestrator``
-→ ``create_app``。本模块是唯一允许跨层 new 对象的位置 (第 4 章 4.2、第 16 章 16.1)。
+组合根: ``Settings`` → SQLite 仓储（``prepare_db`` + ``init_schema`` + ``SqliteRepository``）
+→ ``GameEngine`` → ``QueryService``/``ActionService`` → ``ToolRegistry``（M2 六工具声明）
+→ ``ToolGate`` → ``Resolver``（M3 纯函数裁决 + ``ToolGateRouter``）→ ``ActorDirectory``
+（服务端标签推导）→ ``DeterministicCharacterAgent``（M3 确定性角色 Agent + 场景计划表）
+→ ``AuditService`` → ``TurnOrchestrator`` → ``create_app``。本模块是唯一允许跨层 new 对象
+的位置 (第 4 章 4.2、第 16 章 16.1)。
 
-M2 采用第 3 章 §3.6 方案 A：解析/叙事默认确定性，真实 LLM 在 M5 接入；
-``DisabledLLMClient`` 保证默认装配零联网、可复现 (第 12 章 12.1)。
+M3 采用第 3 章 §3.6 方案 A（离线确定性）：解析/叙事/角色 Agent 默认确定性，真实 LLM 在
+M5 接入；``DisabledLLMClient`` 保证默认装配零联网、可复现 (第 12 章 12.1)。
 """
 
 from fastapi import FastAPI
 
+from textgame.agents.character_agent import DeterministicCharacterAgent
 from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.rng import save_seed_from_settings
 from textgame.config.settings import get_settings
 from textgame.domain.rules.engine import RuleEngine
-from textgame.domain.scenario import PLAYER_ID
+from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
 from textgame.llm.client import DisabledLLMClient
 from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
+from textgame.orchestration.resolver import Resolver, ToolGateRouter
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.persistence.database import init_schema, prepare_db
 from textgame.persistence.sqlite_repository import SqliteRepository
 from textgame.services.action_service import ActionService
+from textgame.services.actor_directory import ActorDirectory
+from textgame.services.audit_service import AuditService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
 from textgame.tools.builtin.m2 import build_m2_tool_registry
@@ -32,7 +37,7 @@ from textgame.tools.gate import ToolGate
 
 
 def _build_app() -> FastAPI:
-    """装配 M2 应用图（SQLite 仓储 + LLM 解析 Agent 离线兜底 + ToolGate + 模板叙事）。"""
+    """装配应用图（SQLite 仓储 + M3 多角色编排 + 离线确定性 Agent + 模板叙事 + 审计）。"""
     settings = get_settings()
     engine, _session_factory = prepare_db(settings.db_url)
     init_schema(engine)
@@ -41,6 +46,19 @@ def _build_app() -> FastAPI:
     query = QueryService(repo)
     action = ActionService(query)
     registry = build_m2_tool_registry()
+    gate = ToolGate(registry=registry, query=query, action=action)
+    rules = RuleEngine()
+    save_seed_default = save_seed_from_settings(settings.seed)
+    actors = ActorDirectory(nonplayer_tags=M3_NONPLAYER_TAGS)
+    resolver = Resolver(
+        rules=rules,
+        services=ToolGateRouter(gate),
+        actors=actors,
+        save_seed=save_seed_default,
+    )
+    character_agent = DeterministicCharacterAgent(M3_NPC_PLANS)
+    character_agents = dict.fromkeys(M3_NPC_PLANS, character_agent)
+    audit_service = AuditService(repo)
     parser = IntentParseAgent(
         DisabledLLMClient(),
         DeterministicIntentParser(),
@@ -52,12 +70,17 @@ def _build_app() -> FastAPI:
         query=query,
         action=action,
         parser=parser,
-        gate=ToolGate(registry=registry, query=query, action=action),
+        gate=gate,
         narrator=TemplateNarrator(),
-        rules=RuleEngine(),
-        save_seed_default=save_seed_from_settings(settings.seed),
+        rules=rules,
+        save_seed_default=save_seed_default,
+        registry=registry,
+        resolver=resolver,
+        actors=actors,
+        character_agents=character_agents,
+        audit=audit_service,
     )
-    return create_app(orchestrator=orchestrator, query_service=query)
+    return create_app(orchestrator=orchestrator, query_service=query, audit_service=audit_service)
 
 
 app = _build_app()

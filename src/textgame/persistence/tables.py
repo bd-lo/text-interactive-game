@@ -1,17 +1,19 @@
-"""SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency。
+"""SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency / audit_events。
 
-M2 契约 §6 与第 14 章 14.3：SQLAlchemy 2.0 同步 ORM + SQLite，建表走
-``Base.metadata.create_all``（M2 不引入 Alembic 迁移，风险由 Lead 在进度文档登记）。
+M2 契约 §6、M3 契约 §3.5/D-M3-6/D-M3-7 与第 14 章 14.3：SQLAlchemy 2.0 同步 ORM +
+SQLite，新库建表走 ``Base.metadata.create_all``；M3 起同时提供 Alembic 最小 baseline
+（``alembic/versions/0001_m3_baseline.py``，仅用于新库/测试，旧 M2 库由迁移责任登记）。
 SQLite 的 JSON 列统一用 ``TEXT`` 存规范 JSON 文本；``events.seq`` 是存档内全局单调
 序号、由 ``EventLog`` 分配（**不使用数据库自增**），``event_uid`` 唯一且即领域
-``Event.id``。事件表只 INSERT，不 UPDATE/DELETE（第 14 章 14.6 写入口禁令）。
+``Event.id``。事件表只 INSERT，不 UPDATE/DELETE（第 14 章 14.6 写入口禁令）；M3 新增的
+``audit_events`` 同为只增表（审计只 INSERT，不 UPDATE/DELETE）。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -52,6 +54,9 @@ class SnapshotRow(Base):
     state_json: Mapped[str] = mapped_column(Text, nullable=False)
     state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # M3 D-M3-6：快照对应的提交版本号；旧 M2 快照/未显式传值时为 0，读取端按
+    # 「last_seq + 快照后 distinct turn 数」兜底（见 persistence.versions）。
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -75,4 +80,34 @@ class IdempotencyRow(Base):
     store_key: Mapped[str] = mapped_column(String(192), primary_key=True)
     params_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuditEventRow(Base):
+    """M3 审计只增表（契约 §3.5/D-M3-7）：每回合每提案一行，只 INSERT。
+
+    ``audit_uid`` 为主键，由 ``(game_id, turn_id, attempt, proposal_id)`` 确定性生成，
+    重复投递同一批审计行时按「已存在则不覆盖、不删除」处理（INSERT OR IGNORE）；
+    ``args_json`` 存提案参数的规范 JSON 文本；``status`` 固定
+    ``{committed, conflicted, aborted}``，与 ``verdict`` 分离（禁止混写）。
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (Index("ix_audit_events_game_turn", "game_id", "turn_id"),)
+
+    audit_uid: Mapped[str] = mapped_column(String(192), primary_key=True)
+    game_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    turn_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposal_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    resolution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool: Mapped[str] = mapped_column(String(64), nullable=False)
+    args_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verdict_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

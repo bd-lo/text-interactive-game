@@ -11,17 +11,26 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import uuid4
 
 from textgame.domain.events import Event, EventLog, EventType
 from textgame.domain.hashing import state_hash
 from textgame.domain.models import GameState
 from textgame.domain.results import ErrorCode, Result
-from textgame.domain.scenario import PLAYER_ID, ROOM_ENTRY, build_initial_state
+from textgame.domain.scenario import (
+    PLAYER_ID,
+    ROOM_ENTRY,
+    build_initial_state,
+    build_m3_state,
+)
 from textgame.services.ports import CommitPayload, GameRepository, SnapshotRecord
+
+Scenario = Literal["m2", "m3"]
 
 _INITIAL_SNAPSHOT_VERSION = 1
 _GAME_ID_PREFIX = "game_"
+_SCENARIOS: frozenset[str] = frozenset({"m2", "m3"})
 
 
 class GameEngine:
@@ -47,19 +56,28 @@ class GameEngine:
         save_seed: str,
         idempotency_key: str | None = None,
         game_id: str | None = None,
+        scenario: Scenario = "m2",
     ) -> Result:
         """创建存档：``game_created`` 首事件（seq=1）+ 当前状态 + 初始快照（契约 §3.2）。
 
+        ``scenario`` 为 M3 新增（``m2``=M2 单场景，默认，保证 M2 golden 不回归；
+        ``m3``=多角色场景，见 ``domain/scenario.py::build_m3_state``）。
         返回 ``Result.data = {"game_id", "turn", "version", "snapshot_version", "save_seed"}``；
         同一 ``game_id`` 已存在时返回 ``CONFLICT``。
         """
         if not save_seed:
             return Result.fail(ErrorCode.INVALID_INPUT, "save_seed must be a non-empty string")
+        if scenario not in _SCENARIOS:
+            return Result.fail(ErrorCode.INVALID_INPUT, f"unknown scenario: {scenario!r}")
         new_game_id = game_id or f"{_GAME_ID_PREFIX}{uuid4().hex}"
         if self._repo.load(new_game_id) is not None:
             return Result.fail(ErrorCode.CONFLICT, f"game already exists: {new_game_id}")
 
-        initial_state = build_initial_state(save_seed=save_seed)
+        initial_state = (
+            build_m3_state(save_seed=save_seed)
+            if scenario == "m3"
+            else build_initial_state(save_seed=save_seed)
+        )
         game_created = Event(
             turn_id=1,
             actor_id="system",
@@ -101,6 +119,7 @@ class GameEngine:
             new_state,
             snapshot_version=_INITIAL_SNAPSHOT_VERSION,
             last_seq=1,
+            version=1,
         )
         return Result.success(
             data={
@@ -172,13 +191,15 @@ class GameEngine:
         )
         if not self._repo.commit(payload):
             return Result.fail(ErrorCode.CONFLICT, "concurrent write detected")
-        self._maybe_save_snapshot(game_id, new_state, last_seq=last_seq)
+        self._maybe_save_snapshot(game_id, new_state, last_seq=last_seq, version=new_version)
         return Result.success(
             data={"version": new_version, "turn_id": new_state.turn},
             events=stamped,
         )
 
-    def _maybe_save_snapshot(self, game_id: str, state: GameState, *, last_seq: int) -> None:
+    def _maybe_save_snapshot(
+        self, game_id: str, state: GameState, *, last_seq: int, version: int
+    ) -> None:
         """按阈值追加派生快照；快照只是缓存，写失败不影响提交正确性。"""
         latest = self._repo.latest_snapshot(game_id)
         if latest is None:
@@ -187,6 +208,7 @@ class GameEngine:
                 state,
                 snapshot_version=_INITIAL_SNAPSHOT_VERSION,
                 last_seq=last_seq,
+                version=version,
             )
             return
         events_since = last_seq - latest.last_seq
@@ -197,10 +219,11 @@ class GameEngine:
                 state,
                 snapshot_version=latest.snapshot_version + 1,
                 last_seq=last_seq,
+                version=version,
             )
 
     def _save_snapshot(
-        self, game_id: str, state: GameState, *, snapshot_version: int, last_seq: int
+        self, game_id: str, state: GameState, *, snapshot_version: int, last_seq: int, version: int
     ) -> None:
         """写一条快照记录（``state_hash`` 由 ``domain.hashing`` 统一计算）。"""
         self._repo.save_snapshot(
@@ -212,6 +235,7 @@ class GameEngine:
                 state=state,
                 state_hash=state_hash(state),
                 schema_version=1,
+                version=version,
             )
         )
 

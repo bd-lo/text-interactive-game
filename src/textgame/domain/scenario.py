@@ -11,7 +11,8 @@
 
 from __future__ import annotations
 
-from typing import Final
+from dataclasses import dataclass, field
+from typing import Any, Final
 
 from textgame.domain.models import NPC, Character, GameState, Item, RngState, Room
 from textgame.domain.types import Direction
@@ -146,3 +147,88 @@ def build_initial_state(*, save_seed: str) -> GameState:
         quests={},
         rng_state=RngState(save_seed=save_seed, last_seq=0),
     )
+
+
+# ---------------------------------------------------------------------------
+# M3 多角色场景（契约 .work/m3-contract.md §3.6；不改 build_initial_state，M2 golden 不回归）
+# ---------------------------------------------------------------------------
+#: 两名「拾荒者」非玩家角色：用户 `Character` 建模以具备背包（第 5 章 NPC 无 inventory），
+#: 用于演示「同回合抢同一物品」的冲突提案与审计（D-M3-4）。
+M3_NPC_SCAVENGER_A: Final[str] = "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV"
+M3_NPC_SCAVENGER_B: Final[str] = "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW"
+M3_NPC_SCAVENGER_A_NAME: Final[str] = "拾荒者甲"
+M3_NPC_SCAVENGER_B_NAME: Final[str] = "拾荒者乙"
+
+#: 非玩家角色的细粒度授权标签（服务端静态配置，禁止来自模型输出，第 7 章 §7.3）。
+M3_NONPLAYER_TAGS: Final[dict[str, frozenset[str]]] = {
+    M3_NPC_SCAVENGER_A: frozenset({"npc", "npc:scavenger"}),
+    M3_NPC_SCAVENGER_B: frozenset({"npc", "npc:scavenger"}),
+}
+
+
+@dataclass(frozen=True)
+class PlanStep:
+    """确定性角色 Agent 的一条计划动作（第 8 章 CharacterAgent 的 M3 裁剪版）。"""
+
+    turn_id: int
+    tool: str
+    args: dict[str, Any] = field(default_factory=dict)
+    reason: str = "npc_plan"
+
+
+#: 十回合多角色回放用的 NPC 计划表（turn_id = 玩家第 N 次输入对应的回合号）。
+#: turn 2 两名拾荒者同回合抢同一瓶治疗药水 —— M3 冲突演示（Resolver 只让一个生效）。
+M3_NPC_PLANS: Final[dict[str, tuple[PlanStep, ...]]] = {
+    M3_NPC_SCAVENGER_A: (
+        PlanStep(2, "take_item", {"item_id": ITEM_POTION}, "抢先把药水收进背包"),
+        PlanStep(4, "move_to", {"direction": "north"}, "跟着往地窖去"),
+        PlanStep(6, "move_to", {"direction": "south"}, "退回入口"),
+        PlanStep(10, "take_item", {"item_id": ITEM_POTION}, "再摸一次那瓶药水"),
+    ),
+    M3_NPC_SCAVENGER_B: (
+        PlanStep(2, "take_item", {"item_id": ITEM_POTION}, "也盯上了那瓶药水"),
+        PlanStep(5, "move_to", {"direction": "north"}, "摸黑下到地窖"),
+        PlanStep(7, "take_item", {"item_id": ITEM_TORCH}, "想捡起火把"),
+        PlanStep(9, "move_to", {"direction": "south"}, "回到入口"),
+    ),
+}
+
+
+def _scavenger(*, character_id: str, name: str) -> Character:
+    """构造一名拾荒者非玩家角色（固定属性，保证 state_hash 可复算）。"""
+    return Character(
+        id=character_id,
+        name=name,
+        attributes={
+            "str": 10,
+            "dex": 12,
+            "con": 11,
+            "int": 9,
+            "wis": 10,
+            "cha": 8,
+            "max_hp": 12,
+        },
+        inventory=[],
+        location=ROOM_ENTRY,
+        hp=12,
+        created_turn=1,
+    )
+
+
+def build_m3_state(*, save_seed: str) -> GameState:
+    """构造 M3 多角色初始状态：M2 单场景 + 两名拾荒者（纯函数、固定 ID、零 IO）。
+
+    ``build_initial_state`` 保持不变（M2 golden 不回归）；本函数只在其结果上追加角色，
+    房间/物品/NPC 与 M2 完全一致。
+    """
+    base = build_initial_state(save_seed=save_seed)
+    characters = {
+        **base.characters,
+        M3_NPC_SCAVENGER_A: _scavenger(
+            character_id=M3_NPC_SCAVENGER_A, name=M3_NPC_SCAVENGER_A_NAME
+        ),
+        M3_NPC_SCAVENGER_B: _scavenger(
+            character_id=M3_NPC_SCAVENGER_B, name=M3_NPC_SCAVENGER_B_NAME
+        ),
+    }
+    return base.model_copy(update={"characters": characters})

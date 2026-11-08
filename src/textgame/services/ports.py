@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -26,7 +27,11 @@ class GameRecord:
 
 @dataclass(frozen=True)
 class SnapshotRecord:
-    """派生快照；``last_seq`` 为快照覆盖到的全局事件序号 (第 14 章 14.4)。"""
+    """派生快照；``last_seq`` 为快照覆盖到的全局事件序号 (第 14 章 14.4)。
+
+    ``version`` 为快照对应的提交版本号（M3 契约 D-M3-6）：M2 旧数据/测试缺省为 0，
+    仓储重建版本时按「快照 ``last_seq`` 兜底 + 快照后 distinct ``turn_id`` 数」计算。
+    """
 
     game_id: str
     snapshot_version: int
@@ -35,6 +40,32 @@ class SnapshotRecord:
     state: GameState
     state_hash: str
     schema_version: int = 1
+    version: int = 0
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    """审计行：每回合每提案一行，只 INSERT、不 UPDATE/DELETE (M3 契约 D-M3-7)。
+
+    ``status`` 固定 ``{committed, conflicted, aborted}``，与裁决 ``verdict``
+    （``applied/rejected/conflict/deferred`` 或未裁决 ``None``）分离，禁止混写。
+    ``args`` 为提案工具参数原样（仓储内序列化为 JSON 文本）。
+    """
+
+    game_id: str
+    turn_id: int
+    attempt: int
+    proposal_id: str
+    resolution_id: str | None
+    actor_id: str
+    tool: str
+    args: dict[str, Any]
+    reason: str
+    priority: int
+    source: str
+    verdict: str | None
+    verdict_reason: str
+    status: str
 
 
 @dataclass(frozen=True)
@@ -93,4 +124,15 @@ class GameRepository(Protocol):
 
     def commit(self, payload: CommitPayload) -> bool:
         """原子提交；版本冲突/序号不连续时返回 ``False`` 且不部分写入。"""
+        ...
+
+    def save_audit(self, records: Sequence[AuditRecord]) -> None:
+        """只 INSERT 审计行（单事务批量）；已存在同 ``audit_uid`` 时不得覆盖或删除。"""
+        ...
+
+    def read_audit(self, game_id: str, *, turn_id: int | None = None) -> list[AuditRecord]:
+        """按 ``(turn_id, proposal_id)`` 升序读取审计行；``turn_id=None`` 返回全部。
+
+        ``game_id`` 不存在时返回空列表（不报错）。
+        """
         ...

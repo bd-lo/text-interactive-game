@@ -23,8 +23,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from textgame.domain.events import Event, EventLog, EventType
 from textgame.domain.hashing import canonical_json, state_hash
 from textgame.domain.models import GameState
-from textgame.domain.scenario import PLAYER_ID, ROOM_CELLAR, ROOM_ENTRY, build_initial_state
+from textgame.domain.scenario import (
+    ITEM_TORCH,
+    PLAYER_ID,
+    ROOM_CELLAR,
+    ROOM_ENTRY,
+    build_initial_state,
+)
 from textgame.persistence.database import create_engine_and_session, init_schema
+from textgame.persistence.memory import InMemoryRepository
 from textgame.persistence.sqlite_repository import SqliteRepository
 from textgame.persistence.tables import EventRow, GameStateCurrentRow, SnapshotRow
 from textgame.services.dto import TurnResult
@@ -692,3 +699,186 @@ def test_game_engine_snapshots_persist_and_restore(tmp_path: Path) -> None:
     assert final.last_seq == 7
     assert len(repo2.read_events(GAME_ID)) == 7
     engine2.dispose()
+
+
+# ===========================================================================
+# M3 D-M3-6 只增补：版本持久化与 current 行缺失后的版本重建
+#
+# 既有 M2 断言（version=last_seq）全部保持原样；以下新增用例覆盖 M3 多事件单回合后
+# `snapshots.version` 的写入与「快照 version + 快照后 distinct turn 数」重建规则，
+# 以及旧 M2 快照（version=0）兜底与无快照空档重建两种分支。
+# ===========================================================================
+def _take_then_move_drafts(*, turn_id: int) -> list[Event]:
+    """M3 多事件单回合：同一回合先拿火把再向北移动（2 条事件、1 次提交）。"""
+    return [
+        Event(
+            turn_id=turn_id,
+            actor_id=PLAYER_ID,
+            method="take_item",
+            event_type=EventType.ITEM_TAKEN,
+            params={"item_id": ITEM_TORCH, "from_room": ROOM_ENTRY},
+            result={"inventory_size": 1},
+        ),
+        _move_draft(turn_id=turn_id, from_room=ROOM_ENTRY, to_room=ROOM_CELLAR, direction="north"),
+    ]
+
+
+def _use_torch_draft(*, turn_id: int) -> Event:
+    """单事件回合：消耗背包里的火把（ITEM_CONSUMED）。"""
+    return Event(
+        turn_id=turn_id,
+        actor_id=PLAYER_ID,
+        method="use_item",
+        event_type=EventType.ITEM_CONSUMED,
+        params={"item_id": ITEM_TORCH},
+        result={"consumed": True},
+    )
+
+
+def _versioned_snapshot(
+    state: GameState, *, snapshot_version: int, last_seq: int, version: int
+) -> SnapshotRecord:
+    """M3 快照：显式携带提交版本号（`SnapshotRecord.version`）。"""
+    return SnapshotRecord(
+        game_id=GAME_ID,
+        snapshot_version=snapshot_version,
+        turn_id=state.turn,
+        last_seq=last_seq,
+        state=state,
+        state_hash=state_hash(state),
+        schema_version=1,
+        version=version,
+    )
+
+
+def test_m3_versioned_snapshot_roundtrip_and_rebuild(tmp_path: Path) -> None:
+    """M3：快照写 version；删 current 行后 version = 快照 version + 快照后 distinct turn。"""
+    _engine, factory, repo = _open(_db_url(tmp_path))
+    _create_game(repo)  # 初始快照 v1（M2 helper 不传 version，先按旧口径落 0）
+    initial = repo.load(GAME_ID)
+    assert initial is not None and initial.version == 1
+    # 模拟 M3 GameEngine.create_game：初始快照带 version=1 重写同一 snapshot_version
+    repo.save_snapshot(
+        _versioned_snapshot(initial.state, snapshot_version=1, last_seq=1, version=1)
+    )
+    assert repo.latest_snapshot(GAME_ID) is not None
+    assert repo.latest_snapshot(GAME_ID).version == 1
+
+    # 回合 2：2 条事件 1 次提交 → version=2、last_seq=3；快照记录 version=2
+    _commit_next_turn(repo, _take_then_move_drafts(turn_id=2))
+    record_turn2 = repo.load(GAME_ID)
+    assert record_turn2 is not None
+    assert (record_turn2.version, record_turn2.last_seq) == (2, 3)
+    repo.save_snapshot(
+        _versioned_snapshot(
+            record_turn2.state, snapshot_version=2, last_seq=3, version=record_turn2.version
+        )
+    )
+    snapshot = repo.latest_snapshot(GAME_ID)
+    assert snapshot is not None
+    assert (snapshot.snapshot_version, snapshot.version, snapshot.last_seq) == (2, 2, 3)
+
+    # 回合 3：1 条事件 → version=3、last_seq=4（不再写快照）
+    _commit_next_turn(repo, [_use_torch_draft(turn_id=3)])
+    before = repo.load(GAME_ID)
+    assert before is not None
+    assert (before.version, before.last_seq) == (3, 4)
+
+    with factory() as session:
+        versions = session.scalars(
+            select(SnapshotRow.version).order_by(SnapshotRow.snapshot_version.asc())
+        ).all()
+    assert list(versions) == [1, 2]  # snapshots.version 列落库往返
+
+    _delete_current_row(factory)
+    rebuilt = repo.load(GAME_ID)
+    assert rebuilt is not None
+    assert rebuilt.version == 3  # 2 + 快照后 distinct turn 数（仅回合 3）
+    assert rebuilt.last_seq == 4
+    assert state_hash(rebuilt.state) == state_hash(before.state)
+
+    # 重建后可继续提交：expected_version=3 → version=4，事件 seq 续接
+    _play_moves(repo, count=1)
+    final = repo.load(GAME_ID)
+    assert final is not None
+    assert final.version == 4
+    assert final.last_seq == 5
+    assert len(repo.read_events(GAME_ID)) == 5
+
+
+def test_m3_legacy_snapshot_without_version_falls_back_with_multi_events(tmp_path: Path) -> None:
+    """旧 M2 快照（version=0）遇 M3 多事件数据：base 取 last_seq 兜底后重建正确版本。"""
+    _engine, factory, repo = _open(_db_url(tmp_path))
+    _create_game(repo)  # 初始快照 v1，version 缺省 0（M2 旧数据口径）
+    snapshot = repo.latest_snapshot(GAME_ID)
+    assert snapshot is not None and snapshot.version == 0
+
+    _commit_next_turn(repo, _take_then_move_drafts(turn_id=2))
+    _commit_next_turn(repo, [_use_torch_draft(turn_id=3)])
+    before = repo.load(GAME_ID)
+    assert before is not None
+    assert (before.version, before.last_seq) == (3, 4)
+    assert len(repo.read_events(GAME_ID)) == 4  # 事件数 4 > 提交数 3（多事件回合）
+
+    _delete_current_row(factory)
+    rebuilt = repo.load(GAME_ID)
+    assert rebuilt is not None
+    # 旧快照无 version：base=last_seq=1（M2 一事件一版本兜底）+ 快照后 2 个回合 = 3
+    assert rebuilt.version == 3 == before.version
+    assert rebuilt.last_seq == 4
+    assert state_hash(rebuilt.state) == state_hash(before.state)
+
+
+def test_m3_rebuild_from_events_uses_distinct_turns_when_no_snapshot(tmp_path: Path) -> None:
+    """无快照空档重建：version = 事件流 distinct turn_id 数（多事件回合不重复计数）。"""
+    _engine, factory, repo = _open(_db_url(tmp_path))
+    _create_game(repo, save_snapshot=False)
+    _commit_next_turn(repo, _take_then_move_drafts(turn_id=2))
+    _commit_next_turn(repo, [_use_torch_draft(turn_id=3)])
+    before = repo.load(GAME_ID)
+    assert before is not None
+    assert (before.version, before.last_seq) == (3, 4)
+    assert repo.latest_snapshot(GAME_ID) is None
+
+    _delete_current_row(factory)
+    rebuilt = repo.load(GAME_ID)
+    assert rebuilt is not None
+    assert rebuilt.version == 3  # distinct turn：{1, 2, 3}，不是事件数 4
+    assert rebuilt.last_seq == 4
+    assert rebuilt.state.turn == 3
+    assert state_hash(rebuilt.state) == state_hash(before.state)
+
+
+def test_m3_memory_repository_rebuilds_version_with_same_rule() -> None:
+    """内存仓储 current 行丢失后与 SQLite 同规则重建版本（快照 version + distinct turn）。"""
+    repo = InMemoryRepository()
+    game_engine = GameEngine(repo)
+    created = game_engine.create_game(save_seed=SAVE_SEED, game_id=GAME_ID)
+    assert created.ok, created.message
+    assert created.data is not None
+    assert created.data["version"] == 1
+    snapshot = repo.latest_snapshot(GAME_ID)
+    assert snapshot is not None and snapshot.version == 1  # 引擎初始快照写 version=1
+
+    multi = game_engine.submit(
+        game_id=GAME_ID,
+        expected_version=1,
+        drafts=_take_then_move_drafts(turn_id=2),
+    )
+    assert multi.ok, multi.message
+    single = game_engine.submit(
+        game_id=GAME_ID,
+        expected_version=2,
+        drafts=[_use_torch_draft(turn_id=3)],
+    )
+    assert single.ok, single.message
+    before = repo.load(GAME_ID)
+    assert before is not None
+    assert (before.version, before.last_seq) == (3, 4)
+
+    repo.drop_current_state(GAME_ID)
+    rebuilt = repo.load(GAME_ID)
+    assert rebuilt is not None
+    assert rebuilt.version == 3 == before.version  # 1 + 快照后 distinct turn 数（2、3）
+    assert rebuilt.last_seq == 4
+    assert state_hash(rebuilt.state) == state_hash(before.state)

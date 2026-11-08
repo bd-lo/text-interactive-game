@@ -1,0 +1,412 @@
+{
+  "_comment": "M3 多角色 golden 固定种子回放数据 (014)：save_seed=save-42、scenario=m3（M2 单场景 + 拾荒者甲/乙）、10 次玩家输入 + 场景计划表 NPC 计划；turn 2 两名拾荒者抢同一瓶药水（一个 applied、一个 rejected）。由 Lead 在该切片生产装配下一次性生成并逐字段核对；变更必须 Lead 审核并在进度文档登记（禁止 --snapshot-update 掩盖回归）。",
+  "save_seed": "save-42",
+  "create_game": {
+    "seed": 42,
+    "idempotency_key": "m3-golden-game-0001",
+    "scenario": "m3"
+  },
+  "script": [
+    "环顾四周",
+    "拿起火把",
+    "向北走",
+    "环顾四周",
+    "向南走",
+    "使用火把",
+    "向北走",
+    "拿起锈剑",
+    "环顾四周",
+    "向南走"
+  ],
+  "turns": [
+    {
+      "input": "环顾四周",
+      "attempted_turn": 2,
+      "ok": true,
+      "turn_id": 2,
+      "version": 2,
+      "last_seq": 2,
+      "event_ids": [
+        "evt_000002"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV"
+      ],
+      "event_methods": [
+        "take_item"
+      ],
+      "rng_seeds": [
+        4276527903601104023
+      ],
+      "state_hash": "35244a7133a1a54466488b63f7888055691d35c8e9869762d0732dbd18f7c9ca",
+      "text_len": 80,
+      "audit": [
+        {
+          "proposal_id": "p_000002_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV",
+          "tool": "take_item",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        },
+        {
+          "proposal_id": "p_000002_002",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW",
+          "tool": "take_item",
+          "verdict": "rejected",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "拿起火把",
+      "attempted_turn": 3,
+      "ok": true,
+      "turn_id": 3,
+      "version": 3,
+      "last_seq": 3,
+      "event_ids": [
+        "evt_000003"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+      ],
+      "event_methods": [
+        "take_item"
+      ],
+      "rng_seeds": [
+        6715782039362208377
+      ],
+      "state_hash": "9130e3146ce703103b65872679faf35bf5767a825bdc14ae91dcac1d6c1c02dd",
+      "text_len": 81,
+      "audit": [
+        {
+          "proposal_id": "p_000003_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "take_item",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "向北走",
+      "attempted_turn": 4,
+      "ok": true,
+      "turn_id": 4,
+      "version": 4,
+      "last_seq": 5,
+      "event_ids": [
+        "evt_000004",
+        "evt_000005"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV"
+      ],
+      "event_methods": [
+        "move_to",
+        "move_to"
+      ],
+      "rng_seeds": [
+        7447547345982631095,
+        5641340000373054542
+      ],
+      "state_hash": "c6291998a9ac4db56d3d0a6b44f9f127bf8a24d7d36841f438e87773e8c4fd30",
+      "text_len": 80,
+      "audit": [
+        {
+          "proposal_id": "p_000004_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        },
+        {
+          "proposal_id": "p_000004_002",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "环顾四周",
+      "attempted_turn": 5,
+      "ok": true,
+      "turn_id": 5,
+      "version": 5,
+      "last_seq": 6,
+      "event_ids": [
+        "evt_000006"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW"
+      ],
+      "event_methods": [
+        "move_to"
+      ],
+      "rng_seeds": [
+        2461770625397026168
+      ],
+      "state_hash": "e165889e6ccb9f9225cf0f2fb8f38157b27eaee68a99ccc33c0fcaf369b69ed8",
+      "text_len": 80,
+      "audit": [
+        {
+          "proposal_id": "p_000005_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "向南走",
+      "attempted_turn": 6,
+      "ok": true,
+      "turn_id": 6,
+      "version": 6,
+      "last_seq": 8,
+      "event_ids": [
+        "evt_000007",
+        "evt_000008"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV"
+      ],
+      "event_methods": [
+        "move_to",
+        "move_to"
+      ],
+      "rng_seeds": [
+        25627612846575405,
+        7678801924261954196
+      ],
+      "state_hash": "c152345993591981989959badcecdac75fbf5a42e84083571ff1b6ce5d9f658c",
+      "text_len": 80,
+      "audit": [
+        {
+          "proposal_id": "p_000006_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        },
+        {
+          "proposal_id": "p_000006_002",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "使用火把",
+      "attempted_turn": 7,
+      "ok": true,
+      "turn_id": 7,
+      "version": 7,
+      "last_seq": 9,
+      "event_ids": [
+        "evt_000009"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+      ],
+      "event_methods": [
+        "use_item"
+      ],
+      "rng_seeds": [
+        8850359531050518583
+      ],
+      "state_hash": "df1b59bda509f822036888e90697218423a98f12f9fb29b8d4792ef5fce1e93d",
+      "text_len": 80,
+      "audit": [
+        {
+          "proposal_id": "p_000007_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "use_item",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        },
+        {
+          "proposal_id": "p_000007_002",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW",
+          "tool": "take_item",
+          "verdict": "rejected",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "向北走",
+      "attempted_turn": 8,
+      "ok": true,
+      "turn_id": 8,
+      "version": 8,
+      "last_seq": 10,
+      "event_ids": [
+        "evt_000010"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+      ],
+      "event_methods": [
+        "move_to"
+      ],
+      "rng_seeds": [
+        1814399584448099817
+      ],
+      "state_hash": "9e0694498a94453e517ce5c73e82c65fc01972be908c5eacc73f3b4c552eceff",
+      "text_len": 84,
+      "audit": [
+        {
+          "proposal_id": "p_000008_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "拿起锈剑",
+      "attempted_turn": 9,
+      "ok": true,
+      "turn_id": 9,
+      "version": 9,
+      "last_seq": 12,
+      "event_ids": [
+        "evt_000011",
+        "evt_000012"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW"
+      ],
+      "event_methods": [
+        "take_item",
+        "move_to"
+      ],
+      "rng_seeds": [
+        2663123797185233838,
+        3746047893095763343
+      ],
+      "state_hash": "9ba15e5f80e7b361a8a64cc815fa20875d0be6464fae4fbc71405b24ad7a4b26",
+      "text_len": 80,
+      "audit": [
+        {
+          "proposal_id": "p_000009_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "take_item",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        },
+        {
+          "proposal_id": "p_000009_002",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJW",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "环顾四周",
+      "attempted_turn": 10,
+      "ok": true,
+      "turn_id": 9,
+      "version": 9,
+      "last_seq": 12,
+      "event_ids": [],
+      "event_actors": [],
+      "event_methods": [],
+      "rng_seeds": [],
+      "state_hash": "9ba15e5f80e7b361a8a64cc815fa20875d0be6464fae4fbc71405b24ad7a4b26",
+      "text_len": 92,
+      "audit": [
+        {
+          "proposal_id": "p_000010_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV",
+          "tool": "take_item",
+          "verdict": "rejected",
+          "status": "committed",
+          "attempt": 1
+        }
+      ]
+    },
+    {
+      "input": "向南走",
+      "attempted_turn": 10,
+      "ok": true,
+      "turn_id": 10,
+      "version": 10,
+      "last_seq": 13,
+      "event_ids": [
+        "evt_000013"
+      ],
+      "event_actors": [
+        "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+      ],
+      "event_methods": [
+        "move_to"
+      ],
+      "rng_seeds": [
+        6570372478413748740
+      ],
+      "state_hash": "df58e51d15dc96c8227ae662a4d633236b809aba214cebcbf648417d2e13158c",
+      "text_len": 87,
+      "audit": [
+        {
+          "proposal_id": "p_000010_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV",
+          "tool": "take_item",
+          "verdict": "rejected",
+          "status": "committed",
+          "attempt": 1
+        },
+        {
+          "proposal_id": "p_000010_001",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+          "tool": "move_to",
+          "verdict": "applied",
+          "status": "committed",
+          "attempt": 2
+        },
+        {
+          "proposal_id": "p_000010_002",
+          "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV",
+          "tool": "take_item",
+          "verdict": "rejected",
+          "status": "committed",
+          "attempt": 2
+        }
+      ]
+    }
+  ],
+  "final_state_hash": "df58e51d15dc96c8227ae662a4d633236b809aba214cebcbf648417d2e13158c",
+  "final_turn": 10,
+  "final_last_seq": 13,
+  "final_version": 10,
+  "event_total": 13,
+  "audit_total": 16,
+  "conflict_turn": 2,
+  "text_len_min": 80,
+  "text_len_max": 150
+}

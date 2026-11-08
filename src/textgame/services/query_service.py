@@ -6,16 +6,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
+from textgame.domain.events import Event
 from textgame.domain.models import Character, EntityRef, GameState, PerceptionSlice
+from textgame.domain.perception import filter_local_events
 from textgame.services.ports import GameRepository
 
 #: 感知切片实体种类（与 ``EntityRef.kind`` 的 Literal 对齐）。
 EntityKind = Literal["character", "room", "item", "npc", "quest"]
-
-#: 感知切片里 ``local_events`` 的 M2 上限（契约 §4.2 的裁剪：不读全局事件，先留空）。
-_LOCAL_EVENTS_LIMIT = 10
 
 
 class GameNotFoundError(LookupError):
@@ -77,14 +77,44 @@ class QueryService:
         *,
         turn_id: int,
         save_seed: str,
+        plan_hint: str | None = None,
+        events: Sequence[Event] = (),
     ) -> PerceptionSlice:
-        """构造角色的私有感知切片（第 8 章；M2 只含当前可见实体）。
+        """构造任意角色（玩家 ``Character`` 与 ``NPC``）的私有感知切片（第 8 章 §8.2）。
 
-        ``turn_id``/``save_seed`` 为 006 解析 Agent 的预留参数：M2 切片不携带随机种子，
-        也不读全局事件（``local_events`` 留空，避免角色越权看到他人事件）。
+        这是结构性防泄露的唯一组装点（第 8 章 §8.2、第 15 章 §15.4）：只按 actor 视角
+        裁剪当前房间可见实体、自己的背包物品、自己的事件与自己的私有记忆，绝不返回
+        ``GameState``/仓储句柄或其他角色的私有数据。玩家与 NPC 使用同一套可见性规则。
+
+        - ``actor_id`` 命中 ``state.characters`` 时用角色的 ``location``，命中
+          ``state.npcs`` 时用 NPC 的 ``room_id``；两者都不命中 → ``ValueError``
+          （契约 §4.2：内部调用方须保证 actor 合法）。
+        - ``visible_entities`` 只含“其他”实体：room + 房内 items/npcs/characters +
+          自己背包 items；actor 自身不作为实体引用返回（NPC 不返回自身 npc 引用，
+          角色不返回自身 character 引用），可见实体只描述 actor 之外的场景对象。
+        - ``private_memory`` 按 actor 隔离：角色取 ``private_memory_ref``，NPC 取
+          ``memory_ref``，两者都只放该 actor 自己的引用。
+        - ``plan_hint`` 只能由调用方显式注入（第 8 章 §8.2 构造规则 4：调度器注入，
+          不来自其他 Agent 输出），本方法不从 ``state`` 推导。
+        - ``local_events`` 只含 ``event.actor_id == actor_id`` 的最近 10 条（按 ``seq``
+          升序），过滤实现见 ``domain.perception.filter_local_events``；不接受全局流水。
+        - ``turn_id``/``save_seed`` 保留给解析 Agent 的调用签名（M2 契约 §4.2），
+          切片本身不携带随机种子。
         """
-        character = self._require_character(state, actor_id)
-        room = state.rooms[character.location]
+        character = state.characters.get(actor_id)
+        if character is not None:
+            room_id = character.location
+            own_inventory: Sequence[str] = character.inventory
+            private_memory = [character.private_memory_ref] if character.private_memory_ref else []
+        else:
+            npc = state.npcs.get(actor_id)
+            if npc is None:
+                raise ValueError(f"actor {actor_id} is not present in state")
+            room_id = npc.room_id
+            own_inventory = ()
+            private_memory = [npc.memory_ref]
+
+        room = state.rooms[room_id]
         entities: list[EntityRef] = [
             EntityRef(kind="room", id=room.id, name=room.name),
         ]
@@ -97,33 +127,37 @@ class QueryService:
             seen.add(key)
             entities.append(EntityRef(kind=kind, id=entity_id, name=name))
 
+        # 房间内物品（``room.item_ids`` 为唯一权威列表；悬空引用防御性跳过）。
         for item_id in room.item_ids:
             item = state.items.get(item_id)
             if item is not None:
                 add("item", item.id, item.name)
+        # 房间内 NPC：``room.npc_ids`` + 全量扫描兜底（防房间列表漏登记，M2 既有口径）；
+        # actor 自己是 NPC 时不得作为可见实体返回（可见实体只描述 actor 之外的场景对象）。
         for npc_id in room.npc_ids:
-            npc = state.npcs.get(npc_id)
-            if npc is not None:
-                add("npc", npc.id, npc.name)
-        for npc in state.npcs.values():
-            if npc.room_id == room.id:
-                add("npc", npc.id, npc.name)
+            room_npc = state.npcs.get(npc_id)
+            if room_npc is not None and room_npc.id != actor_id:
+                add("npc", room_npc.id, room_npc.name)
+        for other_npc in state.npcs.values():
+            if other_npc.room_id == room.id and other_npc.id != actor_id:
+                add("npc", other_npc.id, other_npc.name)
+        # 同房间其他角色（不含 actor 自己；其他房间角色一律不可见）。
         for other in state.characters.values():
             if other.id != actor_id and other.location == room.id:
                 add("character", other.id, other.name)
-        # 背包内物品也算“可见实体”，供“使用/喝”类解析匹配（契约 §3.5）。
-        for item_id in character.inventory:
+        # actor 自己背包内的物品也算“可见实体”，供“使用/喝”类解析匹配（契约 §3.5）；
+        # 其他角色的背包物品绝不进入本切片。
+        for item_id in own_inventory:
             item = state.items.get(item_id)
             if item is not None:
                 add("item", item.id, item.name)
 
-        private_memory = [character.private_memory_ref] if character.private_memory_ref else []
         return PerceptionSlice(
             actor_id=actor_id,
             visible_entities=entities,
-            local_events=[],
+            local_events=filter_local_events(events, actor_id),
             private_memory=private_memory,
-            plan_hint=None,
+            plan_hint=plan_hint,
         )
 
     def get_game_view(self, game_id: str) -> dict[str, Any]:

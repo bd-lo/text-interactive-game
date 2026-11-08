@@ -9,17 +9,22 @@
 - ``load``：current 行优先；缺失时用「最新快照 + ``after_seq`` 之后事件」经
   ``GameState.apply`` 重建，并用 ``state_hash`` 校验快照；无快照时要求事件流首条为
   ``game_created``（否则视为损坏抛 ``ValueError``）。current 行丢失时重建出的
-  ``version`` 取 ``last_seq``：M2 每次提交恰好 1 条事件，二者恒等（M3 多事件/提交时
-  需在快照上补 version 列，已登记风险）。
+  ``version`` 按 M3 D-M3-6：快照 ``version`` + 快照后事件里 distinct ``turn_id`` 数；
+  快照缺 ``version``（旧 M2 数据/0）时以 ``last_seq`` 为 base 兜底（M2 一事件一版本），
+  无快照时取事件流 distinct ``turn_id`` 数（见 ``persistence.versioning``）。
+- 审计（M3 D-M3-7）：``save_audit`` 单事务批量 **只 INSERT**（``INSERT OR IGNORE``：
+  同 ``audit_uid`` 已存在时不覆盖、不删除）；``read_audit`` 按
+  ``(turn_id, proposal_id, attempt)`` 升序，``turn_id=None`` 返回全部，无存档返回空。
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, Engine, func, select, update
+from sqlalchemy import CursorResult, Engine, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,20 +33,28 @@ from textgame.domain.hashing import canonical_json, state_hash
 from textgame.domain.models import GameState
 from textgame.domain.reducers import apply_events
 from textgame.services.ports import (
+    AuditRecord,
     CommitPayload,
     GameRecord,
     IdempotencyRecord,
     SnapshotRecord,
 )
 
-from .tables import EventRow, GameStateCurrentRow, IdempotencyRow, SnapshotRow
+from .tables import (
+    AuditEventRow,
+    EventRow,
+    GameStateCurrentRow,
+    IdempotencyRow,
+    SnapshotRow,
+)
+from .versioning import rebuild_version
 
 
 class SqliteRepository:
     """``GameRepository`` 的 SQLite 实现；每次调用使用独立 Session + 独立事务。"""
 
     def __init__(self, engine: Engine) -> None:
-        """绑定 Engine；建表由 ``init_schema(engine)`` 显式完成（M2 无迁移）。"""
+        """绑定 Engine；新库建表由 ``init_schema(engine)`` 完成（M3 另提供 Alembic baseline）。"""
         self._engine = engine
         self._session_factory: sessionmaker[Session] = sessionmaker(
             bind=engine, expire_on_commit=False
@@ -81,9 +94,9 @@ class SqliteRepository:
         last_seq = events[-1].seq if events else snapshot.last_seq
         if last_seq is None:  # pragma: no cover - _ensure_contiguous 已保证盖章态
             raise ValueError("stamped event must carry seq")
-        return GameRecord(
-            game_id=snapshot.game_id, state=state, version=last_seq, last_seq=last_seq
-        )
+        # M3 D-M3-6：version = 快照 version + 快照后 distinct turn 数（旧快照兜底见 versioning）。
+        version = rebuild_version(events, snapshot=snapshot)
+        return GameRecord(game_id=snapshot.game_id, state=state, version=version, last_seq=last_seq)
 
     def _rebuild_from_events(self, game_id: str, events: list[Event]) -> GameRecord:
         """无快照时从空档重放；首条必须是 ``game_created``，否则视为损坏。"""
@@ -99,7 +112,10 @@ class SqliteRepository:
         last_seq = events[-1].seq
         if last_seq is None:  # pragma: no cover - _ensure_contiguous 已保证盖章态
             raise ValueError("stamped event must carry seq")
-        return GameRecord(game_id=game_id, state=state, version=last_seq, last_seq=last_seq)
+        # 无快照兜底：每个成功提交推进一个回合 → version = 事件流 distinct turn_id 数。
+        return GameRecord(
+            game_id=game_id, state=state, version=rebuild_version(events), last_seq=last_seq
+        )
 
     # ------------------------------------------------------------ read_events
     def read_events(self, game_id: str, *, after_seq: int = 0) -> list[Event]:
@@ -138,6 +154,7 @@ class SqliteRepository:
             state=GameState.model_validate_json(row.state_json),
             state_hash=row.state_hash,
             schema_version=row.schema_version,
+            version=row.version,
         )
 
     def save_snapshot(self, snapshot: SnapshotRecord) -> None:
@@ -148,6 +165,7 @@ class SqliteRepository:
             "state_json": canonical_json(snapshot.state.model_dump(mode="json")),
             "state_hash": snapshot.state_hash,
             "schema_version": snapshot.schema_version,
+            "version": snapshot.version,
             "created_at": datetime.now(timezone.utc),
         }
         with self._session_factory() as session, session.begin():
@@ -211,6 +229,80 @@ class SqliteRepository:
                 row.params_hash = record.params_hash
                 row.result_json = result_json
                 row.created_at = now
+
+    # ------------------------------------------------------------------- audit
+    def save_audit(self, records: Sequence[AuditRecord]) -> None:
+        """单事务批量追加审计行（只 INSERT，不 UPDATE/DELETE；重复 ``audit_uid`` 忽略）。"""
+        items = list(records)
+        if not items:
+            return
+        now = datetime.now(timezone.utc)
+        statement = insert(AuditEventRow).prefix_with("OR IGNORE")
+        with self._session_factory() as session, session.begin():
+            session.execute(statement, [self._audit_values(record, now) for record in items])
+
+    def read_audit(self, game_id: str, *, turn_id: int | None = None) -> list[AuditRecord]:
+        """按 ``(turn_id, proposal_id, attempt)`` 升序读审计行；无存档返回空列表。"""
+        statement = select(AuditEventRow).where(AuditEventRow.game_id == game_id)
+        if turn_id is not None:
+            statement = statement.where(AuditEventRow.turn_id == turn_id)
+        statement = statement.order_by(
+            AuditEventRow.turn_id.asc(),
+            AuditEventRow.proposal_id.asc(),
+            AuditEventRow.attempt.asc(),
+        )
+        with self._session_factory() as session:
+            rows = session.scalars(statement).all()
+        return [self._audit_from_row(row) for row in rows]
+
+    @staticmethod
+    def _audit_uid(record: AuditRecord) -> str:
+        """确定性主键：同 ``(game_id, turn_id, attempt, proposal_id)`` 重投时保持只增。"""
+        return (
+            f"aud_{record.game_id}:{record.turn_id:06d}:{record.attempt:03d}:{record.proposal_id}"
+        )
+
+    @classmethod
+    def _audit_values(cls, record: AuditRecord, created_at: datetime) -> dict[str, Any]:
+        """``AuditRecord`` → 行字典（``args`` 存规范 JSON 文本；created_at 仅落库）。"""
+        return {
+            "audit_uid": cls._audit_uid(record),
+            "game_id": record.game_id,
+            "turn_id": record.turn_id,
+            "attempt": record.attempt,
+            "proposal_id": record.proposal_id,
+            "resolution_id": record.resolution_id,
+            "actor_id": record.actor_id,
+            "tool": record.tool,
+            "args_json": canonical_json(record.args),
+            "reason": record.reason,
+            "priority": record.priority,
+            "source": record.source,
+            "verdict": record.verdict,
+            "verdict_reason": record.verdict_reason,
+            "status": record.status,
+            "created_at": created_at,
+        }
+
+    @staticmethod
+    def _audit_from_row(row: AuditEventRow) -> AuditRecord:
+        """ORM 行 → ``AuditRecord``（``args_json`` 解析回 dict）。"""
+        return AuditRecord(
+            game_id=row.game_id,
+            turn_id=row.turn_id,
+            attempt=row.attempt,
+            proposal_id=row.proposal_id,
+            resolution_id=row.resolution_id,
+            actor_id=row.actor_id,
+            tool=row.tool,
+            args=json.loads(row.args_json),
+            reason=row.reason,
+            priority=row.priority,
+            source=row.source,
+            verdict=row.verdict,
+            verdict_reason=row.verdict_reason,
+            status=row.status,
+        )
 
     # ------------------------------------------------------------------ commit
     def commit(self, payload: CommitPayload) -> bool:

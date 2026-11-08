@@ -1,24 +1,20 @@
-"""回合编排 ``TurnOrchestrator`` (第 9 章 9.2 的 M2 裁剪版，契约 §4.5)。
+"""回合编排 ``TurnOrchestrator``（第 9 章 §9.2：M2 单角色裁剪版 + M3 多角色版）。
 
-依赖全部由构造注入（``repo/engine/query/action/parser/gate/narrator/rules``），006 可把
-``parser`` 换成 ``IntentParseAgent``、``gate`` 换成 ``ToolGate``，007 可注入
-``TemplateNarrator``；本类只负责串流程、幂等与错误码映射，不做规则计算、不写状态。
+依赖全部由构造注入（``repo/engine/query/action/parser/gate/narrator/rules``）；M3 再注入
+``registry/resolver/actors/character_agents/audit`` 后自动切换到「提案 → 队列 → 裁决 →
+CAS 提交 → 审计」的多角色链路（第 11 章 §11.1–§11.3、契约 ``.work/m3-contract.md`` §4）。
 
-M2 流程（跳过项以 TODO 标注）：
-1. 幂等表命中 → 同参回放首次 ``TurnResult``（零写入）/ 异参 ``CONFLICT``；
-2. 载入存档 → ``NOT_FOUND``；CAS 版本不符 → ``CONFLICT``；
-3. 构造 ``ToolContext`` 与感知切片；4. 解析失败 → ``INVALID_INPUT``（零写入）；
-5. 规则引擎前置判定（``rules`` 注入时对写工具执行 L0 硬约束，007 接线）；
-6. 工具门 → ActionService 草稿事件；7. 叙事 → 合并进事件 ``result``；
-8. 无事件（READ_ONLY）→ 直接成功；有事件 → ``GameEngine.submit`` 原子提交；
-9. 成功结果写幂等表；任何异常 → ``INTERNAL``（零写入）。
-
-叙事器缺席（005 默认）时用模块内 ``_fallback_text`` 生成 80–150 字确定性文本；007 的
-``TemplateNarrator`` 完成后由组合根注入 ``narrator`` 即可替换。
+- **M2 兼容路径**：未注入 M3 依赖（``resolver``/``actors``/``registry`` 其一为 ``None``）时，
+  完全走 M2 单角色流程，行为/事件序列/幂等与 M2 契约一致（M2 测试不回归）。
+- **M3 多角色路径**：玩家破坏性动作与确定性角色 Agent 的提案一起进入 ``ProposalQueue``，
+  由纯函数 ``Resolver`` 统一裁决；只有 ``applied`` 裁决的草稿事件才交给唯一写入者
+  ``GameEngine.submit``（CAS，最多 3 次尝试；重试只重裁决、不重解析/不重叙事）。
+- 本类只负责串流程、幂等、错误码映射与审计落库，不做规则计算、不写状态、不调模型。
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,15 +23,28 @@ from textgame.agents.dto import ParseOutcome
 from textgame.config.rng import save_seed_from_settings
 from textgame.domain.events import Event, EventType
 from textgame.domain.hashing import params_hash
-from textgame.domain.models import GameState, PerceptionSlice
+from textgame.domain.models import (
+    GameState,
+    PerceptionSlice,
+    Proposal,
+    Resolution,
+    SideEffect,
+    ToolSpec,
+)
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.scenario import DIRECTION_NAMES, PLAYER_ID
 from textgame.orchestration.direct_gate import ToolGateLike
 from textgame.orchestration.dto import TurnRequest
+from textgame.orchestration.proposal_queue import (
+    ProposalQueue,
+    ProposalSource,
+    QueueEntry,
+)
 from textgame.services.action_service import ActionService
+from textgame.services.actor_directory import ActorDirectory
 from textgame.services.dto import TurnResult
 from textgame.services.game_engine import GameEngine
-from textgame.services.ports import GameRecord, GameRepository, IdempotencyRecord
+from textgame.services.ports import AuditRecord, GameRecord, GameRepository, IdempotencyRecord
 from textgame.services.query_service import QueryService
 from textgame.services.tool_context import ToolContext
 
@@ -43,6 +52,7 @@ _MIN_TEXT_CHARS = 80
 _MAX_TEXT_CHARS = 150
 _CONFIDENCE_FLOOR = 0.6
 _DEFAULT_SAVE_SEED = "save-42"
+_MAX_SUBMIT_ATTEMPTS = 3
 
 _UNKNOWN_ACTION_TEXT = (
     "你试着比划了一下，却没弄明白自己想做什么。"
@@ -53,6 +63,7 @@ _VERSION_CONFLICT_TEXT = "你的对局版本已经过期，请刷新对局视图
 _GAME_NOT_FOUND_TEXT = "存档不存在，请先创建一个新的游戏。"
 _ACTION_REJECTED_TEXT = "这个动作没有生效，你停下了脚步。"
 _INTERNAL_ERROR_TEXT = "回合处理发生内部错误，本回合没有写入任何状态。"
+_SUBMIT_CONFLICT_TEXT = "对局状态被并发修改，本回合未能提交，请刷新后重试。"
 
 _FILLER: tuple[str, ...] = (
     "风从断裂的门楣间穿过，卷起细碎的石屑。",
@@ -102,13 +113,52 @@ class RuleEngineLike(Protocol):
         ...
 
 
+class ToolSpecsLike(Protocol):
+    """工具声明查询端口（``ToolRegistry`` 的最小子集）；未知工具抛 ``KeyError``。"""
+
+    def get(self, name: str) -> ToolSpec: ...
+
+    def is_visible(self, name: str, ctx: ToolContext) -> bool: ...
+
+    def validate_args(self, name: str, args: dict[str, Any]) -> Result: ...
+
+
+class ResolverLike(Protocol):
+    """013 ``Resolver`` 的纯函数裁决端口（第 11 章 §11.2、第 21 章 §21.2.2）。"""
+
+    def resolve(
+        self,
+        entries: Sequence[QueueEntry],
+        snapshot: GameState,
+        judgements: Sequence[Any] | None = None,
+    ) -> list[Resolution]: ...
+
+
+class CharacterAgentLike(Protocol):
+    """确定性角色 Agent 端口（第 8 章 CharacterAgent 的 M3 裁剪版）。"""
+
+    def propose(
+        self, perception: PerceptionSlice, *, turn_id: int, save_seed: str
+    ) -> list[Proposal]: ...
+
+
+class AuditRecorderLike(Protocol):
+    """审计写入端口（``AuditService.save``；审计失败不得阻塞回合）。"""
+
+    def save(self, records: Sequence[AuditRecord]) -> None: ...
+
+
 class CreateGameRequest(BaseModel):
-    """``POST /api/v1/games`` 的编排层请求（``seed`` 可省略，缺省用组合根默认种子）。"""
+    """``POST /api/v1/games`` 的编排层请求（``seed`` 可省略，缺省用组合根默认种子）。
+
+    M3 新增 ``scenario``（``m2``/``m3``），缺省 ``m2`` 保持 M2 契约与固定种子回放不变。
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     seed: int | None = None
     idempotency_key: str = Field(min_length=8, max_length=128)
+    scenario: Literal["m2", "m3"] = "m2"
 
 
 class GameView(BaseModel):
@@ -158,6 +208,17 @@ def _npc_name(state: GameState, npc_id: str) -> str:
     """NPC id → 展示用名称；未知 NPC 回退为「那个人」。"""
     npc = state.npcs.get(npc_id)
     return npc.name if npc is not None else "那个人"
+
+
+def _actor_name(state: GameState, actor_id: str) -> str:
+    """任意 actor（Character 或 NPC）id → 展示用名称。"""
+    character = state.characters.get(actor_id)
+    if character is not None:
+        return character.name
+    npc = state.npcs.get(actor_id)
+    if npc is not None:
+        return npc.name
+    return "有人"
 
 
 def _fit_text(text: str) -> str:
@@ -232,6 +293,38 @@ def _fallback_text(
     return _fit_text(base)
 
 
+def _npc_event_clause(state: GameState, events: Sequence[Event]) -> str:
+    """把非玩家角色的 applied 事件渲染成一句确定性中文短句（M3 多角色叙事）。"""
+    if not events:
+        return ""
+    parts: list[str] = []
+    for event in events:
+        name = _actor_name(state, event.actor_id)
+        if event.event_type is EventType.CHARACTER_MOVED:
+            direction = str(event.params.get("direction", ""))
+            parts.append(f"{name}也朝{_direction_name(direction)}边挪了过去")
+        elif event.event_type is EventType.ITEM_TAKEN:
+            item_id = str(event.params.get("item_id", ""))
+            parts.append(f"{name}伸手把{_entity_name(state, item_id)}拿走了")
+        elif event.event_type is EventType.ITEM_CONSUMED:
+            item_id = str(event.params.get("item_id", ""))
+            parts.append(f"{name}用掉了{_entity_name(state, item_id)}")
+        elif event.event_type is EventType.DIALOGUE_EXCHANGED:
+            parts.append(f"{name}低声说了几句")
+        else:
+            parts.append(f"{name}也动了一下")
+    return "与此同时，" + "；".join(parts) + "。"
+
+
+def _compose_text(base: str, clause: str) -> str:
+    """把玩家叙事与 NPC 短句合成 80–150 字文本（先给 NPC 句留位，再补足/截断）。"""
+    if not clause:
+        return _fit_text(base)
+    max_base = max(_MIN_TEXT_CHARS - len(clause), 0)
+    trimmed = base[:max_base] if len(base) > max_base else base
+    return _fit_text(trimmed + clause)
+
+
 def _turn_store_key(request: TurnRequest) -> str:
     """回合幂等存储键（契约 §5.2：``turn:{game_id}:{key}``）。"""
     return f"turn:{request.game_id}:{request.idempotency_key}"
@@ -249,7 +342,7 @@ def _turn_params_hash(request: TurnRequest) -> str:
 
 
 class TurnOrchestrator:
-    """单回合编排器；依赖全部构造注入，便于 006/007 替换解析器与叙事器。"""
+    """单回合编排器；依赖全部构造注入，M2 依赖与 M3 依赖可分别装配。"""
 
     def __init__(
         self,
@@ -263,8 +356,17 @@ class TurnOrchestrator:
         narrator: NarratorLike | None = None,
         rules: RuleEngineLike | None = None,
         save_seed_default: str = _DEFAULT_SAVE_SEED,
+        registry: ToolSpecsLike | None = None,
+        resolver: ResolverLike | None = None,
+        actors: ActorDirectory | None = None,
+        character_agents: Mapping[str, CharacterAgentLike] | None = None,
+        audit: AuditRecorderLike | None = None,
     ) -> None:
-        """装配依赖；``narrator=None`` 时使用内置确定性模板叙事。"""
+        """装配依赖；``narrator=None`` 时使用内置确定性模板叙事。
+
+        注入 ``registry``/``resolver``/``actors`` 三者后启用 M3 多角色链路；缺省保持 M2
+        单角色链路（默认装配行为与 M2 完全一致，M2 测试不回归）。
+        """
         self._repo = repo
         self._engine = engine
         self._query = query
@@ -274,6 +376,18 @@ class TurnOrchestrator:
         self._narrator = narrator
         self._rules = rules
         self._save_seed_default = save_seed_default
+        self._registry = registry
+        self._resolver = resolver
+        self._actors = actors
+        self._character_agents: dict[str, CharacterAgentLike] = dict(character_agents or {})
+        self._audit = audit
+
+    @property
+    def multi_actor_enabled(self) -> bool:
+        """是否启用 M3 多角色链路（三个 M3 依赖都注入时）。"""
+        return (
+            self._registry is not None and self._resolver is not None and self._actors is not None
+        )
 
     # ------------------------------------------------------------------
     # 开局
@@ -281,7 +395,7 @@ class TurnOrchestrator:
     def create_game(self, request: CreateGameRequest) -> GameView:
         """创建存档；同一幂等键同参回放首次结果（零写入），异参抛 ``CreateGameError(CONFLICT)``。"""
         store_key = f"game:{request.idempotency_key}"
-        request_hash = params_hash({"seed": request.seed})
+        request_hash = params_hash({"seed": request.seed, "scenario": request.scenario})
         cached = self._repo.get_idempotent(store_key)
         if cached is not None:
             if cached.params_hash != request_hash:
@@ -297,7 +411,9 @@ class TurnOrchestrator:
             else self._save_seed_default
         )
         engine_result = self._engine.create_game(
-            save_seed=save_seed, idempotency_key=request.idempotency_key
+            save_seed=save_seed,
+            idempotency_key=request.idempotency_key,
+            scenario=request.scenario,
         )
         if not engine_result.ok:
             raise CreateGameError(
@@ -344,7 +460,9 @@ class TurnOrchestrator:
                 ErrorCode.CONFLICT, version=record.version, text=_VERSION_CONFLICT_TEXT
             )
         try:
-            return self._run_loaded(request, record, store_key, request_hash)
+            if self.multi_actor_enabled:
+                return self._run_multi_actor(request, record, store_key, request_hash)
+            return self._run_single_actor(request, record, store_key, request_hash)
         except Exception:
             current = self._repo.load(request.game_id)
             return TurnResult.failed(
@@ -353,14 +471,17 @@ class TurnOrchestrator:
                 text=_INTERNAL_ERROR_TEXT,
             )
 
-    def _run_loaded(
+    # ------------------------------------------------------------------
+    # M2 单角色链路（未注入 M3 依赖时；与 M2 契约逐字一致）
+    # ------------------------------------------------------------------
+    def _run_single_actor(
         self,
         request: TurnRequest,
         record: GameRecord,
         store_key: str,
         request_hash: str,
     ) -> TurnResult:
-        """已通过幂等/版本检查后的单回合主流程（契约 §4.5 步骤 4–10）。"""
+        """M2 单角色主流程（契约 §4.5 步骤 4–10），保持 M2 行为不回归。"""
         state = record.state
         turn_id = state.turn + 1
         ctx = ToolContext(
@@ -396,8 +517,6 @@ class TurnOrchestrator:
                 text=gate_result.message or _ACTION_REJECTED_TEXT,
             )
 
-        # 007 接线（契约 §4.5 步骤 7）：写工具在 gate 产出草稿事件后、提交前再过一次
-        # RuleEngine 的 L0 硬约束（只读工具不产事件，不需要前置判定）；失败零写入。
         drafts = list(gate_result.events)
         if self._rules is not None and drafts:
             preconditions = self._rules.evaluate_preconditions(
@@ -472,6 +591,361 @@ class TurnOrchestrator:
         )
         return response
 
+    # ------------------------------------------------------------------
+    # M3 多角色链路
+    # ------------------------------------------------------------------
+    def _run_multi_actor(
+        self,
+        request: TurnRequest,
+        record: GameRecord,
+        store_key: str,
+        request_hash: str,
+    ) -> TurnResult:
+        """M3 多角色主流程：玩家提案 + 角色 Agent 提案 → 队列 → 裁决 → CAS 提交 → 审计。"""
+        assert self._registry is not None  # multi_actor_enabled 已保证
+        assert self._resolver is not None
+        assert self._actors is not None
+        state = record.state
+        turn_id = state.turn + 1
+        save_seed = state.rng_state.save_seed
+        player_ctx = ToolContext(
+            actor_id=PLAYER_ID,
+            actor_tags=self._actors.tags_of(state, PLAYER_ID),
+            turn_id=turn_id,
+            save_seed=save_seed,
+            idempotency_key=request.idempotency_key,
+            caller="player",
+        )
+        events_history = self._repo.read_events(request.game_id)
+        perception = self._query.build_perception_slice(
+            state,
+            PLAYER_ID,
+            turn_id=turn_id,
+            save_seed=save_seed,
+            events=events_history,
+        )
+        outcome = self._parser.parse(request.text, perception=perception, ctx=player_ctx)
+        if outcome.tool is None or outcome.confidence < _CONFIDENCE_FLOOR:
+            return TurnResult.failed(
+                ErrorCode.INVALID_INPUT,
+                version=record.version,
+                turn_id=state.turn,
+                text=_UNKNOWN_ACTION_TEXT,
+            )
+
+        player_proposal: Proposal | None = None
+        read_only_data: dict[str, Any] = {}
+        try:
+            spec = self._registry.get(outcome.tool)
+        except KeyError:
+            spec = None
+        if spec is None:
+            return TurnResult.failed(
+                ErrorCode.NOT_FOUND,
+                version=record.version,
+                turn_id=state.turn,
+                text=f"未知工具: {outcome.tool}",
+            )
+        if spec.side_effect is SideEffect.READ_ONLY:
+            read_only = self._gate.dispatch(
+                tool=outcome.tool, args=outcome.args, ctx=player_ctx, state=state
+            )
+            if not read_only.ok:
+                return TurnResult.failed(
+                    read_only.error_code or ErrorCode.INTERNAL,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=read_only.message or _ACTION_REJECTED_TEXT,
+                )
+            read_only_data = dict(read_only.data or {})
+        else:
+            if not self._registry.is_visible(outcome.tool, player_ctx):
+                return TurnResult.failed(
+                    ErrorCode.NOT_ALLOWED,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text="当前角色无权执行这个动作。",
+                )
+            validated = self._registry.validate_args(outcome.tool, outcome.args)
+            if not validated.ok or not validated.data:
+                return TurnResult.failed(
+                    validated.error_code or ErrorCode.INVALID_INPUT,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=validated.message or _ACTION_REJECTED_TEXT,
+                )
+            player_proposal = Proposal(
+                turn_id=turn_id,
+                actor_id=PLAYER_ID,
+                tool=outcome.tool,
+                args=dict(validated.data["args"]),
+                reason="玩家明确动作",
+                priority=100,
+            )
+
+        queue = ProposalQueue(turn_id=turn_id)
+        player_entry: QueueEntry | None = None
+        if player_proposal is not None:
+            player_entry = queue.enqueue(player_proposal, source=ProposalSource.PLAYER)
+        for actor_id in sorted(self._character_agents):
+            agent = self._character_agents[actor_id]
+            if not self._actors.exists(state, actor_id):
+                continue
+            npc_perception = self._query.build_perception_slice(
+                state,
+                actor_id,
+                turn_id=turn_id,
+                save_seed=save_seed,
+                events=events_history,
+            )
+            try:
+                npc_proposals = agent.propose(npc_perception, turn_id=turn_id, save_seed=save_seed)
+            except Exception:  # 单个角色 Agent 失败不影响其余（第 9 章 §9.2 步骤 8）
+                continue
+            for npc_proposal in npc_proposals:
+                if npc_proposal.turn_id != turn_id:
+                    continue
+                queue.enqueue(npc_proposal, source=ProposalSource.NPC)
+        drained = queue.drain()
+        expired = queue.expire_pending()
+        entries: list[QueueEntry] = [*drained, *expired]
+        # 同一 turn_id 可能被多次回合尝试复用（上一次是只读/全部被拒的零写入回合，
+        # GameState.turn 未推进）；审计行以 (game, turn, attempt, proposal) 去重，故本回合
+        # 的 attempt 从「该 turn 已有审计的最大 attempt + 1」起算，保证只增审计不互相覆盖。
+        audit_base = self._audit_next_attempt(request.game_id, turn_id)
+
+        current = record
+        text = ""
+        attempt = 0
+        for attempt in range(1, _MAX_SUBMIT_ATTEMPTS + 1):
+            resolutions = self._resolver.resolve(drained, current.state)
+            by_proposal = {resolution.proposal_id: resolution for resolution in resolutions}
+            player_resolution = (
+                by_proposal.get(player_entry.proposal_id) if player_entry is not None else None
+            )
+            if player_entry is not None and (
+                player_resolution is None or player_resolution.verdict != "applied"
+            ):
+                # 对外文案保持中文（2G 文字风格）；裁决理由（可能为规则层英文诊断）只进审计。
+                error_code = (
+                    ErrorCode.CONFLICT
+                    if player_resolution is not None and player_resolution.verdict == "conflict"
+                    else ErrorCode.INVALID_INPUT
+                )
+                self._save_audit(
+                    self._audit_rows(
+                        game_id=request.game_id,
+                        entries=entries,
+                        resolutions=resolutions,
+                        status="aborted",
+                        attempt=audit_base + attempt - 1,
+                    )
+                )
+                return TurnResult.failed(
+                    error_code,
+                    version=current.version,
+                    turn_id=state.turn,
+                    text=_ACTION_REJECTED_TEXT,
+                )
+
+            entry_by_id = {entry.proposal_id: entry for entry in entries}
+            player_drafts: list[Event] = []
+            npc_drafts: list[Event] = []
+            for resolution in resolutions:
+                if resolution.verdict != "applied":
+                    continue
+                source = entry_by_id[resolution.proposal_id].source
+                for draft in resolution.applied_events:
+                    if source is ProposalSource.PLAYER:
+                        player_drafts.append(draft)
+                    else:
+                        npc_drafts.append(draft)
+            text = self._render_multi_actor(
+                action=outcome,
+                state=state,
+                player_drafts=player_drafts,
+                npc_drafts=npc_drafts,
+                read_only_data=read_only_data,
+            )
+            drafts = [*player_drafts, *npc_drafts]
+            if not drafts:
+                self._save_audit(
+                    self._audit_rows(
+                        game_id=request.game_id,
+                        entries=entries,
+                        resolutions=resolutions,
+                        status="committed",
+                        attempt=audit_base + attempt - 1,
+                    )
+                )
+                response = TurnResult.success(
+                    turn_id=state.turn, version=current.version, text=text
+                )
+                self._save_idempotent(store_key, request_hash, response.model_dump(mode="json"))
+                return response
+
+            narrated = [
+                draft.model_copy(
+                    update={
+                        "result": {
+                            **draft.result,
+                            "narrative": text,
+                            "narrative_source": "template",
+                        }
+                    }
+                )
+                for draft in drafts
+            ]
+            engine_result = self._engine.submit(
+                game_id=request.game_id,
+                expected_version=current.version,
+                drafts=narrated,
+                idempotency_key=request.idempotency_key,
+            )
+            if engine_result.ok:
+                self._save_audit(
+                    self._audit_rows(
+                        game_id=request.game_id,
+                        entries=entries,
+                        resolutions=resolutions,
+                        status="committed",
+                        attempt=audit_base + attempt - 1,
+                    )
+                )
+                data = engine_result.data or {}
+                committed_turn = data.get("turn_id")
+                committed_version = data.get("version")
+                if not isinstance(committed_turn, int) or not isinstance(committed_version, int):
+                    return TurnResult.failed(
+                        ErrorCode.INTERNAL,
+                        version=current.version,
+                        turn_id=state.turn,
+                        text=_INTERNAL_ERROR_TEXT,
+                    )
+                response = TurnResult.success(
+                    turn_id=committed_turn,
+                    version=committed_version,
+                    text=text,
+                    events=engine_result.events,
+                )
+                self._save_idempotent(
+                    store_key,
+                    request_hash,
+                    response.model_dump(mode="json"),
+                    events=tuple(engine_result.events),
+                )
+                return response
+
+            self._save_audit(
+                self._audit_rows(
+                    game_id=request.game_id,
+                    entries=entries,
+                    resolutions=resolutions,
+                    status="conflicted"
+                    if engine_result.error_code is ErrorCode.CONFLICT
+                    else "aborted",
+                    attempt=audit_base + attempt - 1,
+                )
+            )
+            if engine_result.error_code is not ErrorCode.CONFLICT:
+                return TurnResult.failed(
+                    engine_result.error_code or ErrorCode.INTERNAL,
+                    version=current.version,
+                    turn_id=state.turn,
+                    text=engine_result.message or _ACTION_REJECTED_TEXT,
+                )
+            reloaded = self._repo.load(request.game_id)
+            if reloaded is None:
+                return TurnResult.failed(ErrorCode.NOT_FOUND, version=0, text=_GAME_NOT_FOUND_TEXT)
+            current = reloaded
+            state = current.state
+
+        return TurnResult.failed(
+            ErrorCode.CONFLICT,
+            version=current.version,
+            turn_id=current.state.turn - 1 if current.state.turn > 1 else current.state.turn,
+            text=_SUBMIT_CONFLICT_TEXT,
+        )
+
+    def _render_multi_actor(
+        self,
+        *,
+        action: ParseOutcome,
+        state: GameState,
+        player_drafts: list[Event],
+        npc_drafts: list[Event],
+        read_only_data: dict[str, Any],
+    ) -> str:
+        """玩家事件用叙事器渲染，NPC 事件拼一句确定性短句，最终收敛到 80–150 字。"""
+        base = self._render(
+            action=action, events=player_drafts, state=state, result_data=read_only_data
+        )
+        clause = _npc_event_clause(state, npc_drafts)
+        return _compose_text(base, clause)
+
+    def _audit_next_attempt(self, game_id: str, turn_id: int) -> int:
+        """计算该回合下一批审计行的 attempt 起始值（同 turn 零写入重试时不覆盖旧行）。
+
+        审计表以 ``(game_id, turn_id, attempt, proposal_id)`` 去重且只增不改；同一个
+        ``turn_id`` 可能因上一次回合零写入（只读/全部被拒，``GameState.turn`` 未推进）被
+        再次使用，故从已有最大 ``attempt + 1`` 起算，保证两次尝试的审计行都保留。
+        """
+        if self._audit is None:
+            return 1
+        try:
+            rows = self._repo.read_audit(game_id, turn_id=turn_id)
+        except Exception:
+            return 1
+        return max((row.attempt for row in rows), default=0) + 1
+
+    def _audit_rows(
+        self,
+        *,
+        game_id: str,
+        entries: Sequence[QueueEntry],
+        resolutions: Sequence[Resolution],
+        status: Literal["committed", "conflicted", "aborted"],
+        attempt: int,
+    ) -> list[AuditRecord]:
+        """把本尝试的队列条目 + 裁决结果映射为审计行（每提案一行，只增不改）。"""
+        by_proposal = {resolution.proposal_id: resolution for resolution in resolutions}
+        rows: list[AuditRecord] = []
+        for index, entry in enumerate(entries, start=1):
+            resolution = by_proposal.get(entry.proposal_id)
+            turn_id = entry.proposal.turn_id
+            resolution_id = f"r_{turn_id:06d}_{index:03d}" if resolution is not None else None
+            rows.append(
+                AuditRecord(
+                    game_id=game_id,
+                    turn_id=turn_id,
+                    attempt=attempt,
+                    proposal_id=entry.proposal_id,
+                    resolution_id=resolution_id,
+                    actor_id=entry.proposal.actor_id,
+                    tool=entry.proposal.tool,
+                    args=dict(entry.proposal.args),
+                    reason=entry.proposal.reason,
+                    priority=entry.proposal.priority,
+                    source=str(entry.source.value),
+                    verdict=resolution.verdict if resolution is not None else None,
+                    verdict_reason=resolution.reason if resolution is not None else "expired",
+                    status=status,
+                )
+            )
+        return rows
+
+    def _save_audit(self, records: Sequence[AuditRecord]) -> None:
+        """写入审计行；审计失败不阻塞回合（第 11 章 §11.4 / 第 14 章 §14.6）。"""
+        if self._audit is None or not records:
+            return
+        try:
+            self._audit.save(records)
+        except Exception:
+            return
+
+    # ------------------------------------------------------------------
+    # 渲染
+    # ------------------------------------------------------------------
     def _render(
         self,
         *,
@@ -507,11 +981,15 @@ class TurnOrchestrator:
 
 
 __all__ = [
+    "AuditRecorderLike",
+    "CharacterAgentLike",
     "CreateGameError",
     "CreateGameRequest",
     "GameView",
     "IntentParserLike",
     "NarratorLike",
+    "ResolverLike",
     "RuleEngineLike",
+    "ToolSpecsLike",
     "TurnOrchestrator",
 ]

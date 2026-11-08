@@ -14,6 +14,7 @@ from fastapi import Header, Request
 from textgame.api.errors import ApiError
 from textgame.domain.results import ErrorCode
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
+from textgame.services.audit_service import AuditService
 from textgame.services.query_service import QueryService
 
 KEY_MIN_LENGTH = 8
@@ -36,6 +37,14 @@ def get_query_service(request: Request) -> QueryService:
     return query_service
 
 
+def get_audit_service(request: Request) -> AuditService:
+    """返回组合根注入的 ``AuditService``；缺失视为组合根装配错误。"""
+    audit_service: AuditService | None = getattr(request.app.state, "audit_service", None)
+    if audit_service is None:
+        raise ApiError(ErrorCode.INTERNAL, "服务未完成审计服务装配")
+    return audit_service
+
+
 def require_idempotency_key(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> str:
@@ -53,6 +62,7 @@ def require_idempotency_key(
 __all__ = [
     "KEY_MAX_LENGTH",
     "KEY_MIN_LENGTH",
+    "get_audit_service",
     "get_orchestrator",
     "get_query_service",
     "require_idempotency_key",

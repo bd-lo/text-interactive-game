@@ -13,6 +13,7 @@ from textgame.api.routes.games import router as games_router
 from textgame.api.routes.health import router as health_router
 from textgame.api.routes.turns import router as turns_router
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
+from textgame.services.audit_service import AuditService
 from textgame.services.query_service import QueryService
 
 
@@ -20,8 +21,9 @@ def create_app(
     *,
     orchestrator: TurnOrchestrator | None = None,
     query_service: QueryService | None = None,
+    audit_service: AuditService | None = None,
 ) -> FastAPI:
-    """创建 FastAPI 应用实例; 可选注入编排器与查询服务 (组合根负责装配)。"""
+    """创建 FastAPI 应用实例; 可选注入编排器、查询服务与审计服务 (组合根负责装配)。"""
     app = FastAPI(
         title="textgame",
         version=__version__,
@@ -36,4 +38,6 @@ def create_app(
         app.state.orchestrator = orchestrator
     if query_service is not None:
         app.state.query_service = query_service
+    if audit_service is not None:
+        app.state.audit_service = audit_service
     return app

@@ -2,7 +2,8 @@
 
 组合根（``main.py``）与测试都通过本文件建库：``prepare_db`` 为文件库创建父目录、
 ``create_engine_and_session`` 返回 Engine + 会话工厂，``init_schema`` 用
-``Base.metadata.create_all`` 建表（M2 不引入 Alembic 迁移）。
+``Base.metadata.create_all`` 建表（新库路径；M3 另提供 ``alembic upgrade head`` 的
+最小 baseline 迁移，见 ``alembic/``，不在本函数内自动执行）。
 
 SQLite 约定：``check_same_thread=False`` 允许会话跨线程使用；内存库用
 ``StaticPool`` 复用同一连接，否则每个连接看到的是各自的空库。M2 只支持 SQLite
