@@ -1,0 +1,83 @@
+# CI 质量门与许可证门禁（第 17 章 §17.2 004-ci-license-gate、第 18 章 §18.6、第 19 章 §19.5）
+# 规则：环境一律 `uv sync --frozen`（第 19 章 §19.1）；不用 pip 临时装包；不跑真实 LLM 调用。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一 PR/分支的新提交取消旧运行，避免过期运行占用并发额度
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # 质量门：lint → type → 分层依赖契约 → 测试，Python 3.10/3.12 双矩阵（第 18 章 §18.6）
+  quality:
+    name: quality (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 uv 与 Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 同步锁定依赖（按矩阵指定解释器）
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+      - name: 矩阵证据（确认实际 Python 版本）
+        run: uv run python -VV
+      - name: 格式检查（ruff format）
+        run: uv run ruff format --check .
+      - name: Lint（ruff check）
+        run: uv run ruff check .
+      - name: 类型检查（mypy strict，源码保持 3.10 兼容）
+        run: uv run mypy src/textgame
+      - name: 分层依赖契约（import-linter）
+        run: uv run lint-imports
+      - name: 单元与集成测试（pytest）
+        run: uv run pytest -q
+
+  # 依赖门：许可证白名单 + 漏洞审计 + SBOM，产物存 artifact（第 18 章 §18.6、第 19 章 §19.5）
+  deps:
+    name: deps (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 uv 与 Python 3.12
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: 同步锁定依赖（固定 3.12）
+        run: uv sync --frozen --python "3.12"
+      - name: 导出锁定依赖清单（requirements 文本）
+        run: |
+          mkdir -p artifacts
+          uv export --frozen --no-hashes --format requirements-txt > artifacts/requirements.lock.txt
+      - name: 生成许可证清单（pip-licenses）
+        run: uv run pip-licenses --format=json --with-urls > artifacts/licenses.json
+      - name: 许可证门禁（GPL/AGPL/未知即阻断，第 19 章 §19.5）
+        run: uv run python scripts/check_licenses.py artifacts/licenses.json
+      - name: 漏洞审计（pip-audit）
+        run: uv run pip-audit -r artifacts/requirements.lock.txt
+      - name: 生成 SBOM（CycloneDX JSON）
+        # cyclonedx-python-lib（pyproject 已锁）只是库，不含 CLI；CLI 在 cyclonedx-bom。
+        # 本切片禁改 pyproject/uv.lock，故用 `uv run --with` 临时覆盖环境（不写入 lock、不改 .venv），
+        # 版本 pin 到 8.0.1 以保证 SBOM 输出可复现。
+        run: uv run --with 'cyclonedx-bom==8.0.1' cyclonedx-py environment --of JSON -o artifacts/sbom.json
+      - name: 上传 SBOM 与许可证/审计报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-licenses
+          path: artifacts/
+          if-no-files-found: warn
