@@ -1,14 +1,14 @@
 # 总体进展总览（PROGRESS）
 
 > 本文件与 `docs/progress/` 下的单次进度文档配合使用；每次新建进度文档必须在同一提交或 PR 内更新本文件。
-> 统计基准日：2026-11-08 ｜ 当前里程碑：M2 单场景 MVP（进行中） ｜ 下一个可用编号：006（M2 区间 005–009；M6 前端体验 025–028 已预留）
+> 统计基准日：2026-11-08 ｜ 当前里程碑：M2 单场景 MVP（5/5，待出口独立验收） ｜ 下一个可用编号：010（M3 区间 010–014；M6 前端体验 025–028 已预留）
 
 ## 1. 里程碑状态
 
 | 里程碑 | 名称 | 编号区间 | 状态 | 已通过测试任务数/总任务数 | 完成度 | 最近进度文档 | 阻塞项 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | M1 | 骨架 | 001–004 | 已完成 | 4/4 | 100.0% | [004](progress/004-2026-11-08-ci-license-gate.md) | 无 |
-| M2 | 单场景 MVP | 005–009 | 进行中 | 3/5 | 60.0% | [007](progress/007-2026-11-08-rule-narrate.md) | 无 |
+| M2 | 单场景 MVP | 005–009 | 进行中（待出口独立验收） | 5/5 | 100.0% | [009](progress/009-2026-11-08-golden-replay.md) | 无 |
 | M3 | 多角色 | 010–014 | 未开始 | 0/5 | 0.0% | - | 无 |
 | M4 | 制造 | 015–018 | 未开始 | 0/4 | 0.0% | - | 无 |
 | M5 | API 调用治理 | 019–024 | 未开始 | 0/6 | 0.0% | - | 无 |
@@ -31,13 +31,15 @@
 | 005 | 2026-11-08 | M2 | turn-api | `/api/v1/turns`+`/games` 端点、TurnResult DTO、8 码→HTTP 映射、Idempotency-Key 幂等、GameEngine 唯一写入者落地；17 集成 + 34 单测全绿 | [005](progress/005-2026-11-08-turn-api.md) |
 | 006 | 2026-11-08 | M2 | parser-tools | ToolRegistry 白名单 + ToolGate 路由 + IntentParseAgent（Schema 校验/一次修复/确定性兜底）；FakeLLM 三分支 + 注入 0 写入，46 单测 + 9 链路全绿 | [006](progress/006-2026-11-08-parser-tools.md) |
 | 007 | 2026-11-08 | M2 | rule-narrate | RuleEngine（L0+d20/DC 判定，派生种子）+ TemplateNarrator 确定性叙事接入回合链；七回合 80–150 字、narrative 落事件，75+14+4 测试全绿 | [007](progress/007-2026-11-08-rule-narrate.md) |
+| 008 | 2026-11-08 | M2 | sqlite-snapshot | SQLite 4 表 + CAS 原子提交 + 快照哈希重建接入组合根；重启恢复/续写/幂等跨重启，23 集成测试全绿 | [008](progress/008-2026-11-08-sqlite-snapshot.md) |
+| 009 | 2026-11-08 | M2 | golden-replay | 首个 golden（save-42）7 回合回放：event id/seq/rng_seed/state_hash 逐字段钉死；注入 0 写入 7 例 + 篡改检出，4 回放 + 8 安全全绿 | [009](progress/009-2026-11-08-golden-replay.md) |
 
 ## 4. 编号分配与变更记录
 
 | 里程碑 | 区间 | 已用编号 | 下一个可用 | 备注 |
 | --- | --- | --- | --- | --- |
 | M1 | 001–004 | 001–004 | - | M1 已完成（4/4）；编号区间已用尽，`005` 起进入 M2 |
-| M2 | 005–009 | 005–007 | 008 | 005/006/007 已完成（3/5）；下一步 008-sqlite-snapshot |
+| M2 | 005–009 | 005–009 | - | M2 五切片全部交付（5/5，待出口独立验收）；`010` 起进入 M3 多角色 |
 | M6 | 025–028 | - | 025 | v0.2 新增「前端体验」里程碑（M1–M5 完成后再启动编号分配） |
 
 ## 5. 接口偏离登记（对照开发文档第 6、7 章）
@@ -55,6 +57,9 @@
 | D-006-3 | M2 默认 LLM | 第 12 章 LLMClient 真实调用 + 修复 | M2 默认 `DisabledLLMClient` 离线、确定性兜底；LLM 路径仅由 FakeLLM 覆盖 | 第 3 章 §3.6 方案 A（MVP 前段确定性） | 已登记 |
 | D-007-1 | 判定顺序 | 第 9 章 §9.2：判定在提案/裁决前（步骤 6/9） | M2 单角色为 gate → RuleEngine L0 → 叙事 → 提交；L0 在服务层与 RuleEngine 各一份，规则拒绝在生产链路不可达（替身测试验证接线） | M2 无 ProposalQueue；M3 Resolver 接入后恢复文档顺序 | 已登记 |
 | D-007-2 | 叙事来源 | 第 4 章：`narrative_source ∈ {llm, template}`，M5 接 LLM | M2 固定 `template`（`TemplateNarrator`），LLM 叙事留 M5 | 第 3 章 §3.6 方案 A | 已登记 |
+| D-008-1 | 持久化迁移 | 第 14/16 章：Alembic 管迁移 | M2 用 `Base.metadata.create_all` 建表，无迁移脚本 | M2 单机 SQLite 起步；M3 前补 Alembic 版本化迁移（R4） | 已登记 |
+| D-008-2 | 重建版本号 | 第 14 章：version 由 `game_state_current.row_version` 提供 | `current` 行缺失重建时 `version = last_seq`（M2 每次提交恰 1 条事件） | M2 语义；M3 多事件提交需把 version 持久化到快照 | 已登记 |
+| D-009-1 | golden fixture | 第 18 章 §18.3：golden 用例 + `state_hash` 比对 | `tests/fixtures/golden/m2_golden.json` 首字段 `_comment` 承载变更纪律（JSON 无注释语法）；逐值精确断言、无 snapshot-update | 第 18 章禁止 `--snapshot-update` 掩盖回归 | 已登记 |
 
 ## 6. 风险与阻塞摘要（与开发文档第 20 章同一编号）
 
@@ -68,13 +73,13 @@
 | R1（M1 新开） | Python 3.10 兼容：CI 矩阵未实跑 | 中 | 已关闭（GitHub Actions run #1（commit `5ec780b`）3.10/3.12 矩阵实跑通过；本地亦用 3.10.22 实跑 402 passed） | lead |
 | R2（M1 新开） | 项目自身许可证未定（`textgame` 在 pip-licenses 中为 UNKNOWN） | 低（发布前） | 打开（许可证门禁已默认忽略自身；发布前需决策） | lead |
 | R3（M1 新开） | MPL-2.0 传递依赖（orjson/certifi/pathspec/tqdm/hypothesis）文件级义务未登记 | 低 | 缓解中（CI deps job 已生成 CycloneDX SBOM artifact；文件级义务登记随发布流程） | lead |
-| R4（M2 新开） | SQLite 交付前无迁移工具（建表用 `create_all`）；current 行丢失时 `version` 取 `last_seq`（M2 每次提交恰 1 事件） | 中 | 缓解中（008 交付后登记细节；Alembic 迁移与多事件提交的 version 列在 M3 前补） | lead |
+| R4（M2 新开） | SQLite 交付前无迁移工具（建表用 `create_all`）；current 行丢失时 `version` 取 `last_seq`（M2 每次提交恰 1 事件） | 中 | 缓解中（008 已交付 SQLite 仓储 + 重启恢复；Alembic 迁移与多事件提交的 version 列在 M3 前补） | lead |
 
 ## 7. 当前状态与下一步
 
-- 当前状态：**M2 单场景 MVP 进行中（3/5 = 60.0%）**。005 · turn-api（回合端点/错误码/幂等/唯一写入者）、006 · parser-tools（ToolRegistry + ToolGate + IntentParseAgent 的 Schema 校验/修复/兜底）、007 · rule-narrate（RuleEngine L0+d20/DC 判定 + TemplateNarrator 确定性叙事接入回合链）已交付；全量 619 passed，质量门全绿。
+- 当前状态：**M2 单场景 MVP 5/5 = 100.0%（待出口独立验收）**。005 turn-api、006 parser-tools、007 rule-narrate、008 sqlite-snapshot、009 golden-replay 全部交付；全量 636 passed，质量门全绿；出口证据：连续回合可玩（真实 uvicorn 5 回合、每屏 80–150 字）、固定种子 7 回合 golden 回放 `state_hash` 一致、注入 0 写入 7 例、SQLite 重启恢复。
 - 环境追加项（不计入切片完成度）：DeepSeek API（`deepseek-flash`）凭据与连通性自检已配置——密钥仅存 `.env`（gitignored，不入库）；自检命令 `uv run python -m textgame.llm.smoke`。M2 默认装配不联网（`DisabledLLMClient`），真实 LLM 在 M5 接入。
 - CI：M1 代码已 push 到 `origin/main`；M2 每个切片单独提交并 push 触发 Actions（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM）。
-- 当前阻塞：无。
-- 下一步：008 · sqlite-snapshot（SQLite 事件表/快照 + 重启恢复接入组合根），验收命令 `uv run pytest tests/integration/test_snapshot_restore.py`；随后 009 golden-replay 与 M2 出口验收。
-- 需要 lead 决策：① 项目许可证决策（发布前，对应 R2）；② 第 20 章 Q9 CI 沙箱 / Q10 上下文白名单需在后续里程碑前定案。
+- 当前阻塞：无（M2 出口独立验收进行中，task-17）。
+- 下一步：M2 出口独立验收（五切片验收命令 + 真实 uvicorn 5 回合 + 红线审计 + 3.10），PASS 后把 M2 状态改为「已完成」并进入 **M3 多角色（010–014）**，首切片 010-perception-slice。
+- 需要 lead 决策：① 项目许可证决策（发布前，对应 R2）；② 第 20 章 Q9 CI 沙箱 / Q10 上下文白名单需在后续里程碑前定案；③ M3 前补 Alembic 迁移与 version 持久化（R4）。
