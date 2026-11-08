@@ -2,7 +2,7 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架进行中** —— 001-walking-skeleton 已交付（uv 可复现环境 + 最小 FastAPI `/healthz` + 质量门配置），下一个切片 002-domain-models。
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架已完成（4/4 切片）** —— 环境与依赖锁定、最小 FastAPI（`/healthz`）、领域模型、EventLog 固定种子回放、CI 质量门与许可证门禁均已交付并通过独立验收；下一步 M2 单场景 MVP（005-turn-api）。
 
 ## 开发模式（v0.3）
 
@@ -29,7 +29,8 @@
 | 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`） |
 | 接入层 | FastAPI |
 | 编排 | LangGraph（待评估是否改用自建 loop） |
-| 模型调用 | 统一 LLMClient 封装（仅 API 调用，不做本地训练 / RL，不直接调用 SDK） |
+| 模型调用 | 统一 LLMClient 封装（当前已接入 DeepSeek `deepseek-flash` 凭据与连通性自检，完整治理在 M5） |
+| 质量门 / CI | GitHub Actions：ruff + mypy + import-linter + pytest（3.10/3.12 矩阵）+ pip-licenses/pip-audit/CycloneDX；本地 pre-commit 钩子 |
 | Web 前端（M6） | Vue 3 + TypeScript + Vite + Pinia + Vue Router（构建期 Node，产物由 FastAPI 托管） |
 
 ## 本地开发环境（M1-001 已就绪）
@@ -43,13 +44,15 @@ curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"o
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单测 + 集成测试
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 402 passed）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
 环境变量见 [.env.example](.env.example)（前缀 `TEXTGAME_`，默认值见开发文档第 16 章 16.5 表）；`.env` 不入库，禁止提交真实密钥。
 
 > **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
+
+> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（已验证 3.10.22 全量 402 passed）。CI 在 ubuntu（UTF-8）上不受影响。
 
 ## LLM API 配置（DeepSeek）
 
@@ -60,18 +63,39 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 - **配置项**：`TEXTGAME_LLM_PROVIDER=deepseek`、`TEXTGAME_LLM_MODEL=deepseek-flash`、`TEXTGAME_LLM_BASE_URL=https://api.deepseek.com`、`TEXTGAME_LLM_API_KEY=<真实密钥，只写 .env>`。
 - **连通性自检**（真实调用、消耗少量 token）：`uv run python -m textgame.llm.smoke` → `[OK] LLM API 配置可用 ...`；缺密钥退出码 2，API 失败退出码 1。实现见 [src/textgame/llm/providers.py](src/textgame/llm/providers.py) 与 [src/textgame/llm/smoke.py](src/textgame/llm/smoke.py)；LiteLLM 仅在 `llm/providers.py` 内 import（第 12 章 12.1）。
 
-## 目录结构（M1-001 现状）
+## 质量门与 CI（M1-004 已就绪）
+
+本地门禁（与 CI 同命令，见 [.github/workflows/ci.yml](.github/workflows/ci.yml)）：
+
+```bash
+uv run ruff format --check . && uv run ruff check .   # lint / format
+uv run mypy src/textgame                              # strict 类型检查（3.10 语法）
+uv run lint-imports                                   # 分层依赖契约（domain 零框架依赖）
+uv run pytest -q                                      # 单元 + 集成 + 回放
+uv run pre-commit run --all-files                     # 9 个 hook（含 secret-scan）
+
+# 依赖门禁（第 19 章 19.5）
+uv run pip-licenses --format=json --with-urls > artifacts/licenses.json
+uv run python scripts/check_licenses.py artifacts/licenses.json   # GPL/AGPL/LGPL/UNKNOWN → 阻断
+uv run pip-audit -r artifacts/requirements.lock.txt               # 已知漏洞
+```
+
+CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint-imports → pytest，矩阵用 `uv sync --frozen --python <ver>` 验证解释器）与 `deps`（`uv export` → pip-licenses → 许可证门禁 → pip-audit → CycloneDX SBOM → artifact）。护栏：GPL/AGPL 出现即阻断；项目自身 license 未定前 `check_licenses.py` 默认忽略 `textgame`（第 19 章 R2）。
+
+## 目录结构（M1 完成态）
 
 ```text
 .
-├── docs/                 # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档
-├── src/textgame/         # 包根：main.py（uvicorn 入口）、api/（/healthz）、config/（pydantic-settings）、llm/（供应商适配 + 连通性自检）
-│   └── domain/ services/ tools/ agents/ orchestration/ persistence/   # M1–M5 占位包
-├── tests/                # unit/、integration/（replay/、security/ 随 M2/M3 建立）
-├── scripts/              # 开发/运维脚本：check_secrets.py（密钥入库门禁，pre-commit 调用）
-├── pyproject.toml        # 三层依赖分组 + ruff/mypy/pytest/coverage/import-linter 配置
-├── uv.lock               # 依赖锁定（验收一律 uv sync --frozen）
-├── .env.example          # 环境变量样例（复制为 .env；.env 已被忽略、不入库）
+├── .github/workflows/ci.yml   # CI：quality（3.10/3.12 矩阵）+ deps（许可证/pip-audit/SBOM）
+├── docs/                       # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档 001–004
+├── src/textgame/               # 包根：main.py（uvicorn 入口）、api/（/healthz）、config/（settings/rng）、llm/（供应商适配 + 自检）
+│   ├── domain/                 # 领域层（零框架依赖）：types / results / events（Event+EventLog）/ models / rules（随机与判定值对象）
+│   └── services/ tools/ agents/ orchestration/ persistence/   # M2–M5 占位包
+├── tests/                      # unit/、integration/、replay/
+├── scripts/                    # check_secrets.py（密钥门禁）、check_licenses.py（许可证门禁）
+├── pyproject.toml              # 三层依赖分组 + ruff/mypy/pytest/coverage/import-linter 配置
+├── uv.lock                     # 依赖锁定（验收一律 uv sync --frozen）
+├── .env.example                # 环境变量样例（复制为 .env；.env 已被忽略、不入库）
 └── README.md
 ```
 
@@ -89,4 +113,4 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 ## 许可证
 
-待定（后续根据依赖清单与许可证风险评估确定）。
+待定（后续根据依赖清单与许可证风险评估确定；当前 `check_licenses.py` 在 CI 中把 `textgame` 自身排除在门禁外，发布前需补 `license` 字段）。
