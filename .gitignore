@@ -19,6 +19,7 @@ coverage.xml
 # 本地环境与密钥
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.crt
@@ -37,6 +38,15 @@ word文档.docx
 # 临时文件与日志
 *.log
 tmp/
+*.junit.xml
+
+# 运行时数据与验收产物（第16章 data/、第19章 19.5 artifacts/）
+data/
+artifacts/
+
+# 前端构建产物（M6；Node 仅构建期）
+node_modules/
+web/dist/
 
 # 写作工作区（中间产物，不入库）
 .work/

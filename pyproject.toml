@@ -1,0 +1,163 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "textgame"
+version = "0.1.0"
+description = "复古 2G 文字 MUD 风格的单机 / 异步文本交互游戏：规则引擎确定性计算 + LLM 智能体叙事包装"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "bd-lo" }]
+keywords = ["mud", "text-game", "llm", "fastapi"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+# ---------------------------------------------------------------------------
+# 依赖只分三层（第19章 19.1、第16章 16.4）：
+#   ① runtime —— [project.dependencies]（生产运行时依赖，版本按第19章 19.3）
+#   ② dev     —— [dependency-groups].dev（开发/测试工具，不进运行时镜像）
+#   ③ reference-only —— 仅参考设计的仓库（第19章 19.4），不落任何依赖组、禁止安装与拷贝：
+#      evennia、Text-Game-Engine、Oaklight/ToolRegistry、agent-fn-registry、
+#      tldw_server（GPL-3.0-only）、open-tabletop-gm（AGPL-3.0）、MnesOS（无 LICENSE，禁止拷贝）。
+# 新增依赖必须先过「依赖方向 + 许可证 + Python 3.10 兼容」三道门（第4章 4.5、第19章 19.1）。
+# 升级窗口每月一次；uv.lock 变更单独提交并重跑 golden 回放。
+# ---------------------------------------------------------------------------
+dependencies = [
+    "fastapi>=0.162.2,<0.163",
+    "pydantic>=2.14.3,<2.15",
+    # 3.10 环境硬锁定：2.16 起要求 Python >=3.11（第19章 19.2）
+    "pydantic-settings==2.15.0",
+    # SQLAlchemy 2.1 起要求 Python >=3.11，必须锁 <2.1（第19章 19.2）
+    "sqlalchemy>=2.0.57,<2.1",
+    "alembic>=1.20.1,<1.21",
+    "langgraph>=1.2.20,<1.3",
+    "litellm>=1.108.3,<1.109",
+    "instructor>=1.17.0,<1.18",
+    "jinja2>=3.1.6,<3.2",
+    "tenacity>=9.2.1,<9.3",
+    "httpx>=0.28.1,<0.29",
+    "uvicorn>=0.54.0,<0.55",
+    "jsonschema>=4.26.0,<4.27",
+    # 3.10 环境硬锁定：8.0 起要求 Python >=3.11（第19章 19.2）
+    "cachetools==7.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0,<9.3",
+    "pytest-cov>=7.1.0,<7.2",
+    "coverage==7.16.2",
+    "hypothesis==6.168.5",
+    "syrupy>=6.1.1,<6.2",
+    "pytest-recording>=0.14.1,<0.15",
+    "schemathesis==4.26.2",
+    "pytest-randomly==5.0.0",
+    "ruff>=0.17.4,<0.18",
+    "mypy>=2.4.1,<2.5",
+    "pre-commit==4.6.2",
+    "import-linter==2.15",
+    "pip-licenses>=5.5.5,<5.6",
+    "pip-audit>=2.10.1,<2.11",
+    "pipdeptree==4.2.5",
+    "cyclonedx-python-lib>=11.12.0,<11.13",
+    "license-expression>=30.4.0,<30.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/textgame"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/textgame", "tests", "pyproject.toml", "README.md"]
+
+# ---------------------------------------------------------------------------
+# ruff：lint + format 一体化（第16章 16.5、第19章 19.3）
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["docs", ".venv", ".work"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
+# E501：行长由 formatter 与 line-length 保障；中文叙事文本与 Prompt 不强制断行
+# RUF001-003：中文全角标点（：，；（））在中文注释与 docstring 中属正常书写，与项目语言冲突
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["textgame"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# mypy：源码保持 Python 3.10 语法兼容（第19章 19.2），运行时用 3.12
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/textgame"]
+warn_unreachable = true
+show_error_codes = true
+pretty = true
+
+# ---------------------------------------------------------------------------
+# pytest：四层测试（第18章 18.1）—— unit / integration / replay / security
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "slow: 慢测试，vibe 内循环（L0）默认用 -m 'not slow' 排除",
+    "integration: 集成测试（路由 → 编排 → 服务 → SQLite 事件表）",
+    "replay: 固定种子回放测试（禁止 -p no:randomly 之外的随机化干扰）",
+    "security: 安全 / 越权 / 红队测试",
+]
+
+[tool.coverage.run]
+source = ["textgame"]
+branch = true
+
+[tool.coverage.report]
+omit = ["src/textgame/main.py"]
+show_missing = true
+exclude_lines = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+# ---------------------------------------------------------------------------
+# import-linter：分层依赖契约（第16章 16.2），CI 门禁 `uv run lint-imports`
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "textgame"
+# forbidden 契约含 fastapi/sqlalchemy 等外部包，import-linter 2.15 要求显式开启外部包分析
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "分层依赖（只允许自上而下）"
+type = "layers"
+layers = [
+    "textgame.api",
+    "textgame.orchestration",
+    "textgame.agents | textgame.tools",
+    "textgame.services",
+    "textgame.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain 不得依赖框架与 IO"
+type = "forbidden"
+source_modules = ["textgame.domain"]
+forbidden_modules = [
+    "fastapi",
+    "sqlalchemy",
+    "litellm",
+    "langgraph",
+    "textgame.llm",
+    "textgame.persistence",
+]
