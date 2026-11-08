@@ -189,6 +189,8 @@ class ToolRegistry:
 | `craft_item` | DESTRUCTIVE | deterministic | ✅ | ❌ | ✅ | ✅ |
 | `talk_to` | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
 
+**M3 多角色扩展（2026-11-09 活文档回写，≤10 行）**：`take_item` 新增细粒度授权标签 `npc:scavenger`（仅「拾荒者」非玩家角色可见；默认 `npc`/`npc:blacksmith` 仍 ❌，安全用例逐格断言未放宽）；`use_item` 为 M2 新增动作（矩阵行已在 M2 补齐：player/system ✅，npc 系列 ❌）；`move_to` 对 `npc` 标签的 ✅ 在 M3 校正落地。完整偏离登记见 `docs/PROGRESS.md` §5 D-M3-5。
+
 边界澄清（v0.2）：**人物卡生成不走工具层、不经 Agent 工具白名单**——它由第 6 章 6.7 的 `CharacterCardService.generate_card()` 直接构造 `LLMRequest(task="character_card_generate", output_schema=CharacterCard, agent_id="character_card", model_tier=ModelTier.STRONG, max_repair=1)` 并调 `LLMClient.complete_json(req)` 完成结构化生成（模型分级/重试/限流以第 12 章为准），输出经 `CharacterCard` JSON Schema 校验（第 5 章 5.7）与内容安全后才作为草稿返回；人物卡在开局前不进入 `GameState`，因此不存在“写工具 → 提案 → 裁决”链路，也不参与 `actor_scope` 过滤。`@tool`、`side_effect`、`resolution_policy` 只约束游戏世界内的工具调用。
 
 ### 7.4 side_effect 与 resolution_policy 的路由

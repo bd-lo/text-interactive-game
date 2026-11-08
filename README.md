@@ -2,7 +2,7 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）与 M2 单场景 MVP（5/5）均已完成并通过出口独立验收** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例均已交付；下一步 M3 多角色（010-perception-slice）。
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）与 M3 多角色（5/5）均已完成并通过出口独立验收** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；下一步 M4 制造（015-recipe-model）。
 
 ## 开发模式（v0.3）
 
@@ -44,7 +44,7 @@ curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"o
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 638 passed）
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 960 passed）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
@@ -76,6 +76,30 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/turns \
 - 业务失败（无法理解/版本过期/幂等键冲突）仍返回 HTTP 200 + `TurnResult(ok=false, error_code)`；协议错误（缺 `Idempotency-Key`、body 非法）返回 4xx 统一失败信封 `{ok:false, error_code, message, violations?}`。
 - 演示脚本（可复现）：环顾四周 → 对老哨兵问好 → 拿起火把 → 拿起治疗药水 → 使用治疗药水 → 向北走进地窖 → 拿起锈剑；固定种子（save-42）7 回合 golden 回放见 `tests/replay/test_m2_golden_replay.py`。
 
+## M3 多角色快速试玩（已交付）
+
+创建存档时 body 加 `"scenario":"m3"` 即进入多角色场景（M2 单场景 + 两名「拾荒者」非玩家角色；缺省 `m2` 保持 M2 契约与回放不变）：
+
+```bash
+# 1) 创建 M3 多角色存档
+curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/games \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-m3-create-0001' \
+  -d '{"seed":42,"scenario":"m3"}'
+
+# 2) 回合 2（expected_version=1，输入「环顾四周」）会触发两名拾荒者同回合抢同一瓶药水：
+#    Resolver 只让 actor_id 升序靠前者 applied，后者 rejected；返回 events 只含生效事件
+curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/turns \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-m3-turn-01' \
+  -d '{"game_id":"game_...","input":"环顾四周","expected_version":1}'
+
+# 3) 审计查询（只读）：冲突回合的 applied/rejected 提案与裁决理由
+curl --noproxy '*' "http://127.0.0.1:8000/api/v1/games/game_.../audit?turn_id=2"
+# → 200 {"records":[{proposal_id, actor_id, tool, verdict, verdict_reason, status, ...}]}
+```
+
+- 10 回合多角色固定种子 golden 回放见 `tests/replay/test_m3_golden_replay.py`（final `state_hash=df58e51d…`、13 条事件、审计 16 行）；越权/冲突/CAS 安全用例见 `tests/security/test_actor_scope.py`、`tests/security/test_resolver_security.py`、`tests/integration/test_resolver_cas.py`。
+- 审计状态词固定 `{committed, conflicted, aborted}`，与裁决 `verdict` 分离；审计表只 INSERT、不 UPDATE/DELETE（第 11 章 §11.4）。
+
 ## LLM API 配置（DeepSeek）
 
 意图解析/叙事包装以后要经 LLM（第 8、12 章）。当前已接入 DeepSeek API：模型 `deepseek-flash`（DeepSeek-V4.1-Flash、1M 上下文）、兼容端点 `https://api.deepseek.com`。本阶段只做「凭据 + 连通性」配置；完整 LLMClient（超时/重试/校验修复/成本归集/供应商回退）在 M5 切片 019 实现。
@@ -106,20 +130,21 @@ uv run pip-audit -r artifacts/requirements.lock.txt               # 已知漏洞
 
 CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint-imports → pytest，矩阵用 `uv sync --frozen --python <ver>` 验证解释器）与 `deps`（`uv export` → pip-licenses → 许可证门禁 → pip-audit → CycloneDX SBOM → artifact）。护栏：GPL/AGPL 出现即阻断；项目自身 license 未定前 `check_licenses.py` 默认忽略 `textgame`（第 19 章 R2）。
 
-## 目录结构（M2 完成态）
+## 目录结构（M3 完成态）
 
 ```text
 .
 ├── .github/workflows/ci.yml   # CI：quality（3.10/3.12 矩阵）+ deps（许可证/pip-audit/SBOM）
-├── docs/                       # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档 001–009
+├── alembic.ini、alembic/       # M3：Alembic baseline 迁移（events/snapshots/current/idempotency/audit_events）
+├── docs/                       # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档 001–014
 ├── src/textgame/               # 包根：main.py（组合根/uvicorn 入口）
-│   ├── api/                    # 接入层：/healthz、/api/v1/games、/api/v1/turns、错误码→HTTP 映射、Idempotency-Key
-│   ├── orchestration/          # 回合编排：TurnOrchestrator、关键词解析、模板叙事
-│   ├── agents/                 # 解析 Agent（LLM Schema 校验/修复/兜底）与 ParseOutcome 契约
+│   ├── api/                    # 接入层：/healthz、/api/v1/games（+scenario）、/api/v1/turns、/api/v1/games/{id}/audit、错误映射、Idempotency-Key
+│   ├── orchestration/          # TurnOrchestrator（M2 单角色 / M3 多角色）、ProposalQueue、Resolver、关键词解析、模板叙事
+│   ├── agents/                 # IntentParseAgent（Schema 校验/修复/兜底）、DeterministicCharacterAgent、ParseOutcome 契约
 │   ├── tools/                  # @tool JSON Schema、ToolRegistry 白名单/actor_scope、ToolGate、M2 六工具
-│   ├── services/               # GameEngine（唯一写入者）、Query/Action Service、仓储端口、TurnResult
-│   ├── persistence/            # SQLAlchemy SQLite：events/snapshots/game_state_current/idempotency + 内存实现
-│   ├── domain/                 # 领域层（零框架依赖）：types/results/events/models/reducers/scenario/rules
+│   ├── services/               # GameEngine（唯一写入者）、Query/Action/Audit Service、ActorDirectory、仓储端口、TurnResult
+│   ├── persistence/            # SQLAlchemy SQLite：events/snapshots/current/idempotency/audit_events、版本重建、内存实现
+│   ├── domain/                 # 领域层（零框架依赖）：types/results/events/models/reducers/scenario（M2/M3 场景）/rules/perception
 │   ├── llm/                    # LLMClient 接口、Schema 修复、供应商适配（litellm 唯一 import 点）与自检
 │   └── config/                 # pydantic-settings 配置与种子派生
 ├── tests/                      # unit/、integration/、replay/、security/、fixtures/golden/
@@ -134,7 +159,7 @@ CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint
 
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册机制、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、**vibe coding 开发计划**、测试策略、依赖与许可证、风险与开放问题、附录、**轻量进度制度**，以及 **Vue 3 前端设计（人物卡 JSON 上传 + LLM 生成 JSON）**。
 - [按章拆分版](docs/开发文档/)：由权威单文件自动生成，便于按章阅读与 review。
-- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009 已完成；M6 前端体验编号区间 025–028）。
+- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009、M3 010–014 已完成；M6 前端体验编号区间 025–028）。
 
 ## 开发进度文档制度
 
