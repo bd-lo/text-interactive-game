@@ -193,8 +193,15 @@ class GameState(BaseModel):
         return self
 
     def apply(self, events: list[Event]) -> GameState:
-        """纯投影：返回新状态，不写库、不改 self。实现见第 14 章。"""
-        raise NotImplementedError  # 由 persistence/replay 模块提供投影
+        """纯投影：返回新状态，不写库、不改 self（第 14 章 14.4）。
+
+        唯一投影实现是 ``domain.reducers.apply_events``；此处局部 import 以避免
+        ``models`` 与 ``reducers`` 的循环依赖。缺失/未知 ``event_type`` 抛
+        ``ValueError``（回放由上层映射 ``INTERNAL``，第 14 章 14.7）。
+        """
+        from .reducers import apply_events
+
+        return apply_events(self, events)
 
 
 class Proposal(BaseModel):

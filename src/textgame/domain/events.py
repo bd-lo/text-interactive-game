@@ -32,6 +32,7 @@ class Event(BaseModel):
     seq: int | None = Field(default=None, ge=1)  # 存档内全局单调递增，跨回合连续，从 1 起
     actor_id: str = Field(min_length=1, max_length=64)
     method: Annotated[str, Field(pattern=r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$", max_length=48)]
+    event_type: EventType | None = None  # M2 扩展 (第 14 章 14.2 可选字段之一)，reducer 路由键
     params: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
     rng_seed: int | None = Field(default=None, ge=0, le=0x7FFF_FFFF_FFFF_FFFF)  # 有符号 64 位
@@ -73,10 +74,17 @@ class EventType(str, Enum):
     CHARACTER_MOVED = "CHARACTER_MOVED"
     ITEM_TAKEN = "ITEM_TAKEN"
     ITEM_CONSUMED = "ITEM_CONSUMED"
+    # M2 按第 6 章 §6.4 动作表扩展（第 14 章 §14.7 核心表未列，已登记 M2 契约偏离）：
+    # talk_to -> dialogue_exchanged
+    DIALOGUE_EXCHANGED = "DIALOGUE_EXCHANGED"
     CRAFT_DETERMINISTIC = "CRAFT_DETERMINISTIC"
     CRAFT_GENERATED = "CRAFT_GENERATED"
     CRAFT_REJECTED = "CRAFT_REJECTED"
     ADMIN_CORRECTION = "ADMIN_CORRECTION"
+
+
+# Event.event_type 需要在 EventType 定义之后解析（模型定义在枚举之前，保持 M1 文件结构）。
+Event.model_rebuild()
 
 
 class ReplayMismatchError(ValueError):

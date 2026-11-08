@@ -407,12 +407,17 @@ def test_event_is_frozen() -> None:
 
 
 def test_event_type_values_match_chapter_14_7() -> None:
-    """14.7：核心事件类型 8 个，game_created 为小写字面名。"""
+    """14.7 核心事件类型 + M2 扩展：共 9 个，game_created 为小写字面名。
+
+    M2 按第 6 章 §6.4 动作表扩展 ``DIALOGUE_EXCHANGED``（talk_to -> dialogue_exchanged）；
+    第 14 章 §14.7 核心表未列该成员，已登记为 M2 契约偏离（见 .work/m2-contract.md §3.1）。
+    """
     assert {member.value for member in EventType} == {
         "game_created",
         "CHARACTER_MOVED",
         "ITEM_TAKEN",
         "ITEM_CONSUMED",
+        "DIALOGUE_EXCHANGED",
         "CRAFT_DETERMINISTIC",
         "CRAFT_GENERATED",
         "CRAFT_REJECTED",
@@ -845,10 +850,24 @@ def test_gamestate_is_frozen() -> None:
         state.turn = 2
 
 
-def test_gamestate_apply_is_not_implemented() -> None:
-    """5.5 原文：apply 保留 NotImplementedError，投影由 persistence/replay 提供。"""
+def test_gamestate_apply_delegates_to_reducers() -> None:
+    """M2-005：apply 委托 ``domain.reducers.apply_events``（M1 的 NotImplementedError 已演进）。
+
+    第 14 章 14.7 的 reducer 落地后 apply 是纯投影：正常事件可投影、缺失 event_type
+    抛 ValueError、且不修改原状态（frozen）。完整 reducer 分支见 tests/unit/test_reducers.py。
+    """
     state = GameState(**_state_kwargs())
-    with pytest.raises(NotImplementedError):
+    event = _draft_event(
+        event_type=EventType.DIALOGUE_EXCHANGED,
+        params={"npc_id": NPC_ID, "topic": "你好"},
+        result={"dialogue_state": "greeted"},
+    )
+
+    projected = state.apply([event])
+
+    assert projected.npcs[NPC_ID].dialogue_state == "greeted"
+    assert state.npcs[NPC_ID].dialogue_state == "idle"  # frozen：原状态不被修改
+    with pytest.raises(ValueError, match="event_type"):
         state.apply([_draft_event()])
 
 
