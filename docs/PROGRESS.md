@@ -47,19 +47,20 @@
 
 | 风险编号 | 摘要 | 等级 | 状态 | 负责人 |
 | --- | --- | --- | --- | --- |
-| R-L1 | 许可证污染（AGPL/NOASSERTION 混入） | 高 | 缓解中（CI deps job + `scripts/check_licenses.py` 门禁；真实环境 157 包扫描 0 阻断；待首次 push 验证 Actions 运行） | lead |
+| R-L1 | 许可证污染（AGPL/NOASSERTION 混入） | 高 | 缓解中（CI run #1（commit `5ec780b`）deps job 实跑通过；本地真实环境 157 包扫描 0 阻断；`scripts/check_licenses.py` 门禁生效） | lead |
 | R-L3 | 上传恶意 JSON / XSS 注入 | 高 | 未开始（M6 范围，尚未进入） | lead |
 | R-L4 | 复制粘贴许可证污染（AI 生成代码夹带 GPL 片段） | 高 | 缓解中（M1 无外部代码拷贝；check_licenses 仅扫依赖许可证，代码片段来源仍靠 review 清单） | lead |
 | R-L5 | 上下文 / 提交泄漏密钥（.env、token、真实数据） | 高 | 缓解中（`.env` gitignored + `check_secrets.py` pre-commit 门禁 + `Settings.llm_api_key` SecretStr；审计确认密钥零入库） | lead |
 | R-T7 | AI 幻觉 API / 依赖 | 高 | 缓解中（uv.lock 锁定 + mypy strict + 单元/回放测试 + import-linter 门禁） | lead |
-| R1（M1 新开） | Python 3.10 兼容：CI 矩阵未实跑 | 中 | 缓解中（本地 3.10.22 实跑 402 passed，含中文路径绕过方式；GitHub Actions 端待首次 push 确认） | lead |
+| R1（M1 新开） | Python 3.10 兼容：CI 矩阵未实跑 | 中 | 已关闭（GitHub Actions run #1（commit `5ec780b`）3.10/3.12 矩阵实跑通过；本地亦用 3.10.22 实跑 402 passed） | lead |
 | R2（M1 新开） | 项目自身许可证未定（`textgame` 在 pip-licenses 中为 UNKNOWN） | 低（发布前） | 打开（许可证门禁已默认忽略自身；发布前需决策） | lead |
-| R3（M1 新开） | MPL-2.0 传递依赖（orjson/certifi/pathspec/tqdm/hypothesis）文件级义务未登记 | 低 | 缓解中（deps job 已生成 CycloneDX SBOM；文件级义务登记随发布流程） | lead |
+| R3（M1 新开） | MPL-2.0 传递依赖（orjson/certifi/pathspec/tqdm/hypothesis）文件级义务未登记 | 低 | 缓解中（CI deps job 已生成 CycloneDX SBOM artifact；文件级义务登记随发布流程） | lead |
 
 ## 7. 当前状态与下一步
 
 - 当前状态：**M1 骨架已完成（4/4 = 100.0%）**。001 环境/最小服务、002 领域模型（246 单测）、003 事件日志与固定种子回放（28 回放测试，golden seed 一致）、004 CI/许可证门禁（402 全量测试、deps 三件套本地彩排）均已交付；M1 出口验收：`uv run pytest -q` → 402 passed、ruff/mypy/lint-imports 全绿、uvicorn `/healthz` 200、1+ 条事件派生重放一致、许可证扫描 0 阻断。
 - 环境追加项（不计入切片完成度）：DeepSeek API（`deepseek-flash`）凭据与连通性自检已配置——密钥仅存 `.env`（gitignored，不入库）；自检命令 `uv run python -m textgame.llm.smoke`。
+- CI：M1 代码已 push 到 `origin/main`（`b261e50..5ec780b`），GitHub Actions **run #1（commit `5ec780b`）已完成且成功**（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM 全通过），R1 关闭。
 - 当前阻塞：无。
 - 下一步：005 · turn-api（M2 单场景 MVP），验收命令 `uv run pytest tests/integration/test_turn_api.py`；写操作必须带 `Idempotency-Key`。
-- 需要 lead 决策：① 项目许可证决策（发布前，对应 R2）；② 是否把当前 4 个 slice commit push 到 `origin/main`（本地已提交，未 push）；③ 第 20 章 Q9 CI 沙箱 / Q10 上下文白名单需在后续里程碑前定案。
+- 需要 lead 决策：① 项目许可证决策（发布前，对应 R2）；② 第 20 章 Q9 CI 沙箱 / Q10 上下文白名单需在后续里程碑前定案。
