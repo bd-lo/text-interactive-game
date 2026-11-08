@@ -45,12 +45,14 @@
 | --- | --- | --- | --- | --- |
 | R-L1 | 许可证污染（AGPL/NOASSERTION 混入） | 高 | 缓解中（161 包扫描 GPL/AGPL = 0，pip-audit 无已知漏洞；项目自身 license 待定，见 001 R2） | lead |
 | R-L4 | 复制粘贴许可证污染（AI 生成代码夹带 GPL 片段） | 高 | 缓解中（本切片无外部代码拷贝，仅依赖安装） | lead |
+| R-L5 | 上下文 / 提交泄漏密钥（.env、token、真实数据） | 高 | 缓解中（LLM API Key 仅存 `.env` 且 gitignored，不入库；`scripts/check_secrets.py` 已接入 pre-commit `secret-scan`；`Settings.llm_api_key` 为 SecretStr，repr/日志脱敏） | lead |
 | R-T7 | AI 幻觉 API / 依赖 | 高 | 缓解中（uv.lock 锁定 + mypy strict + pytest + import-linter 门禁） | lead |
 | R1（M1-001 新开） | Python 3.10 CI 矩阵未实跑，仅有静态兼容保障 | 中 | 打开（004 落地 3.10/3.12 双矩阵） | lead |
 
 ## 7. 当前状态与下一步
 
 - 当前状态：M1 骨架进行中（1/4，25.0%）；001-walking-skeleton 已交付并通过独立验收（verifier 9 大项 PASS，报告见本地 `.work/verification-report.md`）；002 未开始。
+- 环境追加项（不计入切片完成度）：DeepSeek API（`deepseek-flash`）凭据与连通性自检已配置——密钥仅存 `.env`（gitignored，不入库）；配置项 `TEXTGAME_LLM_PROVIDER/MODEL/BASE_URL/API_KEY`；自检命令 `uv run python -m textgame.llm.smoke`。M1 完成度仍为 1/4 = 25.0%。
 - 当前阻塞：无。
 - 下一步：002 · domain-models，验收命令 `uv run pytest tests/unit/test_domain_models.py`（字段按第 5 章 5.2–5.5，不得自创）。
 - 需要 lead 决策：① 项目许可证决策（发布前，对应 001 R2；004 许可证 CI 需先排除自包）；② 第 20 章 Q9 CI 沙箱 / Q10 上下文白名单需在 M1-004 前定案。

@@ -19,6 +19,11 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+      - id: secret-scan
+        name: secret scan（阻断疑似 API 密钥入库，第20章 R-L5）
+        entry: uv run python scripts/check_secrets.py
+        language: system
+        types: [text]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

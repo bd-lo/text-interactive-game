@@ -51,17 +51,27 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 > **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
 
+## LLM API 配置（DeepSeek）
+
+意图解析/叙事包装以后要经 LLM（第 8、12 章）。当前已接入 DeepSeek API：模型 `deepseek-flash`（DeepSeek-V4.1-Flash、1M 上下文）、兼容端点 `https://api.deepseek.com`。本阶段只做「凭据 + 连通性」配置；完整 LLMClient（超时/重试/校验修复/成本归集/供应商回退）在 M5 切片 019 实现。
+
+- **密钥只从环境注入**：把 [.env.example](.env.example) 复制为 `.env`（已被 [.gitignore](.gitignore) 忽略）并填写 `TEXTGAME_LLM_API_KEY`。**禁止**把真实密钥写进任何会被 git 跟踪的文件（README、docs、代码、测试、prompt）。
+- **密钥入库门禁**：`.pre-commit-config.yaml` 的 `secret-scan` hook 调用 [scripts/check_secrets.py](scripts/check_secrets.py)（标准库自建、无新增依赖），任何 staged 文本命中 `sk-` 长串即阻断提交（第 20 章 R-L5）。
+- **配置项**：`TEXTGAME_LLM_PROVIDER=deepseek`、`TEXTGAME_LLM_MODEL=deepseek-flash`、`TEXTGAME_LLM_BASE_URL=https://api.deepseek.com`、`TEXTGAME_LLM_API_KEY=<真实密钥，只写 .env>`。
+- **连通性自检**（真实调用、消耗少量 token）：`uv run python -m textgame.llm.smoke` → `[OK] LLM API 配置可用 ...`；缺密钥退出码 2，API 失败退出码 1。实现见 [src/textgame/llm/providers.py](src/textgame/llm/providers.py) 与 [src/textgame/llm/smoke.py](src/textgame/llm/smoke.py)；LiteLLM 仅在 `llm/providers.py` 内 import（第 12 章 12.1）。
+
 ## 目录结构（M1-001 现状）
 
 ```text
 .
 ├── docs/                 # 开发文档（23 章）、PROGRESS.md、progress/ 单次进度文档
-├── src/textgame/         # 包根：main.py（uvicorn 入口）、api/（应用工厂 + /healthz）、config/（pydantic-settings）
-│   └── domain/ services/ tools/ agents/ orchestration/ llm/ persistence/   # M1–M5 占位包
+├── src/textgame/         # 包根：main.py（uvicorn 入口）、api/（/healthz）、config/（pydantic-settings）、llm/（供应商适配 + 连通性自检）
+│   └── domain/ services/ tools/ agents/ orchestration/ persistence/   # M1–M5 占位包
 ├── tests/                # unit/、integration/（replay/、security/ 随 M2/M3 建立）
+├── scripts/              # 开发/运维脚本：check_secrets.py（密钥入库门禁，pre-commit 调用）
 ├── pyproject.toml        # 三层依赖分组 + ruff/mypy/pytest/coverage/import-linter 配置
 ├── uv.lock               # 依赖锁定（验收一律 uv sync --frozen）
-├── .env.example          # 环境变量样例（可复制为 .env）
+├── .env.example          # 环境变量样例（复制为 .env；.env 已被忽略、不入库）
 └── README.md
 ```
 
