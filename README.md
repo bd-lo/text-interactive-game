@@ -2,7 +2,7 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）、M3 多角色（5/5）与 M4 制造（4/4）均已完成并通过出口独立验收** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；M4 制造交付配方契约（模板/实例分离）、确定性制造与自由制造校验链路、5 个制造 golden 回放与审计（4/4，D-M4-13 生产同口径）；下一步 M5 API 调用治理（019–024）。
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）、M3 多角色（5/5）与 M4 制造（4/4）均已完成并通过出口独立验收；M5 API 调用治理进行中（019-llmclient 已交付，默认离线）** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；M4 制造交付配方契约（模板/实例分离）、确定性制造与自由制造校验链路、5 个制造 golden 回放与审计（4/4，D-M4-13 生产同口径）；下一步 M5 API 调用治理（019–024）。
 
 ## 开发模式（v0.3）
 
@@ -44,7 +44,7 @@ curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"o
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 1093 passed，M4 出口）
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 1129 passed，M5-019）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
@@ -52,7 +52,7 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 > **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
 
-> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（M2 期已验证 3.10.22 全量 638 passed，属历史值；当前 HEAD 全量 1093 passed）。CI 在 ubuntu（UTF-8）上不受影响。
+> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（M2 期已验证 3.10.22 全量 638 passed，属历史值；当前 HEAD 全量 1129 passed）。CI 在 ubuntu（UTF-8）上不受影响。
 
 ## M2 单场景 MVP 快速试玩（已交付）
 
@@ -114,7 +114,7 @@ uv run python -m textgame.persistence.legacy_upgrade --db-url sqlite:///data/tex
 
 ## LLM API 配置（DeepSeek）
 
-意图解析/叙事包装以后要经 LLM（第 8、12 章）。当前已接入 DeepSeek API：模型 `deepseek-flash`（DeepSeek-V4.1-Flash、1M 上下文）、兼容端点 `https://api.deepseek.com`。本阶段只做「凭据 + 连通性」配置；完整 LLMClient（超时/重试/校验修复/成本归集/供应商回退）在 M5 切片 019 实现。
+意图解析/叙事包装以后要经 LLM（第 8、12 章）。当前已接入 DeepSeek API：模型 `deepseek-flash`（DeepSeek-V4.1-Flash、1M 上下文）、兼容端点 `https://api.deepseek.com`。默认仍离线（`TEXTGAME_LLM_ENABLED=false`，零联网）；M5-019 已交付 `LiteLLMClient` 治理（超时/重试/限流/幂等/日志/计量）与默认离线工厂，真实 Agent 接线与成本/回退/缓存归 M5 后续切片与出口附加项。
 
 - **密钥只从环境注入**：把 [.env.example](.env.example) 复制为 `.env`（已被 [.gitignore](.gitignore) 忽略）并填写 `TEXTGAME_LLM_API_KEY`。**禁止**把真实密钥写进任何会被 git 跟踪的文件（README、docs、代码、测试、prompt）。
 - **密钥入库门禁**：`.pre-commit-config.yaml` 的 `secret-scan` hook 调用 [scripts/check_secrets.py](scripts/check_secrets.py)（标准库自建、无新增依赖），任何 staged 文本命中 `sk-` 长串即阻断提交（第 20 章 R-L5）。
@@ -173,7 +173,7 @@ CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint
 
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册机制、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、**vibe coding 开发计划**、测试策略、依赖与许可证、风险与开放问题、附录、**轻量进度制度**，以及 **Vue 3 前端设计（人物卡 JSON 上传 + LLM 生成 JSON）**。
 - [按章拆分版](docs/开发文档/)：由权威单文件自动生成，便于按章阅读与 review。
-- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009、M3 010–014、M4 015–018 已完成；M5 019–024 未开始；M6 前端体验编号区间 025–028）。
+- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009、M3 010–014、M4 015–018 已完成；M5 019–024 进行中，019 已交付；M6 前端体验编号区间 025–028）。
 
 ## 开发进度文档制度
 
