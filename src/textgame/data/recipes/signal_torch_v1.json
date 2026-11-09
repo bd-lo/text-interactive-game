@@ -1,0 +1,30 @@
+{
+  "recipe_id": "recipe.signal_torch",
+  "name": "信号火把",
+  "version": 1,
+  "inputs": [
+    {"template_id": "item.torch", "qty": 1, "role": "material"},
+    {"template_id": "item.copper_wire", "qty": 2, "role": "material"}
+  ],
+  "output_template_id": "item.signal_torch",
+  "output_qty": 1,
+  "station": null,
+  "skill_req": {},
+  "base_success_rate": 0.95,
+  "quality_bands": [
+    {"min_roll": 0.0, "quality": "common"},
+    {"min_roll": 0.85, "quality": "fine"}
+  ],
+  "byproducts": [],
+  "item_templates": {
+    "item.signal_torch": {
+      "template_id": "item.signal_torch",
+      "name": "信号火把",
+      "description": "用铜线缠过的火把，点燃时火星更亮，也更容易被远处看见。",
+      "tags": ["light", "crafted"],
+      "stats": {},
+      "rarity": "common",
+      "stackable": false
+    }
+  }
+}

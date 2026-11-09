@@ -1,0 +1,43 @@
+{
+  "recipe_id": "recipe.forge_sword",
+  "name": "铁剑",
+  "version": 1,
+  "inputs": [
+    {"template_id": "item.iron_ingot", "qty": 2, "role": "material"},
+    {"template_id": "item.oak_handle", "qty": 1, "role": "material"},
+    {"template_id": "item.forge_hammer", "qty": 1, "role": "tool"}
+  ],
+  "output_template_id": "item.iron_sword",
+  "output_qty": 1,
+  "station": "station.forge",
+  "skill_req": {},
+  "base_success_rate": 0.85,
+  "quality_bands": [
+    {"min_roll": 0.0, "quality": "common"},
+    {"min_roll": 0.8, "quality": "fine"},
+    {"min_roll": 0.95, "quality": "masterwork"}
+  ],
+  "byproducts": [
+    {"template_id": "item.iron_slag", "qty": 1, "chance": 0.25}
+  ],
+  "item_templates": {
+    "item.iron_sword": {
+      "template_id": "item.iron_sword",
+      "name": "铁剑",
+      "description": "可靠的铁制长剑，刃口泛着冷光。",
+      "tags": ["weapon", "sword"],
+      "stats": {"attack": 3},
+      "rarity": "common",
+      "stackable": false
+    },
+    "item.iron_slag": {
+      "template_id": "item.iron_slag",
+      "name": "铁渣",
+      "description": "锻造剩下的碎铁，还能回炉。",
+      "tags": ["material"],
+      "stats": {},
+      "rarity": "common",
+      "stackable": true
+    }
+  }
+}

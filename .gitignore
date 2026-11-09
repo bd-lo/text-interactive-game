@@ -42,6 +42,7 @@ tmp/
 
 # 运行时数据与验收产物（第16章 data/、第19章 19.5 artifacts/）
 data/
+!src/textgame/data/
 artifacts/
 
 # 前端构建产物（M6；Node 仅构建期）
