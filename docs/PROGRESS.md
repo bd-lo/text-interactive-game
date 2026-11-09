@@ -1,7 +1,7 @@
 # 总体进展总览（PROGRESS）
 
 > 本文件与 `docs/progress/` 下的单次进度文档配合使用；每次新建进度文档必须在同一提交或 PR 内更新本文件。
-> 统计基准日：2026-11-10 ｜ 当前里程碑：**M5 API 调用治理（进行中 1/6，019-llmclient 已交付）** ｜ 下一个可用编号：**020**（M5 019–024；M6 前端体验 025–028 已预留）
+> 统计基准日：2026-11-10 ｜ 当前里程碑：**M5 API 调用治理（进行中 2/6，019-llmclient、020-model-tier-cache 已交付）** ｜ 下一个可用编号：**021**（M5 019–024；M6 前端体验 025–028 已预留；M6 后端前置为出口附加项、不占编号）
 
 ## 1. 里程碑状态
 
@@ -11,8 +11,8 @@
 | M2 | 单场景 MVP | 005–009 | 已完成 | 5/5 | 100.0% | [009](progress/009-2026-11-08-golden-replay.md) | 无 |
 | M3 | 多角色 | 010–014 | 已完成 | 5/5 | 100.0% | [014](progress/014-2026-11-09-conflict-audit.md) | 无 |
 | M4 | 制造 | 015–018 | 已完成 | 4/4 | 100.0% | [018](progress/018-2026-11-09-craft-replay.md) | 无 |
-| M5 | API 调用治理 | 019–024 | 进行中 | 1/6 | 16.7% | [019](progress/019-2026-11-10-llmclient.md) | 无 |
-| M6 | 前端体验 | 025–028 | 未开始 | 0/4 | 0.0% | - | 无 |
+| M5 | API 调用治理 | 019–024 | 进行中 | 2/6 | 33.3% | [020](progress/020-2026-11-10-model-tier-cache.md) | 无 |
+| M6 | 前端体验 | 025–028 | 未开始 | 0/4 | 0.0% | - | 无（出口含「M6 后端前置」出口附加项，D-M6-1..6） |
 
 ## 2. 完成度计算规则
 
@@ -43,6 +43,8 @@
 | 017 | 2026-11-09 | M4 | free-craft-validation | 自由制造：CraftAgent+CraftDraft Schema/一致性校验+失败零写入回滚；13 集成+3 红队新增，全量 1069 passed、M2/M3 golden 零回归 | [017](progress/017-2026-11-09-free-craft-validation.md) |
 | 018 | 2026-11-09 | M4 | craft-replay | 生产同构 5 个制造 golden（确定性成功/材料不足/自由成功/自由 Schema 违规/自由一致性违规）+ 24 回放断言；全量 1093 passed、replay 61（M2/M3 零回归）、M4 4/4（D-M4-14 修复后全量 1096） | [018](progress/018-2026-11-09-craft-replay.md) |
 | 019 | 2026-11-10 | M5 | llmclient | LLMClient 同步契约 + LiteLLMClient 治理（deadline/tenacity≤3/RPM/幂等/日志/计量/记录）+ 默认离线工厂（启用缺 key fail-fast）+ 37 例单测；全量 1129 passed、replay 61 零回归、四门全绿 | [019](progress/019-2026-11-10-llmclient.md) |
+| 020 | 2026-11-10 | M5 | model-tier-cache | `llm/config/` 分层 JSON 配置（包内默认 + `TEXTGAME_LLM_CONFIG` 覆盖、非法 fail-fast）+ `model_tier→(provider, model, api_base)` 分级 + 进程内 `TTLCache`（allowlist 默认空=不缓存、命中 `cache_hit=true`）；23 例单测；全量 1177 passed、replay 61 零回归、四门全绿、覆盖率 88% | [020](progress/020-2026-11-10-model-tier-cache.md) |
+| OSS-1 | 2026-11-10 | 入口轨（不占编号） | playable-entry | 一条命令开玩终端入口（`python -m textgame.console` / `demo --check` / quickstart / examples / README 5 分钟上手）+ 只读 `GET /games/{id}/view` 与背包意图安全子集；demo/console `--check` exit 0、全量 1177 passed、replay 61 零回归、玩家独立验收 PASS | [OSS-1](progress/OSS-1-2026-11-10-playable-entry.md) |
 
 ## 4. 编号分配与变更记录
 
@@ -52,8 +54,10 @@
 | M2 | 005–009 | 005–009 | - | M2 五切片全部交付并通过出口独立验收（PASS，无 P0/P1）；`010` 起进入 M3 多角色 |
 | M3 | 010–014 | 010–014 | - | M3 五切片全部交付：两 NPC 冲突提案被裁决 + 审计、越权/冲突/CAS 安全用例全绿、10 回合多角色 golden 一致；`015` 起进入 M4 制造 |
 | M4 | 015–018 | 015–018 | 019 | M4 制造已完成（4/4，全量 1096 passed、replay 61）；制造契约 D-M4-1–D-M4-15 已定案/回填（见 §5 与 `docs/decisions/2026-11-09-m4-craft-contract.md`）；`019` 起进入 M5 API 调用治理 |
-| M5 | 019–024 | 019 | 020 | 019-llmclient 已交付（全量 1129 passed）；M5 决策 D-M5-1..9 见 `docs/decisions/2026-11-10-m5-api-governance.md`；出口附加项（LLM Agent 接线，不新增编号）见第 17 章 §17.2 |
-| M6 | 025–028 | - | 025 | 编号已预留（M1–M5 完成后启动）；v0.2 新增「前端体验」里程碑 |
+| M5 | 019–024 | 019–020 | 021 | 019/020 已交付（全量 1177 passed、replay 61）；M5 决策 D-M5-1..9 见 `docs/decisions/2026-11-10-m5-api-governance.md`；顺序 020→022→021→024→023（D-TEAM-2）；出口附加项（LLM Agent 接线，不新增编号）见第 17 章 §17.2 |
+| M6 | 025–028 | - | 025 | 编号已预留（M1–M5 完成后启动）；**M6 后端前置**（replay/卡库 8 端点/静态托管/SPA fallback，D-M6-1..6）登记为出口附加项、不占编号；04:50 轮次已交付其中 `GET /games/{id}/view` 只读端点 |
+
+> 范围外入口轨（OSS-1 终端可玩入口）不占 001–028 编号，进度文档以 `OSS-1-*` 单独命名并登记于 §3。
 
 ## 5. 接口偏离登记（对照开发文档第 6、7 章）
 
@@ -63,7 +67,7 @@
 | D-005-2 | `EventType` | 第 14 章 §14.7 核心表未列 `DIALOGUE_EXCHANGED` | 新增 `DIALOGUE_EXCHANGED`（`talk_to` 写事件） | 第 6 章 §6.4 动作表需对话事件 | 已登记 |
 | D-005-3 | `game_created` 载荷 | 第 14 章 §14.7：`card_id`/`card_snapshot`/`starting_room_id`/`initial_character_id`/`snapshot_version`/`save_seed` | result 增 `initial_state` 整状态快照（M2 无人物卡库，回放据此重建） | M2 简化，基线字段不变；M6 人物卡库接入后评估回退 | 已登记 |
 | D-005-4 | `GameState.apply` | 第 5 章：占位 `NotImplementedError`，投影由 persistence/replay 提供 | `domain/reducers.py` 纯投影 + `apply` 委托；persistence/回放复用同一实现 | 第 14 章 §14.7 reducer 落地；`domain` 零框架依赖不变 | 已登记 |
-| D-005-5 | `POST /api/v1/games` | 第 6 章 §6.7 v0.2：body `{card_id}` | M2 body 可选 `{seed}`（无人物卡库） | M2 最小开局；M6 人物卡库接入后按 v0.2 契约补 `card_id` | 已登记 |
+| D-005-5 | `POST /api/v1/games` | 第 6 章 §6.7 v0.2：body `{card_id}`，响应 `{game_id, turn, version, snapshot_version, scenario}` | M2–M4 body `{seed?, scenario?}`、响应含 `save_seed`（无人物卡库） | **2026-11-10 定案（D-M6-2，`docs/decisions/2026-11-10-m6-backend-contract.md`）**：M6 后端前置实现时按加法兼容 —— body `{card_id?, seed?, scenario?}`（同给 `card_id` 与 `seed/scenario` → 422），无 `card_id` 保持现行为；响应以实际 6 字段（含 `save_seed`）为前端类型源，第 6 章已按实际写法回写 | 已定案 |
 | D-M2-1 | 写操作路由 | 第 7 章 §7.4 DESTRUCTIVE → ProposalQueue/Resolver | M2 单角色直接 gate → 服务层 → GameEngine（仍过白名单/scope/Schema/规则前置/唯一写入者），ProposalQueue/Resolver 留 M3 | 第 17 章 M2 范围不含多角色 | 已登记 |
 | D-006-1 | 工具矩阵 | 第 7 章 §7.3 可见性矩阵未列 `use_item` | 新增 `use_item`（DESTRUCTIVE，`ITEM_CONSUMED` 事件）满足 M2「用」动作 | M2 五类动作需求；M2 结束回写第 7 章 | 已登记 |
 | D-006-2 | 工具执行 | 第 7 章工具函数直接执行 | builtin 仅承载 `ToolSpec`/Schema/白名单，执行统一经 `ToolGate` 路由服务层 | 工具函数无法持有 `GameState`（分层与不变量约束） | 已登记 |
@@ -127,21 +131,22 @@
 
 ## 7. 当前状态与下一步
 
-- 当前状态：**M3 多角色已完成（5/5 = 100.0%，出口独立验收 PASS）；M4 制造已完成（4/4 = 100.0%，015-recipe-model、016-deterministic-craft、017-free-craft-validation、018-craft-replay 全部交付）；制造契约已定案（D-M4-1–D-M4-15）并完成文档回写；**M5 API 调用治理进行中（1/6，019-llmclient 已交付）**，M5 决策 D-M5-1..9 已定案并落档 `docs/decisions/`。010–018 全部交付；M4 前定案落地（2026-11-09）：MIT 许可证、`events` 复合主键（同库多存档）+ Alembic 0002、M2 旧库完整升级脚本（备份/失败恢复/幂等）、Q9/Q10 护栏、Q1 编排层追认。**HEAD `0544f76`（M4 收口 + D-M4-14/15 登记）实测全量 1096 passed；M5-019 交付后全量 1129 passed（新增 33 例，1096 基线零回归）、replay 61 passed（M2/M3/M4 = 4/5/24，零回归）**，四门质量门全绿（ruff check/format、mypy 81 files、lint-imports 2 kept）。M3 出口证据（合并提交 `a5f2be3` 时点复算，**全量 960 passed**）：
+- 当前状态：**M1–M4 已完成（4/4、5/5、5/5、4/4 = 100.0%，出口独立验收 PASS）；M5 API 调用治理进行中（2/6，019-llmclient、020-model-tier-cache 已交付）**；M5 决策 D-M5-1..9、04:50 四角色团队方向决策 D-TEAM-1..7、M6 后端契约冻结 D-M6-1..6 均已定案并落档 `docs/decisions/`；M6 前端体验 0/4（后端前置已立项，04:50 轮次交付 `GET /games/{id}/view` 只读端点与终端可玩入口 OSS-1）。**HEAD `1f74de2`（01:50 交接）实测全量 1129 passed；04:50 轮次交付后全量 1177 passed（新增 48 例，零回归）、replay 61 passed（M2/M3/M4 = 4/5/24，零回归）、覆盖率 88%**，四门质量门全绿（ruff check/format 144 files、mypy 84 files、lint-imports 2 kept）。M3 出口证据（合并提交 `a5f2be3` 时点复算，**全量 960 passed**）：
   - 冲突 Demo：两名拾荒者同回合提交冲突提案（turn 2 抢同一瓶药水），Resolver 只让 actor_id 升序靠前者 `applied`、后者 `rejected` 且理由可审计，事件全局 `seq` 连续、`version` 每次提交恰好 +1；
   - 10 回合多角色 golden 回放（`tests/replay/test_m3_golden_replay.py`）：final `state_hash=df58e51d…`、13 条事件、16 行审计；逐回合事件 id/seq/rng_seed/state_hash 精确一致，禁止 snapshot-update；
   - 越权/冲突/CAS 安全用例全绿：124 actor_scope 安全用例（30 格矩阵 + 伪造 scope 零写入）、20 Resolver 安全用例、CAS 过期版本零写入、并发冲突最多 3 次「只重裁决不重解析」；
   - 审计只增表 + `GET /api/v1/games/{id}/audit` 查询；快照 `version` 持久化 + Alembic baseline；M2 638 基线零回归（M2 golden 未复算）。
 - M4 出口证据（4/4，2026-11-09）：配方契约/确定性制造/自由制造校验/5 个制造 golden 全绿；`tests/replay/test_m4_golden_replay.py` 24 例在生产同构装配（D-M4-13）上逐字段断言事件/种子/审计/state_hash；失败回合 version/last_seq/state_hash 三不变且审计 rejected/aborted；M4 replay 24 passed、M2/M3 golden 4/5 passed 零回归；全量 1093 passed。
-- M5 出口证据（019/6 切片，2026-11-10）：LLMClient 同步契约 + LiteLLMClient（整链 deadline、tenacity≤3 仅超时/429/5xx、RPM 令牌桶、幂等复用与在飞、结构化日志脱敏、token 计量、LLMCallRecord）+ uild_llm_client 默认离线/启用缺 key fail-fast（D-M5-6）；37 例单测（	ests/unit/test_llm_client.py）+ 供应商异常分类/
-um_retries=0/SDK 导入边界（	est_llm_providers.py）；全量 1129 passed、replay 61 零回归、四门全绿。
+- M5 出口证据（019–020/6 切片，2026-11-10）：019 交付 LLMClient 同步契约 + LiteLLMClient（整链 deadline、tenacity≤3 仅超时/429/5xx、RPM 令牌桶、幂等复用与在飞、结构化日志脱敏、token 计量、`LLMCallRecord`）+ `build_llm_client` 默认离线/启用缺 key fail-fast（D-M5-6），37 例单测；020 交付 `llm/config/` 分层 JSON 配置（包内默认 + `TEXTGAME_LLM_CONFIG` 覆盖、非法 fail-fast）+ `model_tier → (provider, model, api_base)` 分级 + 进程内 `TTLCache`（allowlist 默认空=不缓存、命中 `cache_hit=true`），23 例单测；全量 **1177 passed**、replay 61 零回归、四门全绿、覆盖率 88%。
+- OSS-1 入口轨证据（2026-11-10，不占 001–028 编号）：`python -m textgame.demo --check` 7/7 回合 exit 0（屏字数 114/83/81/85/82/84/81，两次运行逐字一致）、`python -m textgame.console --check` exit 0（4 回合，状态行 `HP 20/20 ｜ 位置 ｜ 行囊`）；只读 `GET /api/v1/games/{id}/view`（hp/max_hp/inventory/room，零事件、version 不变）+ 意图背包关键词（背包/行囊/物品栏/身上/带了/装备 → `get_inventory`）；`tests/integration/test_console_walkthrough.py` 5 例进 CI 长期烟测；README「5 分钟上手」、`scripts/quickstart.{ps1,sh}`、`examples/m2-demo.md`（实跑生成）；零新增依赖。
 - 出口审计要点：M3 五切片验收命令全部执行并通过；M2 默认路径（`scenario="m2"`）行为/事件/幂等与 M2 契约一致；审计状态词与 verdict 分离、审计只 INSERT；旧库升级与复合主键已在 M4 前定案落地（D-008-3/R5 关闭）。
 - 环境追加项（不计入切片完成度）：DeepSeek API（`deepseek-flash`）凭据与连通性自检已配置——密钥仅存 `.env`（gitignored，不入库）；自检命令 `uv run python -m textgame.llm.smoke`。M5-019 起默认装配仍不联网（`build_llm_client` 返回 `DisabledLLMClient`，`TEXTGAME_LLM_ENABLED=false`）；真实 Agent 接线属 M5 出口附加项。
 - CI：M1–M4 与 M5-019 已 push 到 `origin/main`（M4 收口和 D-M4-14 修复后 HEAD `9d0d8aa`；最新提交见 `git log`）；push 触发 Actions（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM），远端运行结果需 GitHub 页面复核（本机无 gh/凭据）。
 - 当前阻塞：无。
 - M4 前定案（2026-11-09，用户拍板，**已全部定案**）：① **R2 关闭**——项目采纳 **MIT**（`pyproject.toml` `license = "MIT"` + LICENSE + 构建元数据 License-Expression/License-File；`check_licenses.py` 默认不再豁免自身）；② **D-008-3 已关闭**——`events` 主键 `(game_id, seq)`、`event_uid` 唯一 `(game_id, event_uid)`，同库多存档；Alembic 0002 + `textgame.persistence.legacy_upgrade` 旧库升级脚本（备份/失败恢复/幂等，12 用例）；③ **Q9 取 B-lite / Q10 取 B**——CI `timeout-minutes`、quality job 无密钥、测试 socket 禁网 guard、`.aiignore` + secret-scan，第 20 章已回写关闭；④ **M5 LLM Agent 接线**定为「M5 出口附加项，不新增编号」（第 17 章已回写）；⑤ **Alembic 不新增 CI 专属 job**（pytest 已覆盖升级/回滚/schema 一致性）；⑥ **Q1 编排层追认自建 loop**（第 8/4/20 章已回写，D-M3-1 升级为正式决策；LangGraph 仅保留可选封装）；⑦ **M4 制造契约定案**——D-M4-1–D-M4-12（材料模板/实例分离、技能后移、自由制造不接 Resolver、`CraftStateSlice.next_seq`、CRAFT_* 事件语义、JSON 配方、017 校验最小集、工位标签、不加 `craft_id`/`turns` 表、`scenario="m4"` 加法新增、Q2/Q3/Q4/Q8 定案），见 `docs/PROGRESS.md` §5 与 `docs/decisions/2026-11-09-m4-craft-contract.md`（D-M4-1–D-M4-15），相关章节与 PROGRESS 已完成回写；⑧ **M5 API 调用治理决策**——D-M5-1..9（同步契约、修复链归属、`output_schema` 模型类、JSON-only 配置、测试/回放策略、默认离线工厂、已知问题归属、ADR 落档、到期承诺处置），见 `docs/decisions/2026-11-10-m5-api-governance.md`。
+- 04:50 四角色团队决策（2026-11-10）：**D-TEAM-1..7**（定向双轨 B″、M5 顺序 020→022→021→024→023→出口接线、可玩/采用入口轨、玩家体验修复分级、020 配置裁决、本轮交付与不做项）见 `docs/decisions/2026-11-10-0450-team-direction.md`；**D-M6-1..6**（M6 后端前置立项、`POST /games` 加法兼容、replay/view DTO、静态托管/SPA 与分发、Q6=A+C、Q7=A、错误/幂等契约）见 `docs/decisions/2026-11-10-m6-backend-contract.md`。
 - M4 出口后修复（2026-11-10，大规模模拟数据测试发现）：**D-M4-14** `Resolver.resolve` 改为用 `snapshot.rng_state.save_seed` 构造 `ToolContext`/规则前置，修复非默认 seed 存档 craft `rng_seed`/实例 ID 与 `EventLog.stamp` 不一致；新增 `tests/integration/test_craft_seed_binding.py` 3 例（全量 1096 passed）。
 - 大规模模拟数据测试（2026-11-10，mock 脚本/数据全部在 `.work/`，**不入库**）：Lead 批次 360 存档/2880 回合、**20,138 断言全绿**（版本链/失败零写入/幂等/回放哈希/审计只增/对抗输入/并发/制造确定性）；独立验收员另批 180 存档/1560 回合 **14,112/14,113**（唯一失败为并发同键瞬态，P2→D-M4-15）。测试发现并修复 **D-M4-14**（Resolver 种子绑定存档），修复后复测 P1 关闭、全量 1096 passed。
-- 下一步：**M5 020-model-tier-cache**（模型分级 + 缓存命中；`config/llm.json` 分级/回退/价格，D-M5-4）→ 021-schema-repair（修复链归属复核，D-M5-2）→ 022-cost-budget（价格/预算 + `llm_call_log` 表/Alembic 0003 + D-M4-15 关闭）→ 023/024；出口附加项为解析/叙事/角色/裁判 LLM 接线（不新增编号）。验收命令见第 17 章 §17.2，决策见 `docs/decisions/2026-11-10-m5-api-governance.md`。
+- 下一步：**M5 022-cost-budget**（价格表/`estimate_cost`/按 agent-turn 归集/预算降级 + `llm_call_log` 表/Alembic 0003 + D-M4-15 并发同键关闭 + C-1/C-2 到期承诺）→ 021-schema-repair（修复链归属复核，D-M5-2）→ 024-provider-fallback → 023-batch-sleep → M5 出口附加项（解析白名单派生 P2-4(a) → 叙事 → 角色 → 裁判；裁判需 Lead 授权改 Resolver）；**M6 轨道**：M6 后端前置（replay → 卡库 8 端点 + `card_service` + Alembic 0004 → 静态托管/SPA → `web-build` CI）→ 前端 025 骨架 → 027-lite → 027 完整 → 026 → 028；顺序与门控见 `docs/decisions/2026-11-10-0450-team-direction.md`（D-TEAM-2/3）与 `docs/decisions/2026-11-10-m6-backend-contract.md`（D-M6-1..6）。
 - M5 接线注意（M4 验收 P2）：生产 HTTP 解析器目前只产出 recipe 制造意图（`DeterministicIntentParser(recipe_names=...)`），自由制造的自由句解析仅测试注入 `FreeCraftIntentParser`；M5 打开自由制造开关前需补生产解析器 free 意图并在第 13/17 章回写。
-- 需要 lead 决策：① 多存档落地后是否在 M6 前端提供「存档列表/继续游戏」UI；② 发布形态与分发渠道（决定 MIT 下的版权署名/NOTICE 实践，非阻塞）。（第 20 章 Q8 已定案为 B：CI 必跑 lint/type/架构测试/secret scan + AI review 辅助，见 D-M4-12。）
+- 需要 lead 决策：① M6 前端是否提供「存档列表/继续游戏」UI（默认在 027 回合界面内做，D-M6-5）；② 发布形态与分发渠道（D-TEAM-3 已定：先 tag/CHANGELOG 后评估 PyPI，Docker 等 `web/dist` 与 `web-build` CI 就绪后再做；MIT 署名/NOTICE 实践随之落地，非阻塞）。

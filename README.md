@@ -2,7 +2,28 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）、M3 多角色（5/5）与 M4 制造（4/4）均已完成并通过出口独立验收；M5 API 调用治理进行中（019-llmclient 已交付，默认离线）** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；M4 制造交付配方契约（模板/实例分离）、确定性制造与自由制造校验链路、5 个制造 golden 回放与审计（4/4，D-M4-13 生产同口径）；下一步 M5 API 调用治理（019–024）。
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）、M3 多角色（5/5）与 M4 制造（4/4）均已完成并通过出口独立验收；M5 API 调用治理进行中（019-llmclient、020-model-tier-cache 已交付，默认离线）** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；M4 制造交付配方契约（模板/实例分离）、确定性制造与自由制造校验链路、5 个制造 golden 回放与审计（4/4，D-M4-13 生产同口径）；**OSS-1 可玩终端入口已交付**（`python -m textgame.console` 一条命令开玩 + `demo --check` 烟测 + 只读 `GET /games/{id}/view`，见下文「5 分钟上手」）；M6 前端体验 0/4（后端前置 D-M6-1..6 已冻结，`/view` 已交付）；下一步 M5 022（成本/预算/`llm_call_log`）与 M6 后端前置。
+
+## 5 分钟上手（开源使用者）
+
+唯一前置：[uv](https://github.com/astral-sh/uv)（Python 3.12 由 uv 自动下载管理）。默认走离线确定性路径：**不需要 API Key、Node/pnpm 或 curl**，克隆即可玩。
+
+```powershell
+git clone https://github.com/bd-lo/text-interactive-game.git
+cd text-interactive-game
+.\scripts\quickstart.ps1
+# 若被执行策略拦截：powershell -ExecutionPolicy Bypass -File .\scripts\quickstart.ps1
+```
+
+```bash
+git clone https://github.com/bd-lo/text-interactive-game.git
+cd text-interactive-game
+./scripts/quickstart.sh
+```
+
+进入终端后直接输入自然语言（如 `环顾四周`、`拿起火把`、`向北走进地窖`），每回合 80–150 字叙事 + 一行状态（HP/位置/行囊）；`:help` 看命令，`:inv` 看行囊，`:status` 看状态，`:quit` 退出。存档默认写入 `data/textgame.db`（已 gitignore）。
+
+想先看固定 seed 的 7 屏演示而不进入交互：`uv run python -m textgame.demo`（实际输出见 [examples/m2-demo.md](examples/m2-demo.md)）；自动验收：`uv run python -m textgame.demo --check` 与 `uv run pytest -q tests/integration/test_console_walkthrough.py`。真实 LLM 叙事属可选升级（见下文「LLM API 配置」），不配置就一直是离线可玩。
 
 ## 开发模式（v0.3）
 
@@ -44,7 +65,7 @@ curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"o
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 1129 passed，M5-019）
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 1177 passed，M5-020 + OSS-1）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
@@ -173,7 +194,8 @@ CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint
 
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册机制、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、**vibe coding 开发计划**、测试策略、依赖与许可证、风险与开放问题、附录、**轻量进度制度**，以及 **Vue 3 前端设计（人物卡 JSON 上传 + LLM 生成 JSON）**。
 - [按章拆分版](docs/开发文档/)：由权威单文件自动生成，便于按章阅读与 review。
-- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009、M3 010–014、M4 015–018 已完成；M5 019–024 进行中，019 已交付；M6 前端体验编号区间 025–028）。
+- [开发进度总览](docs/PROGRESS.md) 与 [单次进度文档目录](docs/progress/)：按开发文档第 22 章制度执行（M1 001–004、M2 005–009、M3 010–014、M4 015–018 已完成；M5 019–024 进行中，019/020 已交付；M6 前端体验编号区间 025–028，后端前置为出口附加项不占编号；入口轨 OSS-1 文档单独命名）。
+- [决策记录（ADR-lite）](docs/decisions/)：D-M4-* / D-M5-* / D-TEAM-* / D-M6-* 的单一权威来源。
 
 ## 开发进度文档制度
 
