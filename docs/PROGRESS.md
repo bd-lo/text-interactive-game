@@ -99,6 +99,7 @@
 | D-M4-12 | 治理项（Q2/Q3/Q4/Q8） | 第 20 章 §20.3：Q2/Q3/Q4/Q8 未定案 | Q4=B（M4 落地）；Q2=C、Q3=B、Q8=B 关闭 | 见第 20 章 §20.3/§20.4（D-M4-12，裁决 A-05） | 已回写 |
 | D-M4-13 | 生产装配口径 | 第 13 章 §13.4/§13.6、D-M4-3：M4 制造「不接 ProposalQueue/Resolver」 | 生产装配复用 M3 编排链路：Player Proposal→ProposalQueue→确定性 Resolver→ToolGate→CraftService→GameEngine 单事务；m4 无 NPC Agent→无跨角色冲突、无 Judge 覆盖；失败提案照常写 `audit_events`（committed/aborted/conflicted，逐提案 verdict=applied/rejected） | D-M4-3 仅指「草案不入队」；018 golden 用生产同构 harness（`m4_prod_harness`）生成，9 章文档已回写 | 已回写 |
 | D-M4-14 | 制造种子绑定（缺陷修复） | 第 13 章 §13.2 / D-M4-4：`ctx.save_seed` 来源未显式绑定存档 | `Resolver.resolve` 改用 `snapshot.rng_state.save_seed` 构造 `ToolContext`/规则前置（不再用组合根默认 save-42）；修复显式非 42 seed 的 m4 存档 `event.rng_seed == result.craft.rng_seed` 与实例 ID 派生 | 生产装配修复（2026-11-10，大规模模拟数据测试发现；新增 `tests/integration/test_craft_seed_binding.py` 3 例） | 已修复 |
+| D-M4-15 | 并发幂等占位（P2 已知限制） | 第 6 章 §6.7 幂等键语义：同键并发首次请求未定义 | 同 `Idempotency-Key` 并发提交时，未命中缓存的竞争请求可能瞬时返回 CONFLICT/INVALID_INPUT 而非首结果；串行重试可重放成功响应，只提交一次（大规模模拟测试 P2，非 D-M4-14 引入） | M5 可加幂等占位/互斥（in-flight 锁）消除瞬态差异；当前不阻塞 | 已知限制（M5） |
 
 ## 6. 风险与阻塞摘要（与开发文档第 20 章同一编号）
 
@@ -132,6 +133,7 @@
 - 当前阻塞：无。
 - M4 前定案（2026-11-09，用户拍板，**已全部定案**）：① **R2 关闭**——项目采纳 **MIT**（`pyproject.toml` `license = "MIT"` + LICENSE + 构建元数据 License-Expression/License-File；`check_licenses.py` 默认不再豁免自身）；② **D-008-3 已关闭**——`events` 主键 `(game_id, seq)`、`event_uid` 唯一 `(game_id, event_uid)`，同库多存档；Alembic 0002 + `textgame.persistence.legacy_upgrade` 旧库升级脚本（备份/失败恢复/幂等，12 用例）；③ **Q9 取 B-lite / Q10 取 B**——CI `timeout-minutes`、quality job 无密钥、测试 socket 禁网 guard、`.aiignore` + secret-scan，第 20 章已回写关闭；④ **M5 LLM Agent 接线**定为「M5 出口附加项，不新增编号」（第 17 章已回写）；⑤ **Alembic 不新增 CI 专属 job**（pytest 已覆盖升级/回滚/schema 一致性）；⑥ **Q1 编排层追认自建 loop**（第 8/4/20 章已回写，D-M3-1 升级为正式决策；LangGraph 仅保留可选封装）；⑦ **M4 制造契约定案**——D-M4-1–D-M4-12（材料模板/实例分离、技能后移、自由制造不接 Resolver、`CraftStateSlice.next_seq`、CRAFT_* 事件语义、JSON 配方、017 校验最小集、工位标签、不加 `craft_id`/`turns` 表、`scenario="m4"` 加法新增、Q2/Q3/Q4/Q8 定案），见 `docs/PROGRESS.md` §5 D-M4-1–D-M4-12，相关章节与 PROGRESS 已完成回写。
 - M4 出口后修复（2026-11-10，大规模模拟数据测试发现）：**D-M4-14** `Resolver.resolve` 改为用 `snapshot.rng_state.save_seed` 构造 `ToolContext`/规则前置，修复非默认 seed 存档 craft `rng_seed`/实例 ID 与 `EventLog.stamp` 不一致；新增 `tests/integration/test_craft_seed_binding.py` 3 例（全量 1096 passed）。
+- 大规模模拟数据测试（2026-11-10，mock 脚本/数据全部在 `.work/`，**不入库**）：Lead 批次 360 存档/2880 回合、**20,138 断言全绿**（版本链/失败零写入/幂等/回放哈希/审计只增/对抗输入/并发/制造确定性）；独立验收员另批 180 存档/1560 回合 **14,112/14,113**（唯一失败为并发同键瞬态，P2→D-M4-15）。测试发现并修复 **D-M4-14**（Resolver 种子绑定存档），修复后复测 P1 关闭、全量 1096 passed。
 - 下一步：**M5 API 调用治理（019–024）**，首切片 **019-llmclient**（LLMClient 抽象/重试/超时/错误映射），验收 `uv run pytest tests/unit/test_llmclient.py -q`（测试待新建）；M5 出口附加项为解析/叙事/角色/裁判 Agent 的 LLM 接线（不新增编号）；M4 切片明细见第 17 章 §17.2，决策见 `docs/PROGRESS.md` §5 D-M4-1–D-M4-13。
 - M5 接线注意（M4 验收 P2）：生产 HTTP 解析器目前只产出 recipe 制造意图（`DeterministicIntentParser(recipe_names=...)`），自由制造的自由句解析仅测试注入 `FreeCraftIntentParser`；M5 打开自由制造开关前需补生产解析器 free 意图并在第 13/17 章回写。
 - 需要 lead 决策：① 多存档落地后是否在 M6 前端提供「存档列表/继续游戏」UI；② 发布形态与分发渠道（决定 MIT 下的版权署名/NOTICE 实践，非阻塞）。（第 20 章 Q8 已定案为 B：CI 必跑 lint/type/架构测试/secret scan + AI review 辅助，见 D-M4-12。）
