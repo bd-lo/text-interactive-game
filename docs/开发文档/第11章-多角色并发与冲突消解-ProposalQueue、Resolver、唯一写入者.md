@@ -74,7 +74,7 @@ class EventService:
 
 `Resolver.resolve` 的 `judgements` 由编排层在第 9 章步骤 6 调用 `JudgeAgent` 并完成 Schema 校验后传入（与 `proposals` 顺序对齐，可为空）；`needs_judge` 分支只对 `confidence >= 0.7` 且 `reason` 非空的证据调用 `RuleEngine.verify_agent_override(ctx, proposal, judge)` 复核，证据缺失或低置信时调用 `RuleEngine.deterministic_fallback(ctx, proposal, snapshot)` 做确定性兜底（保守、不产生有利效果）。这两个 `RuleEngine` 方法均为纯计算、零事件，返回 `Outcome`；`Resolver` 本身仍不调模型、不写库、不读时钟。
 
-**自由制造的 M4 边界（D-M4-3）**：自由制造在 M4 单角色场景（`scenario="m4"`，无 NPC Agent）里由 `CraftService` 完成 Schema 校验与数值重算、产出草稿事件后，直接交 `GameEngine.submit`，**不经 `ProposalQueue`/`Resolver`**；`CraftProposal` 仅作为 M5 契约保留。M5 接真实 LLM 前必须把草案生成迁到 pre-queue（入队前完成），否则「同一输入必得同一 `Resolution`」的纯函数约束被破坏。
+**自由制造的 M4 边界（D-M4-3 / D-M4-13）**：M4 制造（含自由路径）作为普通 `DESTRUCTIVE` 工具复用既有 M3 编排链路——玩家 `craft_item` 仍是 Proposal → `ProposalQueue` → 确定性 `Resolver` → `ToolGate` → `CraftService` → `GameEngine`，`scenario="m4"` 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖；失败提案照常写 `audit_events`。D-M4-3 的「不接 Resolver」仅指自由制造草案本身不经裁决、`CraftProposal` 不进入 `ProposalQueue`（仅作为 M5 契约保留）。M5 接真实 LLM 前必须把草案生成迁到 pre-queue（入队前完成），否则「同一输入必得同一 `Resolution`」的纯函数约束被破坏。
 
 ### 11.3 CAS 乐观锁与冲突重试
 

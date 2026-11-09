@@ -192,7 +192,7 @@ class ToolRegistry:
 
 **里程碑标注（A-09 回写）**：上表 9 个工具中，M2 已实现 6 个（`get_room_view`/`get_inventory`/`move_to`/`take_item`/`use_item`/`talk_to`，见 `tools/builtin/m2.py`）；`craft_item` 由 M4 落地（`tools/builtin/crafting.py`，新增 `build_game_tool_registry()`，不改 `build_m2_tool_registry`）；`attack_target`/`transfer_item` 为后续里程碑计划、当前未注册。`use_item` 为 M2 新增动作，矩阵行本次回写补齐（player/system ✅、npc 系列 ❌），不放宽既有授权。
 
-**`craft_item` 的 M4 执行链**：`ToolGate.dispatch` → `CraftService.craft`（第 6 章 §6.3，服务层只产草稿事件）→ 单角色场景 `scenario="m4"`（无 NPC Agent）由编排层直接交 `GameEngine.submit`；M4 不接 `ProposalQueue`/`Resolver`（`CraftProposal` 仅 M5 契约保留，D-M4-3），`rng_seed` 由服务层用 `CraftStateSlice.next_seq` 派生（D-M4-4），事件语义按 D-M4-5（成功 `CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`，`CRAFT_REJECTED` M4 不产生）。
+**`craft_item` 的 M4 执行链（D-M4-13）**：M4 制造作为普通 DESTRUCTIVE 工具复用 M3 编排链路——玩家 Proposal → `ProposalQueue` → 确定性 `Resolver`（m4 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖）→ `ToolGate.dispatch` → `CraftService.craft`（第 6 章 §6.3，服务层只产草稿事件）→ `GameEngine.submit`；失败提案由编排层照常写 `audit_events`。D-M4-3 仅指自由制造草案不入队（`CraftProposal` 仅 M5 契约保留，M5 接线前须迁 pre-queue）；`rng_seed` 由服务层用 `CraftStateSlice.next_seq` 派生（D-M4-4），事件语义按 D-M4-5（成功 `CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`，`CRAFT_REJECTED` M4 不产生）。
 
 **M3 多角色扩展（2026-11-09 活文档回写，≤10 行）**：`take_item` 新增细粒度授权标签 `npc:scavenger`（仅「拾荒者」非玩家角色可见；默认 `npc`/`npc:blacksmith` 仍 ❌，安全用例逐格断言未放宽）；`use_item` 为 M2 新增动作（矩阵行见上表，本次回写补齐：player/system ✅，npc 系列 ❌）；`move_to` 对 `npc` 标签的 ✅ 在 M3 校正落地。完整偏离登记见 `docs/PROGRESS.md` §5 D-M3-5。
 
@@ -208,7 +208,7 @@ class ToolRegistry:
 | DESTRUCTIVE | manual | 进入人工/作者审核队列（MVP 不启用）；`Resolver` 返回 `deferred` | `NOT_ALLOWED`（未授权）/ `deferred` |
 | NETWORK | 任意 | 注册期直接拒绝（`ToolSpec` 不变量），核心工具层没有网络工具 | 注册失败 |
 
-**链路差异（M4 回写）**：上表的「DESTRUCTIVE → Proposal → Resolver」是启用 Resolver 的 M3 多角色链路；`scenario="m2"`/`"m4"` 单角色场景未注入 Resolver，DESTRUCTIVE 工具由 `ToolGate` 直接路由服务层后交 `GameEngine`（第 6 章 §6.1、§6.3），`craft_item` 的 M4 执行链见 §7.3。
+**链路装配（2026-11-09 补写，D-M4-13）**：生产装配 `main.py` 注入 registry/resolver/actors/audit 后，`TurnOrchestrator.run()` 对所有场景统一走 `_run_multi_actor`，即上表的「DESTRUCTIVE → Proposal → Resolver」链路；`scenario="m4"` 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖（`resolution_policy=deterministic`）；测试 harness 未注入 M3 依赖时保留 M2 `_run_single_actor` 兼容路径（M2 回归）。`craft_item` 的 M4 执行链见 §7.3。
 
 `agent_assisted` 的复核与兜底接口由 `RuleEngine`（`domain/rules/engine.py`）定稿两个方法名，第 11 章 §11.2 与第 21 章 §21.2.2 直接引用，本节只引用、不新增模型：
 

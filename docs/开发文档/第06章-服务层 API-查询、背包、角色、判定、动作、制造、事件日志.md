@@ -190,9 +190,11 @@ class CraftService:
            `rng_seed = RandomSource.derive_seed(save_seed, turn_id, actor_id, "craft_item", next_seq)`，
            成功率、消耗、质量、产出全部由该纯函数计算，服务层不重算、不改写数值；
         3) 生成路径先把第 8 章 `CraftOutput` 规范化为 `CraftDraft`，再过 JSON Schema
-           + 状态一致性检查（第 13 章 §13.4），失败即拒绝；M4 单角色场景（`scenario="m4"`，无 NPC Agent）
-           不接 ProposalQueue/Resolver：`CraftProposal` 仅作为 M5 契约保留，草稿事件由编排层直接交
-           `GameEngine.submit`（D-M4-3；M5 接线前须迁移到 pre-queue，否则违反第 11 章 Resolver 纯函数约束）；
+           + 状态一致性检查（第 13 章 §13.4），失败即拒绝；M4 制造（含自由路径）作为普通 DESTRUCTIVE
+           工具复用 M3 编排链路：玩家 Proposal 经 ProposalQueue → 确定性 Resolver（其内调 ToolGate → CraftService
+           取草稿事件）后交 `GameEngine.submit`（D-M4-13；m4 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖）；D-M4-3
+           仅指 `CraftProposal` 不入队（仅 M5 契约保留），M5 接线前须迁移到 pre-queue（第 11 章 Resolver
+           纯函数约束）；
         4) 无论哪条路径，都只返回 Result(ok=True, data={"craft": CraftResult}, events=[草稿 Event])（`CraftResult` 为实例化前模板级结果；实例 ID/完整定义见事件 `result.produced_items`，N-01）：
            **服务层不提交状态、不调 GameEngine**（提交只由 GameEngine 做）。
         事件（event_type 以第 13、14 章为准）：配方路径 `CRAFT_DETERMINISTIC`、自由路径 `CRAFT_GENERATED`
@@ -205,7 +207,7 @@ class CraftService:
         SCHEMA_VIOLATION(LLM 原始草案未过 Schema，经第 12 章修复重试后仍失败)"""
 ```
 
-制造模块的边界重申：`calculate_craft_result` 是 `domain/crafting.py` 的纯函数、唯一数值权威（不依赖数据库、不调 LLM），`CraftService.craft()` 只解析 `ctx`、组装 `CraftStateSlice` 与 `recipe`、把 `CraftResult` 转成草稿事件；服务层既不重新实现数值，也不提交状态——与第 13 章“`CraftService` 只是服务入口包装、提交只能由 `GameEngine` 做”是同一口径；M4 单角色场景（`scenario="m4"`）下草稿事件由编排层直接交 `GameEngine.submit`、不接 ProposalQueue/Resolver（D-M4-3）。
+制造模块的边界重申：`calculate_craft_result` 是 `domain/crafting.py` 的纯函数、唯一数值权威（不依赖数据库、不调 LLM），`CraftService.craft()` 只解析 `ctx`、组装 `CraftStateSlice` 与 `recipe`、把 `CraftResult` 转成草稿事件；服务层既不重新实现数值，也不提交状态——与第 13 章“`CraftService` 只是服务入口包装、提交只能由 `GameEngine` 做”是同一口径；M4 制造复用 M3 编排链路（Proposal → `ProposalQueue` → 确定性 `Resolver` → `ToolGate` → 服务层 → `GameEngine`，D-M4-13），D-M4-3 的「不接 Resolver」仅指自由制造草案本身不入队/不经裁决（`CraftProposal` 仅 M5 契约保留）。
 
 ```python
 # services/event_service.py —— 事件日志服务：包装 domain/events.py 的 EventLog（append 只允许 GameEngine 调用）
@@ -245,7 +247,7 @@ class EventService:
 | 角色 | `apply_damage`/`heal`/`apply_status`/`update_attributes` | `character_damaged`/`character_healed`/`status_applied`/`attributes_changed` | 必需 | `NOT_FOUND`/`INVALID_INPUT`/`OUT_OF_RANGE`/`NOT_ALLOWED` | 同上 | 只能作用于自己或同房间目标；系统状态限 `caller=system` |
 | 判定 | `RuleService.check`/`calculate_damage`/`evaluate_preconditions` | 无（结果嵌入后续动作事件） | 结果内含 `rng_seed` | `NOT_FOUND`/`OUT_OF_RANGE`/`NOT_ALLOWED` | 无需（纯函数、同种子同结果） | 仅服务层/Resolver 可调，不对 Agent 暴露工具 |
 | 动作 | `move_to`/`take_item`/`drop_item`/`attack_target`/`use_item`/`talk_to` | `character_moved`/`item_taken`/`item_dropped`/`attack_resolved`+`character_damaged`/`item_used`/`dialogue_exchanged` | 必需 | `NOT_FOUND`/`NOT_ALLOWED`/`OUT_OF_RANGE`/`CONFLICT` | 同上 | `ctx.actor_id` 必须是行动角色本人（NPC 走提案通道） |
-| 制造 | `craft`（内部调 `calculate_craft_result` 纯函数；`data={"craft": CraftResult}`） | `craft_item`（event_type=`CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`；`CRAFT_REJECTED` 仅预留、M4 不产生，第 14 章） | 必需 | `NOT_FOUND`/`INVALID_INPUT`/`OUT_OF_RANGE`/`NOT_ALLOWED`/`CONFLICT`/`SCHEMA_VIOLATION` | 同上 | 只能为自己制造；M4 自由制造不接 Resolver（单角色场景直交 `GameEngine`，D-M4-3） |
+| 制造 | `craft`（内部调 `calculate_craft_result` 纯函数；`data={"craft": CraftResult}`） | `craft_item`（event_type=`CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`；`CRAFT_REJECTED` 仅预留、M4 不产生，第 14 章） | 必需 | `NOT_FOUND`/`INVALID_INPUT`/`OUT_OF_RANGE`/`NOT_ALLOWED`/`CONFLICT`/`SCHEMA_VIOLATION` | 同上 | 只能为自己制造；M4 制造走既有提案/裁决链（D-M4-13），自由制造草案不入队（D-M4-3） |
 | 事件日志 | `EventService.stamp`/`append`/`query`/`replay`/`snapshot`（包装 `EventLog`） | 不产生事件（它就是事件存储） | — | `NOT_ALLOWED`/`CONFLICT`/`SCHEMA_VIOLATION`/`INTERNAL` | `append` 用幂等键 + `expected_version` | `caller` 必须是 `system`（GameEngine） |
 
 写事件统一要求：`method` = 工具名（如 `attack_target`），`params` = 工具参数 + `proposal_id`，`result` = 判定摘要与效果数值，`rng_seed` 必填，`actor_id` = 实际行为者。一次动作可以产多个事件（攻击=判定 + 伤害两个事件），它们必须在同一个 `Resolution.applied_events` 里被原子提交。并发提交冲突（`CONFLICT`）的重试由调用方负责，全队统一措辞为「最多 3 次尝试（首次 + 2 次重试）」（第 11 章）。

@@ -345,8 +345,9 @@ class CraftService:
                             result={"craft": result.model_dump(mode="json"),
                                     "produced_items": [i.model_dump(mode="json") for i in produced_items]})
         # 不调 GameEngine.submit、不写库：返回 Result(ok=True, data={"craft": result}, events=[草稿 Event])；
-        # M4 单角色场景（scenario="m4"，无 NPC Agent）由编排层直接交 GameEngine.submit，
-        # 不接 ProposalQueue/Resolver（CraftProposal 仅 M5 契约保留，D-M4-3）；
+        # 草稿事件随玩家 Proposal 的裁决进入既有 M3 编排链路（ProposalQueue → 确定性 Resolver →
+        # ToolGate → GameEngine.submit；m4 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖，D-M4-13）；
+        # D-M4-3 仅指自由制造草案不入队（CraftProposal 仅 M5 契约保留）；
         # CRAFT_REJECTED M4 不产生（仅预留 identity reducer）。断言：盖章后 event.rng_seed 必须等于
         # result.rng_seed（EventLog.stamp 用同一 (save_seed, turn_id, actor_id, "craft_item", next_seq) 派生，D-M4-5）
         return Result.ok(data={"craft": result}, events=[draft_event])
@@ -354,7 +355,7 @@ class CraftService:
 
 辅助名说明：`preconditions.check` / `instantiate_craft_result` / `recipes.from_draft` 为伪代码辅助名，分别对应第 13 章 §13.4 的状态一致性校验、§13.2 的实例化规则（`derive_item_id` 派生实例 ID，事件带完整 `Item` 定义）与 §13.4 步骤 5 的草案折算；实现以第 13 章契约为准。
 
-**M4 口径说明（D-M4-1/3/4/5，2026-11-09 回写）**：`CraftStateSlice.next_seq`（= 当前存档 `last_seq + 1`）是制造种子序号的唯一来源，由服务层注入、不扩 `ToolContext` 六字段，并要求玩家 `craft_item` 事件是本次提交批次首条事件（D-M4-4）；产出/副产物实例 ID 由 `derive_item_id(save_seed, turn_id, actor_id, craft_kind, event_seq, ordinal)` 确定性派生，事件 `result.produced_items` 记录完整 `Item` 定义，回放不依赖配方目录（D-M4-1）；`result.craft.produced`/`byproducts` 保持模板键与数量（实例化前），实例 ID 与完整 `Item` 定义只出现在 `produced_items`（N-01）；`CRAFT_REJECTED` M4 不产生（仅预留 identity reducer），前置校验失败返回 `Result(ok=False)` 且零事件、掷骰失败提交一条 `CRAFT_DETERMINISTIC(success=false)`（consumed/produced/byproducts 为空，状态只推进 turn/world_time）（D-M4-5）；`params` 按路径记 `mode/recipe_id/recipe_version` 或 `free_description_sha256/proposal_hash/prompt_version`，`rng_seed` 由 `EventLog.stamp` 派生且必须等于 `result.craft.rng_seed`；M4 单角色场景（`scenario="m4"`，无 NPC Agent）由编排层直接交 `GameEngine.submit`，不接 `ProposalQueue`/`Resolver`（`CraftProposal` 仅 M5 契约保留，D-M4-3；M5 接线前必须迁移到 pre-queue）。
+**M4 口径说明（D-M4-1/3/4/5/13，2026-11-09 回写；D-M4-13 为补定）**：`CraftStateSlice.next_seq`（= 当前存档 `last_seq + 1`）是制造种子序号的唯一来源，由服务层注入、不扩 `ToolContext` 六字段，并要求玩家 `craft_item` 事件是本次提交批次首条事件（D-M4-4）；产出/副产物实例 ID 由 `derive_item_id(save_seed, turn_id, actor_id, craft_kind, event_seq, ordinal)` 确定性派生，事件 `result.produced_items` 记录完整 `Item` 定义，回放不依赖配方目录（D-M4-1）；`result.craft.produced`/`byproducts` 保持模板键与数量（实例化前），实例 ID 与完整 `Item` 定义只出现在 `produced_items`（N-01）；`CRAFT_REJECTED` M4 不产生（仅预留 identity reducer），前置校验失败返回 `Result(ok=False)` 且零事件、掷骰失败提交一条 `CRAFT_DETERMINISTIC(success=false)`（consumed/produced/byproducts 为空，状态只推进 turn/world_time）（D-M4-5）；`params` 按路径记 `mode/recipe_id/recipe_version` 或 `free_description_sha256/proposal_hash/prompt_version`，`rng_seed` 由 `EventLog.stamp` 派生且必须等于 `result.craft.rng_seed`；M4 制造作为普通 `DESTRUCTIVE` 工具复用 M3 编排链路（`ProposalQueue` → 确定性 `Resolver` → `ToolGate` → `CraftService` → `GameEngine.submit`；m4 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖；失败提案照常写 `audit_events`，D-M4-13）；D-M4-3 仅指自由制造草案不入队（`CraftProposal` 仅 M5 契约保留；M5 接线前必须迁移到 pre-queue）。
 
 #### 21.2.6 TurnOrchestrator.run（单回合主链路）
 ```python
