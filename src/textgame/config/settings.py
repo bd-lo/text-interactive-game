@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     seed: int = 42
     log_level: str = "INFO"
 
+    # M4 制造（第 13 章 §13.4、D-M4-6）：自由制造开关默认关闭；M5 预算/真实 LLM 前不开启。
+    free_craft_enabled: bool = False
+
     # LLM 接入（第 12 章）：模型分级与回退链在 M5 落 config/llm.yaml；
     # 当前先配置单供应商单模型 + 凭据，凭据永不写入纳入 git 的文件。
     llm_provider: str = "deepseek"

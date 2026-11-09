@@ -27,7 +27,7 @@ from .types import CheckResult, DiceRoll, Modifier, RandomSource
 # L0 工具集合 (M2 六工具子集): 只读工具恒允许; 写工具按第 10 章 10.1 L0 检查。
 READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset({"look"})
 PRECONDITION_TOOLS: Final[frozenset[str]] = frozenset(
-    {"move_to", "take_item", "use_item", "talk_to"}
+    {"move_to", "take_item", "use_item", "talk_to", "craft_item"}
 )
 BACKPACK_CAPACITY: Final[int] = 64
 
@@ -61,9 +61,11 @@ class RuleEngine:
     ) -> Result:
         """L0 硬约束 (第 10 章 10.1): 不满足直接 ``Result.fail``, 零事件。
 
-        规则 (M2 六工具子集): ``look`` 恒允许; ``move_to`` 方向合法且出口存在;
-        ``take_item`` 物品在当前房间且背包未满 (<64); ``use_item`` 物品在背包;
-        ``talk_to`` NPC 与 actor 同房间; 未知工具 → ``NOT_ALLOWED``。
+        规则 (M2 六工具 + M4 ``craft_item``): ``look`` 恒允许; ``move_to`` 方向合法且
+        出口存在; ``take_item`` 物品在当前房间且背包未满 (<64); ``use_item`` 物品在背包;
+        ``talk_to`` NPC 与 actor 同房间; ``craft_item`` 只做最低形状检查（actor 存在、
+        mode 合法、recipe 模式 recipe_id 非空；材料/工位等深度校验留 ``CraftService``）；
+        未知工具 → ``NOT_ALLOWED``。
         成功返回 ``data={"allowed": True, "reason": ""}``; 失败 ``events=[]``。
         ``turn_id``/``save_seed`` 为确定性判定上下文预留 (M3 Judge/派生需要), L0 不使用。
         """
@@ -77,6 +79,18 @@ class RuleEngine:
         room = state.rooms.get(actor.location)
         if room is None:  # GameState 引用完整性保证不会发生, 防御性兜底
             return Result.fail(ErrorCode.NOT_FOUND, f"room {actor.location!r} not found")
+        if tool == "craft_item":
+            mode = args.get("mode", "recipe")
+            if mode not in {"recipe", "free"}:
+                return Result.fail(ErrorCode.NOT_ALLOWED, f"unknown craft mode {mode!r}")
+            if mode == "recipe":
+                recipe_id = args.get("recipe_id")
+                if not isinstance(recipe_id, str) or not recipe_id:
+                    return Result.fail(
+                        ErrorCode.INVALID_INPUT,
+                        "recipe_id is required when craft mode=recipe",
+                    )
+            return _allowed()
         if tool == "move_to":
             direction = args.get("direction")
             if not isinstance(direction, str) or direction not in room.exits:

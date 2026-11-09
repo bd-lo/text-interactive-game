@@ -163,6 +163,42 @@ def _used_text(event: Event, state: GameState) -> str:
     )
 
 
+_QUALITY_WORDS: dict[str, str] = {
+    "poor": "粗糙",
+    "common": "趁手",
+    "fine": "精良",
+    "masterwork": "传世",
+}
+
+
+def _crafted_text(event: Event, state: GameState) -> str:
+    """CRAFT_DETERMINISTIC/CRAFT_GENERATED：成功/掷骰失败两分支（长度由 _fit_text 收敛）。"""
+    craft = event.result.get("craft")
+    success = isinstance(craft, dict) and craft.get("success") is True
+    if not success:
+        return (
+            "你按着记熟的工序把材料摆开，生火、预热、敲打，可最后一步的火候还是偏了一点。"
+            "手底下的材料没能成形，你把还能用的部分收拢起来，吹灭炉边的火星。"
+            "你拍了拍衣角上的灰，盘算着是再试一次，还是先去寻些更合适的材料。"
+        )
+    names: list[str] = []
+    produced = event.result.get("produced_items")
+    if isinstance(produced, list):
+        for produced_item in produced:
+            if isinstance(produced_item, dict):
+                name = produced_item.get("name")
+                if isinstance(name, str) and name:
+                    names.append(name)
+    item_name = names[0] if names else "成品"
+    quality = craft.get("quality") if isinstance(craft, dict) else None
+    quality_word = _QUALITY_WORDS.get(quality, "趁手") if isinstance(quality, str) else "趁手"
+    return (
+        f"你按着记熟的工序把材料一样样摆开，生火、加热、敲打，手上的动作渐渐连成一片。"
+        f"等最后一道工序收住，{item_name}已经成形，{quality_word}的成色在炉火里泛出一点冷光。"
+        "你把它拿在手里掂了掂，分量正好，于是收进行囊，又环顾四周盘算下一步。"
+    )
+
+
 def _talked_text(event: Event, state: GameState) -> str:
     """``DIALOGUE_EXCHANGED``: NPC 名 + 对话摘录 + 等待回应。"""
     npc_name = _npc_name(state, event.params.get("npc_id"))
@@ -243,6 +279,8 @@ class TemplateNarrator:
             return _used_text(event, state)
         if event_type is EventType.DIALOGUE_EXCHANGED:
             return _talked_text(event, state)
+        if event_type in (EventType.CRAFT_DETERMINISTIC, EventType.CRAFT_GENERATED):
+            return _crafted_text(event, state)
         return _GENERIC_TEXT
 
     @staticmethod

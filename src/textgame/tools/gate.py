@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol, cast
 
+from pydantic import ValidationError
+
+from textgame.domain.crafting import CraftRequest
 from textgame.domain.models import GameState, SideEffect
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.types import Direction, ItemId, NpcId
@@ -46,6 +49,19 @@ class ActionServicePort(Protocol):
     ) -> Result: ...
 
 
+class CraftServicePort(Protocol):
+    """gate 用到的制造服务方法（第 13 章 §13.5）：只产草稿 ``Event``，不提交。"""
+
+    def craft(
+        self,
+        ctx: ToolContext,
+        state: GameState,
+        req: CraftRequest,
+        *,
+        idempotency_key: str,
+    ) -> Result: ...
+
+
 class ToolGate:
     """工具门：先校验存在性/权限/Schema，再按 ``side_effect`` 路由到服务层。"""
 
@@ -55,11 +71,13 @@ class ToolGate:
         registry: ToolRegistry,
         query: QueryServicePort,
         action: ActionServicePort,
+        craft: CraftServicePort | None = None,
     ) -> None:
-        """注入工具注册表与只读/写服务端口；不持有仓储与引擎。"""
+        """注入工具注册表与只读/写/制造服务端口；不持有仓储与引擎。"""
         self._registry = registry
         self._query = query
         self._action = action
+        self._craft = craft
 
     def dispatch(
         self,
@@ -107,8 +125,10 @@ class ToolGate:
         ctx: ToolContext,
         state: GameState,
     ) -> Result:
-        """写路由：调 ``ActionService`` 拿草稿事件；提交由编排层负责。"""
+        """写路由：调 ``ActionService``/``CraftService`` 拿草稿事件；提交由编排层负责。"""
         try:
+            if tool == "craft_item":
+                return self._dispatch_craft(params, ctx, state)
             if tool == "move_to":
                 return self._action.move_to(
                     ctx, state, direction=cast(Direction, params["direction"])
@@ -127,3 +147,26 @@ class ToolGate:
         except Exception:  # 服务层异常统一转 INTERNAL，零事件
             return Result.fail(ErrorCode.INTERNAL, "tool dispatch failed")
         return Result.fail(ErrorCode.NOT_ALLOWED, f"unsupported destructive tool: {tool}")
+
+    def _dispatch_craft(
+        self,
+        params: dict[str, Any],
+        ctx: ToolContext,
+        state: GameState,
+    ) -> Result:
+        """craft_item 路由：组装 ``CraftRequest``（校验失败→INVALID_INPUT）后调 CraftService。"""
+        if self._craft is None:
+            return Result.fail(ErrorCode.NOT_ALLOWED, "craft service is not wired")
+        try:
+            request = CraftRequest.model_validate(
+                {
+                    "mode": params.get("mode", "recipe"),
+                    "recipe_id": params.get("recipe_id"),
+                    "free_description": params.get("free_description"),
+                }
+            )
+        except ValidationError:
+            return Result.fail(
+                ErrorCode.INVALID_INPUT, "craft args do not form a valid CraftRequest"
+            )
+        return self._craft.craft(ctx, state, request, idempotency_key=ctx.idempotency_key)

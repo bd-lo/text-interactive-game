@@ -28,8 +28,11 @@ from textgame.persistence.memory import InMemoryRepository
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
 from textgame.services.audit_service import AuditService
+from textgame.services.craft_service import CraftService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
+from textgame.services.recipe_catalog import RecipeCatalog
+from textgame.tools.builtin import build_game_tool_registry
 from textgame.tools.builtin.m2 import build_m2_tool_registry
 from textgame.tools.gate import ToolGate
 
@@ -49,6 +52,14 @@ class M3GameHarness(GameHarness):
     """M3 多角色装配额外暴露审计服务（审计查询/回放断言用）。"""
 
     audit: AuditService
+
+
+@dataclass
+class M4GameHarness(GameHarness):
+    """M4 制造装配额外暴露制造服务与配方目录（确定性制造集成/单元断言用）。"""
+
+    craft: CraftService
+    catalog: RecipeCatalog
 
 
 @pytest.fixture(autouse=True)
@@ -164,3 +175,41 @@ def m3_game_harness() -> Iterator[M3GameHarness]:
 def app_client(game_harness: GameHarness) -> TestClient:
     """返回已挂载全部路由的测试客户端（M1 健康检查等用例复用）。"""
     return game_harness.client
+
+
+@pytest.fixture
+def m4_game_harness() -> Iterator[M4GameHarness]:
+    """M2 同构单角色装配 + 内置配方/CraftService + scenario=m4（无 NPC Agent）。"""
+    repo = InMemoryRepository()
+    engine = GameEngine(repo)
+    query = QueryService(repo)
+    action = ActionService(query)
+    catalog = RecipeCatalog.load_builtin()
+    craft = CraftService(catalog)
+    registry = build_game_tool_registry()
+    gate = ToolGate(registry=registry, query=query, action=action, craft=craft)
+    parser = IntentParseAgent(
+        DisabledLLMClient(),
+        DeterministicIntentParser(recipe_names=catalog.name_index()),
+        tool_specs=registry.visible_tools(PLAYER_ID, frozenset({"player"})),
+    )
+    orchestrator = TurnOrchestrator(
+        repo=repo,
+        engine=engine,
+        query=query,
+        action=action,
+        parser=parser,
+        gate=gate,
+        narrator=TemplateNarrator(),
+        rules=RuleEngine(),
+        save_seed_default="save-42",
+    )
+    with TestClient(create_app(orchestrator=orchestrator, query_service=query)) as client:
+        yield M4GameHarness(
+            client=client,
+            repo=repo,
+            orchestrator=orchestrator,
+            query=query,
+            craft=craft,
+            catalog=catalog,
+        )

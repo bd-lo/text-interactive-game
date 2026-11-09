@@ -23,14 +23,15 @@ from textgame.domain.scenario import (
     ROOM_ENTRY,
     build_initial_state,
     build_m3_state,
+    build_m4_state,
 )
 from textgame.services.ports import CommitPayload, GameRepository, SnapshotRecord
 
-Scenario = Literal["m2", "m3"]
+Scenario = Literal["m2", "m3", "m4"]
 
 _INITIAL_SNAPSHOT_VERSION = 1
 _GAME_ID_PREFIX = "game_"
-_SCENARIOS: frozenset[str] = frozenset({"m2", "m3"})
+_SCENARIOS: frozenset[str] = frozenset({"m2", "m3", "m4"})
 
 
 class GameEngine:
@@ -60,8 +61,8 @@ class GameEngine:
     ) -> Result:
         """创建存档：``game_created`` 首事件（seq=1）+ 当前状态 + 初始快照（契约 §3.2）。
 
-        ``scenario`` 为 M3 新增（``m2``=M2 单场景，默认，保证 M2 golden 不回归；
-        ``m3``=多角色场景，见 ``domain/scenario.py::build_m3_state``）。
+        ``scenario``：``m2``=M2 单场景（默认，保证 M2 golden 不回归）；``m3``=多角色
+        场景（``build_m3_state``）；``m4``=M4 制造场景（``build_m4_state``，D-M4-11）。
         返回 ``Result.data = {"game_id", "turn", "version", "snapshot_version", "save_seed"}``；
         同一 ``game_id`` 已存在时返回 ``CONFLICT``；同一数据库可创建多个不同 ``game_id``
         的存档（D-008-3 复合主键落地后，``events.seq`` 每存档各自从 1 起）。
@@ -74,11 +75,12 @@ class GameEngine:
         if self._repo.load(new_game_id) is not None:
             return Result.fail(ErrorCode.CONFLICT, f"game already exists: {new_game_id}")
 
-        initial_state = (
-            build_m3_state(save_seed=save_seed)
-            if scenario == "m3"
-            else build_initial_state(save_seed=save_seed)
-        )
+        if scenario == "m3":
+            initial_state = build_m3_state(save_seed=save_seed)
+        elif scenario == "m4":
+            initial_state = build_m4_state(save_seed=save_seed)
+        else:
+            initial_state = build_initial_state(save_seed=save_seed)
         game_created = Event(
             turn_id=1,
             actor_id="system",

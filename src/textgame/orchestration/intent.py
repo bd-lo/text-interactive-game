@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from textgame.agents.dto import ParseOutcome
@@ -19,6 +20,7 @@ _USE_WORDS: tuple[str, ...] = ("使用", "服用", "喝", "吃", "用")
 _TAKE_WORDS: tuple[str, ...] = ("拿起", "拿", "捡", "拾", "取")
 _MOVE_WORDS: tuple[str, ...] = ("走", "去", "前往", "进", "向")
 _TALK_WORDS: tuple[str, ...] = ("说", "问", "聊", "喊", "交谈")
+_CRAFT_WORDS: tuple[str, ...] = ("打造", "锻造", "制作", "制造", "合成", "做个")
 
 _UNKNOWN = ParseOutcome(confidence=0.0, source="keyword")
 
@@ -63,7 +65,18 @@ def _outcome(tool: str, args: dict[str, Any]) -> ParseOutcome:
 
 
 class DeterministicIntentParser:
-    """关键词解析器；M2 的默认解析器，006 作为 ``IntentParseAgent`` 的兜底复用。"""
+    """关键词解析器；M2 的默认解析器，006 作为 ``IntentParseAgent`` 的兜底复用。
+
+    ``recipe_names`` 为可选「配方中文名 → recipe_id」映射（组合根从 RecipeCatalog 注入）：
+    提供时，制造关键词且命中配方名才产出 ``craft_item``（M4-016）；缺省 None 时行为与
+    M2 完全一致（不产生任何 craft 意图，旧测试/回放不回归）。
+    """
+
+    def __init__(self, recipe_names: Mapping[str, str] | None = None) -> None:
+        """注入可选配方名索引；M2 默认不注入（None），制造解析关闭。"""
+        self._recipe_names: dict[str, str] | None = (
+            dict(recipe_names) if recipe_names is not None else None
+        )
 
     def parse(
         self,
@@ -88,6 +101,19 @@ class DeterministicIntentParser:
         if _contains_any(normalized, _LOOK_WORDS):
             # 读工具名用第 7 章 §7.3 的规范名 ``get_room_view``（``look`` 只是服务方法名）。
             return _outcome("get_room_view", {})
+        if self._recipe_names is not None and _contains_any(normalized, _CRAFT_WORDS):
+            matched = next(
+                (
+                    recipe_id
+                    for name, recipe_id in sorted(
+                        self._recipe_names.items(), key=lambda item: len(item[0]), reverse=True
+                    )
+                    if name and name in normalized
+                ),
+                None,
+            )
+            if matched is not None:
+                return _outcome("craft_item", {"mode": "recipe", "recipe_id": matched})
         direction = _match_direction(normalized)
         if direction is not None and _contains_any(normalized, _MOVE_WORDS):
             return _outcome("move_to", {"direction": direction})

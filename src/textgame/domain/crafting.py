@@ -1,7 +1,7 @@
 """第 13 章 §13.2/§13.6 制造域契约类型（M4-015 切片）。
 
-本模块是制造域的纯数据契约：只依赖标准库、pydantic 与 domain 内的 ID 类型，
-不含 IO、不调 LLM、不做数值计算（calculate_craft_result 由 016 切片加入本模块）。
+本模块是制造域的纯数据契约与纯函数（M4-015 契约 + M4-016 确定性计算）：只依赖标准库、
+pydantic 与 domain 内的 ID/随机类型，不含 IO、不调 LLM。
 材料与产物按「模板 / 实例分离」建模（D-M4-1）：
 
 - 配方、草案与制造事件中的“材料引用”一律用物品模板键 ItemTemplateId
@@ -18,12 +18,15 @@ inputs 为 1–8 项。
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .models import GameState, Item
+from .rules.dice import DerivedRandom
 from .types import CharacterId
 
 __all__ = [
@@ -37,6 +40,10 @@ __all__ = [
     "ItemTemplateId",
     "QualityBand",
     "Recipe",
+    "build_craft_state_slice",
+    "calculate_craft_result",
+    "derive_item_id",
+    "instantiate_craft_result",
 ]
 
 #: 物品模板键：复用第 5 章 §5.7 的定义（规范写法 item.<name>；item_<name> 亦接受）。
@@ -193,3 +200,200 @@ class Recipe(BaseModel):
             if later <= earlier:
                 raise ValueError("quality_bands must be strictly ascending by min_roll")
         return self
+
+
+# ---------------------------------------------------------------------------
+# M4-016 确定性计算与实例化（第 13 章 §13.2/§13.6、D-M4-1/D-M4-4/D-M4-8）
+# ---------------------------------------------------------------------------
+
+#: Crockford Base32 字符表（ULID 字符集；排除 I/L/O/U）。
+_CROCKFORD_BASE32: Final[str] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_ITEM_ID_RADIX_BITS: Final[int] = 130  # 26 字符 × 5 bit
+_ITEM_ID_CHARS: Final[int] = 26
+_SUCCESS_ROLL_SCALE: Final[int] = 1_000_000
+
+
+def derive_item_id(
+    *,
+    save_seed: str,
+    turn_id: int,
+    actor_id: str,
+    craft_kind: str,
+    event_seq: int,
+    ordinal: int,
+) -> str:
+    """确定性派生制造产物的物品实例 ID（第 13 章 §13.2、D-M4-1）。
+
+    blake2b(上下文键) 取 130 bit → Crockford Base32 26 位，前缀 item_，必然匹配
+    domain.types.ItemId 的 ^item_<26位ULID>$ 正则；禁止 uuid4/random。同一上下文
+    （存档种子/回合/角色/事件类型/事件序号/产出序号）必得同一 ID。
+    """
+    if turn_id < 1:
+        raise ValueError(f"turn_id must be >= 1, got {turn_id}")
+    if event_seq < 1:
+        raise ValueError(f"event_seq must be >= 1, got {event_seq}")
+    if ordinal < 0:
+        raise ValueError(f"ordinal must be >= 0, got {ordinal}")
+    key = f"{save_seed}|{turn_id}|{actor_id}|{craft_kind}|{event_seq}|{ordinal}".encode()
+    digest = hashlib.blake2b(key, digest_size=32).digest()
+    value = int.from_bytes(digest, "big") >> (len(digest) * 8 - _ITEM_ID_RADIX_BITS)
+    chars = [
+        _CROCKFORD_BASE32[(value >> (5 * (_ITEM_ID_CHARS - 1 - index))) & 0x1F]
+        for index in range(_ITEM_ID_CHARS)
+    ]
+    return "item_" + "".join(chars)
+
+
+def _quality_for(quality_bands: list[QualityBand], quality_roll: float) -> str:
+    """命中「min_roll ≤ roll 的最高档」；分档已保证首档 min_roll == 0.0。"""
+    quality = quality_bands[0].quality
+    for band in quality_bands:
+        if band.min_roll <= quality_roll:
+            quality = band.quality
+    return quality
+
+
+def calculate_craft_result(
+    state: CraftStateSlice,
+    recipe: Recipe,
+    actor_id: CharacterId,
+    rng_seed: int,
+) -> CraftResult:
+    """确定性制造结算（第 13 章 §13.2 固定签名，唯一数值权威）。
+
+    掷骰顺序固定：成功判定 → 质量档（成功时）→ 按 recipe.byproducts 顺序逐项副产物。
+    公式：success_roll = rng.randint(0, 999_999) / 1_000_000，
+    success = success_roll < recipe.base_success_rate；失败时 consumed/produced/
+    byproducts 全空、quality=None。consumed 只含 material/catalyst（tool 不消耗），
+    produced 用输出模板键与数量；实例 ID 与完整 Item 由 instantiate_craft_result 生成
+    （N-01）。同一 (state, recipe, actor_id, rng_seed) 必得同一结果。
+    """
+    if actor_id != state.actor_id:
+        raise ValueError(f"actor_id {actor_id!r} does not match CraftStateSlice.actor_id")
+    rng = DerivedRandom(rng_seed)
+    success_roll = rng.randint(0, _SUCCESS_ROLL_SCALE - 1) / _SUCCESS_ROLL_SCALE
+    success = success_roll < recipe.base_success_rate
+    if not success:
+        return CraftResult(
+            ok=True,
+            success=False,
+            consumed=[],
+            produced=[],
+            byproducts=[],
+            quality=None,
+            rng_seed=rng_seed,
+            reason="success rate not met",
+        )
+    quality_roll = rng.randint(0, _SUCCESS_ROLL_SCALE - 1) / _SUCCESS_ROLL_SCALE
+    byproducts = [
+        byproduct
+        for byproduct in recipe.byproducts
+        if rng.randint(0, _SUCCESS_ROLL_SCALE - 1) / _SUCCESS_ROLL_SCALE < byproduct.chance
+    ]
+    return CraftResult(
+        ok=True,
+        success=True,
+        consumed=[item for item in recipe.inputs if item.role in {"material", "catalyst"}],
+        produced=[
+            CraftInput(
+                template_id=recipe.output_template_id,
+                qty=recipe.output_qty,
+                role="material",
+            )
+        ],
+        byproducts=byproducts,
+        quality=_quality_for(recipe.quality_bands, quality_roll),
+        rng_seed=rng_seed,
+        reason=None,
+    )
+
+
+def instantiate_craft_result(
+    result: CraftResult,
+    recipe: Recipe,
+    *,
+    save_seed: str,
+    turn_id: int,
+    actor_id: str,
+    craft_kind: str = "CRAFT_DETERMINISTIC",
+    event_seq: int = 1,
+) -> tuple[CraftResult, list[Item]]:
+    """把模板级 CraftResult 实例化为具体 Item（第 13 章 §13.2、N-01）。
+
+    输出顺序固定：result.produced（按条目与 qty）→ result.byproducts（按顺序与 qty）；
+    每个实例 id = derive_item_id(...)、tags = [模板键, *模板 tags]（≤8），
+    name/description/stats/rarity/stackable 取模板。返回入参 result 原样（实例化不改变
+    模板级数值结果）与实例定义列表；事件 result.produced_items 保存后者。
+    """
+    items: list[Item] = []
+    ordinal = 0
+
+    def _instantiate(template_id: str, qty: int) -> None:
+        nonlocal ordinal
+        template = recipe.item_templates.get(template_id)
+        if template is None:
+            raise ValueError(f"recipe item template {template_id!r} does not exist")
+        tags = [template.template_id, *template.tags][:8]
+        for _ in range(qty):
+            item_id = derive_item_id(
+                save_seed=save_seed,
+                turn_id=turn_id,
+                actor_id=actor_id,
+                craft_kind=craft_kind,
+                event_seq=event_seq,
+                ordinal=ordinal,
+            )
+            ordinal += 1
+            items.append(
+                Item(
+                    id=item_id,
+                    name=template.name,
+                    description=template.description,
+                    tags=tags,
+                    stats=dict(template.stats),
+                    rarity=template.rarity,
+                    stackable=template.stackable,
+                )
+            )
+
+    for produced in result.produced:
+        _instantiate(produced.template_id, produced.qty)
+    for byproduct in result.byproducts:
+        _instantiate(byproduct.template_id, byproduct.qty)
+    return result, items
+
+
+def build_craft_state_slice(state: GameState, actor_id: str) -> CraftStateSlice:
+    """从 GameState 构造只读制造视图（第 13 章 §13.2、D-M4-1/D-M4-4/D-M4-9）。
+
+    背包按 Item.tags[0]（模板键）聚合：数量 = 同模板实例在 Character.inventory 中的
+    重复项数；工位取当前房间 ambient_tags 中 station. 前缀标签（如 station.forge）；
+    skill_levels M4 恒 {}（D-M4-2）；next_seq = 存档 last_seq + 1（服务层注入，D-M4-4）。
+    actor 不存在/物品缺模板键 → ValueError。
+    """
+    character = state.characters.get(actor_id)
+    if character is None:
+        raise ValueError(f"actor {actor_id!r} is not present in state")
+    inventory: dict[str, int] = {}
+    for item_id in character.inventory:
+        item = state.items.get(item_id)
+        if item is None:
+            raise ValueError(f"inventory item {item_id!r} has no definition in state.items")
+        if not item.tags:
+            raise ValueError(f"inventory item {item_id!r} has no template tag")
+        template_id = item.tags[0]
+        inventory[template_id] = inventory.get(template_id, 0) + 1
+    room = state.rooms.get(character.location)
+    station_id = None
+    if room is not None:
+        station_id = next(
+            (tag for tag in room.ambient_tags if tag.startswith("station.")),
+            None,
+        )
+    return CraftStateSlice(
+        actor_id=character.id,
+        inventory=inventory,
+        skill_levels={},
+        station_id=station_id,
+        next_seq=state.rng_state.last_seq + 1,
+    )

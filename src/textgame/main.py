@@ -1,7 +1,8 @@
 """进程入口: 组装依赖并暴露 uvicorn 目标 ``textgame.main:app``。
 
 组合根: ``Settings`` → SQLite 仓储（``prepare_db`` + ``init_schema`` + ``SqliteRepository``）
-→ ``GameEngine`` → ``QueryService``/``ActionService`` → ``ToolRegistry``（M2 六工具声明）
+→ ``GameEngine`` → ``QueryService``/``ActionService`` → ``ToolRegistry``（M2 六工具 + M4 craft_item）
+→ ``CraftService``（M4 确定性制造，内置配方）
 → ``ToolGate`` → ``Resolver``（M3 纯函数裁决 + ``ToolGateRouter``）→ ``ActorDirectory``
 （服务端标签推导）→ ``DeterministicCharacterAgent``（M3 确定性角色 Agent + 场景计划表）
 → ``AuditService`` → ``TurnOrchestrator`` → ``create_app``。本模块是唯一允许跨层 new 对象
@@ -30,9 +31,11 @@ from textgame.persistence.sqlite_repository import SqliteRepository
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
 from textgame.services.audit_service import AuditService
+from textgame.services.craft_service import CraftService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
-from textgame.tools.builtin.m2 import build_m2_tool_registry
+from textgame.services.recipe_catalog import RecipeCatalog
+from textgame.tools.builtin import build_game_tool_registry
 from textgame.tools.gate import ToolGate
 
 
@@ -45,8 +48,13 @@ def _build_app() -> FastAPI:
     game_engine = GameEngine(repo)
     query = QueryService(repo)
     action = ActionService(query)
-    registry = build_m2_tool_registry()
-    gate = ToolGate(registry=registry, query=query, action=action)
+    catalog = RecipeCatalog.load_builtin()
+    craft_service = CraftService(
+        catalog,
+        free_craft_enabled=settings.free_craft_enabled,
+    )
+    registry = build_game_tool_registry()
+    gate = ToolGate(registry=registry, query=query, action=action, craft=craft_service)
     rules = RuleEngine()
     save_seed_default = save_seed_from_settings(settings.seed)
     actors = ActorDirectory(nonplayer_tags=M3_NONPLAYER_TAGS)
@@ -61,7 +69,7 @@ def _build_app() -> FastAPI:
     audit_service = AuditService(repo)
     parser = IntentParseAgent(
         DisabledLLMClient(),
-        DeterministicIntentParser(),
+        DeterministicIntentParser(recipe_names=catalog.name_index()),
         tool_specs=registry.visible_tools(PLAYER_ID, frozenset({"player"})),
     )
     orchestrator = TurnOrchestrator(

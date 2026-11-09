@@ -1,4 +1,5 @@
-"""内置工具声明包 (M2-006)：``m2.py`` 承载 M2 六工具的 ``ToolSpec``/Schema/可见性。
+"""M4 工具包：M2 六工具 + craft_item 的完整注册表构造入口。"""
 
-执行由 ``tools/gate.py::ToolGate`` 统一路由，工具函数本身不持有领域状态。
-"""
+from .crafting import CRAFT_TOOL_NAME, build_game_tool_registry, craft_item
+
+__all__ = ["CRAFT_TOOL_NAME", "build_game_tool_registry", "craft_item"]

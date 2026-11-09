@@ -25,14 +25,14 @@ class TurnRequestBody(BaseModel):
 class CreateGameBody(BaseModel):
     """``POST /api/v1/games`` 请求体；可省略，``seed`` 缺省用服务端默认种子。
 
-    M3 新增可选 ``scenario``（``m2`` 单场景 / ``m3`` 多角色场景），缺省 ``m2``
-    保持 M2 契约与回放不变（D-M3-3）。
+    可选 ``scenario``（``m2`` 单场景 / ``m3`` 多角色场景 / ``m4`` 制造场景），缺省
+    ``m2`` 保持 M2 契约与回放不变（D-M3-3/D-M4-11）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     seed: int | None = Field(default=None, ge=0)
-    scenario: Literal["m2", "m3"] = "m2"
+    scenario: Literal["m2", "m3", "m4"] = "m2"
 
 
 class CreatedGameResponse(BaseModel):

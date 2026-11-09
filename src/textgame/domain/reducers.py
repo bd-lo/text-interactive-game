@@ -17,8 +17,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from pydantic import ValidationError
+
+from textgame.domain.crafting import CraftResult
 from textgame.domain.events import Event, EventType
-from textgame.domain.models import GameState
+from textgame.domain.models import GameState, Item
 
 __all__ = [
     "DEFAULT_REGISTRY",
@@ -172,12 +175,108 @@ class ReducerRegistry:
         return _apply_common_rules(state, projected, event)
 
 
+def _craft_payload(event: Event) -> tuple[CraftResult, list[Item]]:
+    """解析 CRAFT_* 事件的 result.craft 与 result.produced_items；缺失/非法 → ValueError。"""
+    raw_craft = event.result.get("craft")
+    if not isinstance(raw_craft, dict):
+        raise ValueError("CRAFT event must carry a result.craft object")
+    try:
+        craft = CraftResult.model_validate(raw_craft)
+    except ValidationError as exc:
+        raise ValueError(f"CRAFT result.craft is invalid: {exc}") from exc
+    raw_items = event.result.get("produced_items", [])
+    if not isinstance(raw_items, list):
+        raise ValueError("CRAFT event result.produced_items must be a list")
+    produced_items: list[Item] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise ValueError("CRAFT event produced_items entries must be objects")
+        try:
+            produced_items.append(Item.model_validate(raw_item))
+        except ValidationError as exc:
+            raise ValueError(f"CRAFT produced item is invalid: {exc}") from exc
+    return craft, produced_items
+
+
+def _reduce_craft(state: GameState | None, event: Event) -> GameState:
+    """CRAFT_DETERMINISTIC/CRAFT_GENERATED：扣材料 + 产出/副产物入包与 state.items。
+
+    第 14 章 §14.7 口径：成功时按 result.craft.consumed 的模板键与数量逐件移除同模板
+    实例（不足 → ValueError），再按 result.produced_items 顺序追加实例到 inventory 与
+    state.items（重复 id 或背包 >64 → ValueError），并校验实例定义的模板键顺序与
+    result.craft.produced/byproducts 一致；掷骰失败（success=false）时 inventory/items
+    零变化，仅公共规则推进 turn/world_time。
+    """
+    current = _require_state(state, event)
+    craft, produced_items = _craft_payload(event)
+    if not craft.success:
+        if produced_items or craft.consumed or craft.produced or craft.byproducts:
+            raise ValueError("failed CRAFT event must not carry consumed/produced/byproducts")
+        return current
+
+    expected_templates: list[str] = []
+    for stack in craft.produced:
+        expected_templates.extend([stack.template_id] * stack.qty)
+    for byproduct in craft.byproducts:
+        expected_templates.extend([byproduct.template_id] * byproduct.qty)
+    if len(produced_items) != len(expected_templates):
+        raise ValueError("CRAFT produced_items count does not match produced/byproducts quantities")
+    for item, template_id in zip(produced_items, expected_templates, strict=True):
+        if not item.tags or item.tags[0] != template_id:
+            raise ValueError(
+                f"CRAFT produced item {item.id!r} template tag does not match {template_id!r}"
+            )
+
+    character = current.characters.get(event.actor_id)
+    if character is None:
+        raise ValueError(f"CRAFT actor {event.actor_id!r} not in state")
+    inventory = list(character.inventory)
+    for stack in craft.consumed:
+        removed = 0
+        remaining: list[str] = []
+        for item_id in inventory:
+            entry = current.items.get(item_id)
+            tag = entry.tags[0] if entry is not None and entry.tags else None
+            if removed < stack.qty and tag == stack.template_id:
+                removed += 1
+                continue
+            remaining.append(item_id)
+        if removed < stack.qty:
+            raise ValueError(
+                f"CRAFT consumed template {stack.template_id!r} is insufficient in inventory"
+            )
+        inventory = remaining
+
+    items = dict(current.items)
+    for produced in produced_items:
+        if produced.id in items:
+            raise ValueError(
+                f"CRAFT produced item id {produced.id!r} already exists in state.items"
+            )
+        items[produced.id] = produced
+        inventory.append(produced.id)
+    if len(inventory) > _INVENTORY_LIMIT:
+        raise ValueError(f"inventory exceeds {_INVENTORY_LIMIT} items after craft")
+
+    characters = dict(current.characters)
+    characters[event.actor_id] = character.model_copy(update={"inventory": inventory})
+    return current.model_copy(update={"characters": characters, "items": items})
+
+
+def _reduce_identity(state: GameState | None, event: Event) -> GameState:
+    """CRAFT_REJECTED 预留 identity reducer（M4 不产生该事件，只做状态零变化投影）。"""
+    return _require_state(state, event)
+
+
 DEFAULT_REGISTRY = ReducerRegistry()
 DEFAULT_REGISTRY.register(EventType.GAME_CREATED, _reduce_game_created)
 DEFAULT_REGISTRY.register(EventType.CHARACTER_MOVED, _reduce_character_moved)
 DEFAULT_REGISTRY.register(EventType.ITEM_TAKEN, _reduce_item_taken)
 DEFAULT_REGISTRY.register(EventType.ITEM_CONSUMED, _reduce_item_consumed)
 DEFAULT_REGISTRY.register(EventType.DIALOGUE_EXCHANGED, _reduce_dialogue_exchanged)
+DEFAULT_REGISTRY.register(EventType.CRAFT_DETERMINISTIC, _reduce_craft)
+DEFAULT_REGISTRY.register(EventType.CRAFT_GENERATED, _reduce_craft)
+DEFAULT_REGISTRY.register(EventType.CRAFT_REJECTED, _reduce_identity)
 
 
 def apply_events(state: GameState | None, events: list[Event]) -> GameState:

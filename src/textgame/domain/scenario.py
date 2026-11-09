@@ -232,3 +232,110 @@ def build_m3_state(*, save_seed: str) -> GameState:
         ),
     }
     return base.model_copy(update={"characters": characters})
+
+
+# ---------------------------------------------------------------------------
+# M4 制造场景（D-M4-11；加法新增，不改 build_initial_state/build_m3_state，M2/M3 golden 不回归）
+# ---------------------------------------------------------------------------
+M4_ROOM_FORGE: Final[str] = "room_01J9Z3K4Q7X8Y9Z0ABCDEFGHJX"
+M4_ITEM_IRON_INGOT: Final[str] = "item_01J9Z3K4Q7X8Y9Z0ABCDEFGHJY"
+M4_ITEM_OAK_HANDLE: Final[str] = "item_01J9Z3K4Q7X8Y9Z0ABCDEFGHJZ"
+M4_ITEM_FORGE_HAMMER: Final[str] = "item_01J9Z3K4Q7X8Y9Z0ABCDEFGHK0"
+M4_ITEM_COPPER_WIRE: Final[str] = "item_01J9Z3K4Q7X8Y9Z0ABCDEFGHK1"
+
+M4_ROOM_FORGE_NAME: Final[str] = "废弃铁匠铺"
+M4_ITEM_IRON_INGOT_NAME: Final[str] = "铁锭"
+M4_ITEM_OAK_HANDLE_NAME: Final[str] = "橡木柄"
+M4_ITEM_FORGE_HAMMER_NAME: Final[str] = "锻锤"
+M4_ITEM_COPPER_WIRE_NAME: Final[str] = "铜线"
+
+#: 材料实例 tags[0] 的模板键（第 13 章 §13.2、D-M4-1；配方 JSON 用同一批模板键）。
+M4_TEMPLATE_IRON_INGOT: Final[str] = "item.iron_ingot"
+M4_TEMPLATE_OAK_HANDLE: Final[str] = "item.oak_handle"
+M4_TEMPLATE_FORGE_HAMMER: Final[str] = "item.forge_hammer"
+M4_TEMPLATE_COPPER_WIRE: Final[str] = "item.copper_wire"
+
+#: M4 场景玩家初始背包（重复项表达数量：铁锭×2、铜线×2；覆盖两个内置配方的材料需求）。
+M4_STARTING_INVENTORY: Final[tuple[str, ...]] = (
+    M4_ITEM_IRON_INGOT,
+    M4_ITEM_IRON_INGOT,
+    M4_ITEM_OAK_HANDLE,
+    M4_ITEM_FORGE_HAMMER,
+    M4_ITEM_COPPER_WIRE,
+    M4_ITEM_COPPER_WIRE,
+)
+
+
+def _with_template_tag(item: Item, template_id: str) -> Item:
+    """把物品实例 tags 首项规范为模板键（M4 场景内的制造材料口径；不改 Item 模型）。"""
+    tags = [template_id, *(tag for tag in item.tags if tag != template_id)][:8]
+    return item.model_copy(update={"tags": tags})
+
+
+def build_m4_state(*, save_seed: str) -> GameState:
+    """构造 M4 制造场景初始状态：M2 单场景 + 铁匠铺 + 制造材料（纯函数、固定 ID）。
+
+    只改本函数返回值，build_initial_state/build_m3_state 及其 golden 字节不变（D-M4-11）。
+    入口房间东侧连 forge 房间（ambient_tags 含 station.forge 作为工位，D-M4-9）；玩家初始
+    背包含制造材料（重复项表达数量）；全部实例 tags 首项为模板键，供 CraftService 聚合
+    材料视图（D-M4-1）。固定 ID、禁止随机，state_hash 可复算。
+    """
+    base = build_initial_state(save_seed=save_seed)
+    forge = Room(
+        id=M4_ROOM_FORGE,
+        name=M4_ROOM_FORGE_NAME,
+        description=(
+            "铁匠铺的屋顶塌了半边，炉膛里积着冷灰。墙角还立着半截铁砧，"
+            "风箱的皮囊裂了几道口子，但勉强还能使。"
+        ),
+        exits={"west": ROOM_ENTRY},
+        item_ids=[],
+        npc_ids=[],
+        ambient_tags=["station.forge"],
+    )
+    entry = base.rooms[ROOM_ENTRY]
+    rooms = {
+        **base.rooms,
+        ROOM_ENTRY: entry.model_copy(update={"exits": {**entry.exits, "east": M4_ROOM_FORGE}}),
+        M4_ROOM_FORGE: forge,
+    }
+    items = {
+        **base.items,
+        ITEM_TORCH: _with_template_tag(base.items[ITEM_TORCH], "item.torch"),
+        ITEM_POTION: _with_template_tag(base.items[ITEM_POTION], "item.potion"),
+        ITEM_SWORD: _with_template_tag(base.items[ITEM_SWORD], "item.sword"),
+        ITEM_RELIC: _with_template_tag(base.items[ITEM_RELIC], "item.relic"),
+        M4_ITEM_IRON_INGOT: Item(
+            id=M4_ITEM_IRON_INGOT,
+            name=M4_ITEM_IRON_INGOT_NAME,
+            description="一块沉甸甸的粗铁锭，边角还带着没敲净的炉渣。",
+            tags=[M4_TEMPLATE_IRON_INGOT, "material"],
+            stackable=True,
+        ),
+        M4_ITEM_OAK_HANDLE: Item(
+            id=M4_ITEM_OAK_HANDLE,
+            name=M4_ITEM_OAK_HANDLE_NAME,
+            description="打磨过的橡木柄，握上去还算顺手。",
+            tags=[M4_TEMPLATE_OAK_HANDLE, "material"],
+            stackable=True,
+        ),
+        M4_ITEM_FORGE_HAMMER: Item(
+            id=M4_ITEM_FORGE_HAMMER,
+            name=M4_ITEM_FORGE_HAMMER_NAME,
+            description="一柄趁手的锻锤，锤面被多年的敲打磨得发亮。",
+            tags=[M4_TEMPLATE_FORGE_HAMMER, "tool"],
+        ),
+        M4_ITEM_COPPER_WIRE: Item(
+            id=M4_ITEM_COPPER_WIRE,
+            name=M4_ITEM_COPPER_WIRE_NAME,
+            description="一截剥了皮的铜线，在光下泛着暗红。",
+            tags=[M4_TEMPLATE_COPPER_WIRE, "material"],
+            stackable=True,
+        ),
+    }
+    player = base.characters[PLAYER_ID]
+    characters = {
+        **base.characters,
+        PLAYER_ID: player.model_copy(update={"inventory": list(M4_STARTING_INVENTORY)}),
+    }
+    return base.model_copy(update={"rooms": rooms, "items": items, "characters": characters})

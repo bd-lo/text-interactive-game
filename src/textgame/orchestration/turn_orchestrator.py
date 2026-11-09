@@ -151,14 +151,15 @@ class AuditRecorderLike(Protocol):
 class CreateGameRequest(BaseModel):
     """``POST /api/v1/games`` 的编排层请求（``seed`` 可省略，缺省用组合根默认种子）。
 
-    M3 新增 ``scenario``（``m2``/``m3``），缺省 ``m2`` 保持 M2 契约与固定种子回放不变。
+    ``scenario`` 支持 ``m2``/``m3``/``m4``（M4 制造场景，D-M4-11），缺省 ``m2``
+    保持 M2 契约与固定种子回放不变。
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     seed: int | None = None
     idempotency_key: str = Field(min_length=8, max_length=128)
-    scenario: Literal["m2", "m3"] = "m2"
+    scenario: Literal["m2", "m3", "m4"] = "m2"
 
 
 class GameView(BaseModel):

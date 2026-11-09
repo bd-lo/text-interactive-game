@@ -9,18 +9,27 @@ from __future__ import annotations
 
 import pytest
 
+from textgame.domain.crafting import (
+    build_craft_state_slice,
+    calculate_craft_result,
+    instantiate_craft_result,
+)
 from textgame.domain.events import Event, EventLog, EventType
 from textgame.domain.models import GameState
 from textgame.domain.reducers import DEFAULT_REGISTRY, ReducerRegistry, apply_events
 from textgame.domain.scenario import (
     ITEM_SWORD,
     ITEM_TORCH,
+    M4_ITEM_FORGE_HAMMER,
+    M4_ROOM_FORGE,
     NPC_SENTINEL,
     PLAYER_ID,
     ROOM_CELLAR,
     ROOM_ENTRY,
     build_initial_state,
+    build_m4_state,
 )
+from textgame.services.recipe_catalog import RecipeCatalog
 
 _SAVE_SEED = "save-42"
 _UNKNOWN_ROOM = "room_01J9Z3K4Q7X8Y9Z0ABCDEFGHJV"
@@ -302,3 +311,182 @@ def test_snapshot_plus_events_equals_full_replay() -> None:
     restored = apply_events(snapshot_state, taken)
 
     assert restored == apply_events(None, all_events)
+
+
+# ---------------------------------------------------------------------------
+# M4 制造：CRAFT_DETERMINISTIC / CRAFT_GENERATED / CRAFT_REJECTED 投影
+# ---------------------------------------------------------------------------
+
+_M4_SAVE_SEED = "save-42"
+_M4_CATALOG = RecipeCatalog.load_builtin()
+
+
+def _m4_state_at_forge() -> GameState:
+    """M4 场景 + 玩家位于铁匠铺（工位满足铁剑配方）。"""
+    state = build_m4_state(save_seed=_M4_SAVE_SEED)
+    character = state.characters[PLAYER_ID]
+    return state.model_copy(
+        update={
+            "characters": {
+                **state.characters,
+                PLAYER_ID: character.model_copy(update={"location": M4_ROOM_FORGE}),
+            }
+        }
+    )
+
+
+def _craft_event(
+    *,
+    success: bool,
+    event_type: EventType = EventType.CRAFT_DETERMINISTIC,
+) -> Event:
+    """构造一条合法制造草稿事件（payload 与 CraftService 输出同构）。"""
+    recipe = _M4_CATALOG.require("recipe.forge_sword").model_copy(
+        update={
+            "base_success_rate": 1.0 if success else 0.0,
+            "byproducts": [],
+        }
+    )
+    state = _m4_state_at_forge()
+    state_slice = build_craft_state_slice(state, PLAYER_ID)
+    result = calculate_craft_result(state_slice, recipe, PLAYER_ID, 1234)
+    result, items = instantiate_craft_result(
+        result,
+        recipe,
+        save_seed=_M4_SAVE_SEED,
+        turn_id=2,
+        actor_id=PLAYER_ID,
+        craft_kind=event_type.value,
+        event_seq=2,
+    )
+    return Event(
+        turn_id=2,
+        actor_id=PLAYER_ID,
+        method="craft_item",
+        event_type=event_type,
+        params={
+            "mode": "recipe",
+            "recipe_id": recipe.recipe_id,
+            "recipe_version": recipe.version,
+        },
+        result={
+            "craft": result.model_dump(mode="json"),
+            "produced_items": [item.model_dump(mode="json") for item in items],
+        },
+    )
+
+
+def test_craft_deterministic_consumes_materials_and_adds_produced_item() -> None:
+    state = _m4_state_at_forge()
+    event = _craft_event(success=True)
+
+    projected = apply_events(state, [event])
+
+    inventory = projected.characters[PLAYER_ID].inventory
+    assert M4_ITEM_FORGE_HAMMER in inventory
+    produced_items = [
+        item_id for item_id in inventory if item_id not in state.characters[PLAYER_ID].inventory
+    ]
+    assert len(produced_items) == 1
+    produced = projected.items[produced_items[0]]
+    assert produced.tags[0] == "item.iron_sword"
+    assert produced.name == "铁剑"
+    assert len(inventory) == 6 - 3 + 1
+    assert projected.turn == 2
+
+
+def test_craft_failed_roll_event_changes_no_inventory() -> None:
+    state = _m4_state_at_forge()
+    event = _craft_event(success=False)
+
+    projected = apply_events(state, [event])
+
+    assert projected.characters[PLAYER_ID].inventory == state.characters[PLAYER_ID].inventory
+    assert projected.items == state.items
+    assert projected.turn == 2
+
+
+def test_craft_event_rejects_missing_payload() -> None:
+    state = _m4_state_at_forge()
+    event = Event(
+        turn_id=2,
+        actor_id=PLAYER_ID,
+        method="craft_item",
+        event_type=EventType.CRAFT_DETERMINISTIC,
+        result={},
+    )
+
+    with pytest.raises(ValueError, match=r"result\.craft"):
+        apply_events(state, [event])
+
+
+def test_craft_event_rejects_insufficient_inventory_material() -> None:
+    state = _m4_state_at_forge()
+    character = state.characters[PLAYER_ID]
+    poor_state = state.model_copy(
+        update={
+            "characters": {
+                **state.characters,
+                PLAYER_ID: character.model_copy(update={"inventory": [M4_ITEM_FORGE_HAMMER]}),
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="insufficient"):
+        apply_events(poor_state, [_craft_event(success=True)])
+
+
+def test_craft_event_rejects_produced_items_count_mismatch() -> None:
+    state = _m4_state_at_forge()
+    event = _craft_event(success=True)
+    bad_event = event.model_copy(update={"result": {**event.result, "produced_items": []}})
+
+    with pytest.raises(ValueError, match="count does not match"):
+        apply_events(state, [bad_event])
+
+
+def test_craft_event_rejects_duplicate_produced_item_id() -> None:
+    state = _m4_state_at_forge()
+    event = _craft_event(success=True)
+    produced = list(event.result["produced_items"])
+    produced[0] = {**produced[0], "id": ITEM_TORCH}
+    bad_event = event.model_copy(update={"result": {**event.result, "produced_items": produced}})
+
+    with pytest.raises(ValueError, match="already exists"):
+        apply_events(state, [bad_event])
+
+
+def test_craft_generated_uses_same_projection() -> None:
+    state = _m4_state_at_forge()
+    deterministic_event = _craft_event(success=True)
+    generated_event = deterministic_event.model_copy(
+        update={"event_type": EventType.CRAFT_GENERATED}
+    )
+
+    assert apply_events(state, [generated_event]) == apply_events(state, [deterministic_event])
+
+
+def test_craft_rejected_reducer_is_identity() -> None:
+    state = _m4_state_at_forge()
+    event = Event(
+        turn_id=2,
+        actor_id=PLAYER_ID,
+        method="craft_item",
+        event_type=EventType.CRAFT_REJECTED,
+        result={"reason": "precondition failed"},
+    )
+
+    projected = apply_events(state, [event])
+
+    assert projected.characters == state.characters
+    assert projected.items == state.items
+    assert projected.turn == 2
+
+
+def test_default_registry_covers_craft_event_types() -> None:
+    for event_type in (
+        EventType.CRAFT_DETERMINISTIC,
+        EventType.CRAFT_GENERATED,
+        EventType.CRAFT_REJECTED,
+    ):
+        assert DEFAULT_REGISTRY.get(event_type) is not None
