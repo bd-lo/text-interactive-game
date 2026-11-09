@@ -182,7 +182,11 @@ class Resolver:
         actors: ActorDirectory,
         save_seed: str,
     ) -> None:
-        """依赖全部构造注入；``actors`` 负责服务端推导 ``actor_tags``（第 11 章 §11.1）。"""
+        """依赖全部构造注入；``actors`` 负责服务端推导 ``actor_tags``（第 11 章 §11.1）。
+
+        ``save_seed`` 为组合根默认种子（M2/M3 兼容）；D-M4-14 起裁决实际使用
+        ``snapshot.rng_state.save_seed``（每存档真实种子），构造参数仅保留兼容。
+        """
         self._rules = rules
         self._services = services
         self._actors = actors
@@ -203,6 +207,10 @@ class Resolver:
         - 不合并同一 actor 的多提案、不重排输入（审计逐提案一行，第 11 章 §11.4）。
         """
         _ = judgements  # M3 无裁判分支：保留接口、禁止模型调用（第 11 章 §11.2）
+        # D-M4-14：裁决内 ToolContext/规则前置使用的种子必须绑定「本存档」真实 save_seed，
+        # 不能用组合根默认种子（save-42）；否则非默认 seed 存档的服务层派生（craft rng_seed/
+        # 实例 ID）会与 EventLog.stamp 的派生不一致。
+        save_seed = snapshot.rng_state.save_seed
         working_state = snapshot
         results: list[Resolution] = []
         for index, entry in enumerate(entries, start=1):
@@ -213,7 +221,7 @@ class Resolver:
                 actor_id=proposal.actor_id,
                 actor_tags=self._actors.tags_of(snapshot, proposal.actor_id),
                 turn_id=proposal.turn_id,
-                save_seed=self._save_seed,
+                save_seed=save_seed,
                 idempotency_key=f"res:{proposal.turn_id}:{proposal_id}",
                 caller="resolver",
             )
@@ -222,7 +230,7 @@ class Resolver:
                 args=dict(proposal.args),
                 actor_id=proposal.actor_id,
                 turn_id=proposal.turn_id,
-                save_seed=self._save_seed,
+                save_seed=save_seed,
                 state=working_state,
             )
             rejection = _precondition_rejection(preconditions)
