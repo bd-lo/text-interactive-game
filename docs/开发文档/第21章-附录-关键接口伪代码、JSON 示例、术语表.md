@@ -251,37 +251,29 @@ class ToolRegistry:
     # build_params_model）见第 7 章 7.4，本附录不重复展开
 ```
 
-#### 21.2.4 LLMClient.complete_json（成功 data={"parsed","usage","call"}，失败四类错误码）
+#### 21.2.4 LLMClient.complete_json（成功 data={"content","repaired","usage","call"}，失败四类错误码；D-M5-1 同步签名）
 ```python
 class LLMClient:
-    async def complete_json(self, req: LLMRequest) -> Result:
+    def complete_json(self, req: LLMRequest) -> Result:
         # req 即第 12.2 节 LLMRequest（v0.2 权威字段）：
-        # task / output_schema（alias "schema"）/ agent_id / turn_id / idempotency_key /
-        # model_tier / messages / timeout_s / cache_ttl_s / max_repair
+        # task / output_schema（模型类；schema 是 Pydantic 保留属性，不用 alias，D-M5-3）/ agent_id /
+        # turn_id / idempotency_key / model_tier / messages / timeout_s / cache_ttl_s / max_repair
         if req.output_schema is None:
             return Result.fail(ErrorCode.INVALID_INPUT, "output_schema required for complete_json")
-        # 1) 幂等：同键已成功直接复用（llm_call_log 唯一索引），不重复扣费
-        if (hit := await self.calls.find_succeeded(req.idempotency_key)) is not None:
-            return Result.ok(data={"parsed": hit.parsed, "usage": hit.usage, "call": hit.call})
+        # 1) 幂等：同键已成功直接复用（019 内存 LLMCallLog 端口；022 落 llm_call_log 唯一索引），不重复扣费
+        if (hit := self.calls.find_success(req.idempotency_key)) is not None:
+            return Result.ok(data={"content": hit.content, "repaired": False,
+                                   "usage": hit.usage, "call": hit.record})
         # 2) 供应商调用：LiteLLM 只做协议与回退；tenacity 是唯一网络重试计数者；
         #    req.timeout_s 是整条链 deadline（单次尝试 ≤ 剩余时间）
-        raw = await self._call(req)
+        raw = self._call(req)
         if not raw.ok:                                   # LLM_UNAVAILABLE：超时/限流/供应商全挂
             return raw
-        # 3) 校验 + 修复重试（instructor，次数 = req.max_repair，固定 1，共 2 次请求）
-        try:
-            parsed = req.output_schema.model_validate_json(raw.text)
-        except ValidationError as first_error:
-            raw = await self._call(req, repair_hint=first_error)
-            if not raw.ok:
-                return raw
-            try:
-                parsed = req.output_schema.model_validate_json(raw.text)
-            except ValidationError as second_error:
-                self.calls.log_schema_failure(req, second_error)   # 写 llm_call_log，events 为空
-                return Result.fail(ErrorCode.SCHEMA_VIOLATION, "schema validation failed twice")
-        call = self.calls.record(req, raw, parsed)       # LLMCallRecord：task/agent_id/model_tier/token/成本/延迟/prompt_version
-        return Result.ok(data={"parsed": parsed, "usage": raw.usage, "call": call})
+        # 3) M5-019：校验/修复链暂留 validation.py（D-M5-2），客户端只返回原始文本；
+        #    021 评估迁入客户端（等价 instructor 一次修复），修复上限固定 1 次（共 2 次请求）
+        self.calls.record(self._record_of(req, raw))      # LLMCallRecord：task/agent_id/model_tier/token/成本/延迟/prompt_version
+        return Result.ok(data={"content": raw.text, "repaired": False,
+                               "usage": raw.usage, "call": raw.call})
         # 失败码固定四类：LLM_UNAVAILABLE / SCHEMA_VIOLATION / INVALID_INPUT / INTERNAL；
         # LLMClient 不产生领域事件，也不做业务兜底——确定性兜底由调用方按第 12.6 节执行
         # （解析→关键词、叙事→模板、判定→RuleEngine、制造→calculate_craft_result、人物卡→模板草稿）。

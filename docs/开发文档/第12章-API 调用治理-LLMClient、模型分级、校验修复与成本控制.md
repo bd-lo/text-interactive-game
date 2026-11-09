@@ -47,12 +47,12 @@ class LLMCallRecord(BaseModel):
     prompt_tokens: int; completion_tokens: int; cost_usd: Decimal
     latency_ms: int; error_code: ErrorCode | None
 
-class LLMClient:
-    async def complete_json(self, req: LLMRequest) -> Result: ...   # data={"parsed","usage","call"}
-    async def complete_text(self, req: LLMRequest) -> Result: ...
-    def estimate_cost(self, req: LLMRequest) -> Decimal: ...
+class LLMClient:                                   # D-M5-1：M5 权威签名为同步（异步复评门=M6 流式/SSE）
+    def complete_json(self, req: LLMRequest) -> Result: ...   # data={"content","repaired","usage","call"}；021 增补 "parsed"
+    def complete_text(self, req: LLMRequest) -> Result: ...
+    def estimate_cost(self, req: LLMRequest) -> Decimal: ...  # 022 落地
 ```
-上述 `complete_json(self, req: LLMRequest) -> Result` 为**全队唯一权威签名**（第 21 章附录以此为准）：字段清单见上；`task` 为任务类型、`output_schema` 为结构化模型（附录写作 `schema`，因 Pydantic v2 保留属性冲突改用 `output_schema`+alias）、`agent_id` 为调用者、`model_tier` 为模型分级、`timeout_s` 为整链 deadline。成功 `data={"parsed","usage","call"}`；失败 `error_code ∈ {LLM_UNAVAILABLE, SCHEMA_VIOLATION, INVALID_INPUT, INTERNAL}`、`events=[]`——LLM 调用不产生领域事件，但每次调用（含失败）写 `llm_call_log` 供成本归集与审计。
+上述 `complete_json(self, req: LLMRequest) -> Result` 为**全队唯一权威签名**（第 21 章附录以此为准），**同步**（D-M5-1：全链路同步、路由在线程池执行；异步化在 M6 流式/SSE 前复评）：字段清单见上；`task` 为任务类型、`output_schema` 为结构化模型类 `type[BaseModel] | None`（附录写作 `schema`，因 `schema` 是 Pydantic v2 保留属性名，字段名固定为 `output_schema`，D-M5-3）、`agent_id` 为调用者、`model_tier` 为模型分级、`timeout_s` 为整链 deadline。019 成功的 `data={"content","repaired","usage","call"}`（`call` 为 `LLMCallRecord`；021 完成修复链迁入后再增补 `"parsed"`，D-M5-2）；失败 `error_code ∈ {LLM_UNAVAILABLE, SCHEMA_VIOLATION, INVALID_INPUT, INTERNAL}`、`events=[]`——LLM 调用不产生领域事件，但每次调用（含失败）写 `llm_call_log` 供成本归集与审计（019 为内存 `LLMCallLog` 端口，022 建表 + Alembic，D-M5-3）。
 
 必须内建九项职责：总超时（整链 deadline，单次 ≤ 剩余时间）、网络重试（tenacity）、限流（按供应商 token bucket 封顶 RPM/TPM）、幂等键（Idempotency Key）去重、结构化日志（只落 prompt hash 与脱敏）、token 计量（优先供应商 usage）、按 `agent_id`/`turn_id` 双维成本归集、供应商回退链、熔断器（Circuit Breaker）。
 
@@ -61,13 +61,13 @@ class LLMClient:
 | --- | --- | --- | --- | --- |
 | 供应商 HTTP 重试 | LiteLLM Router | 关闭 | `num_retries=0` | 只做回退，不重试 |
 | 网络/超时重试 | tenacity | 开启 | `stop_after_attempt(3)`、`wait_exponential_jitter(initial=1, max=8)`、仅对超时/429/5xx | 唯一的重试计数者 |
-| Schema 修复重试 | instructor | 开启 | `max_retries=1`（共 2 次请求） | 只处理校验失败 |
+| Schema 修复重试 | `validation.py`（019）/ instructor（021 评估，D-M5-2） | 开启 | `max_repair=1`（共 2 次请求） | 只处理校验失败 |
 | 业务降级 | 各 Agent 调用方 | 开启 | 确定性兜底（Deterministic Fallback） | 保证回合（Turn）可结束 |
 
-结论：单次请求最多 3 次网络尝试 + 1 次修复，各层不得私自重试。
+结论：单次请求最多 3 次网络尝试 + 1 次修复，各层不得私自重试。**M5-019 实施口径（D-M5-2）**：修复链暂留 `validation.py`（Agent 显式调用），`LLMClient` 只做 transport 治理并返回原始文本；021-schema-repair 再评估「迁入客户端 / 启用 instructor」，无论归属，修复次数上限固定 1（共 2 次请求）不得变。
 
 ### 12.4 模型分级与供应商回退
-按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**：A. 单供应商双档（运维最简，推荐）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.yaml`，按 `model_tier` 声明 `primary/fallback` 链。
+按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**：A. 单供应商双档（运维最简，推荐）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.json`（**JSON-only**，D-M5-4：PyYAML 非声明依赖、第 19 章明示不新增；包内默认 `src/textgame/llm/config/llm.default.json` + `TEXTGAME_LLM_CONFIG` 覆盖路径），按 `model_tier` 声明 `primary/fallback` 链；020 起落地。
 
 人物卡生成任务（`task=character_card_generate`，v0.2 新增）：`model_tier=STRONG`、`timeout_s=20`、`max_repair=1`、缓存不适用（同 brief 可重复生成）；幂等分两层——HTTP 幂等键用客户端 UUID `Idempotency-Key`（第 6、23 章），服务端另算 `sha256(canonical payload)`（brief/schema_version/options）用于同键异参 `CONFLICT` 与审计；成本按 `agent_id=character_card` 归集，单用户限流 5 次/分钟；失败降级为确定性模板（brief+默认属性草稿），与第 6 章 `POST /api/v1/character-cards/generate` 对齐。
 
@@ -75,7 +75,7 @@ class LLMClient:
 模板放 `src/textgame/llm/prompts/<agent_id>/<task>@v3.j2`，`manifest.json` 记录 version/sha256/owner/changelog/适用模型。Jinja2 用 `StrictUndefined`，变量必须显式传入，禁止访问环境变量/执行表达式；玩家输入只作数据字段注入，不得拼进指令段（结构性防注入，见第 15 章）。变更须过 Code Review 与固定种子回放（Replay）回归（见第 18 章），`prompt_version` 与模板 hash 写入 `LLMCallRecord` 与 Event，可追溯每回合版本。
 
 ### 12.6 结构化输出：校验 + 一次修复 + 确定性兜底
-步骤：① 原始输出 → `req.output_schema.model_validate_json`（strict、禁额外字段）；② 失败 → 把 pydantic 错误摘要回传，追加一次修正指令（instructor `max_retries=1`）；③ 仍失败 → 按 Agent 类型走确定性兜底：
+步骤：① 原始输出 → `req.output_schema.model_validate_json`（strict、禁额外字段）；② 失败 → 把 pydantic 错误摘要回传，追加一次修正指令（019 由 `validation.complete_json_with_repair` 实现，D-M5-2；021 评估迁入客户端，等价于 instructor `max_retries=1`）；③ 仍失败 → 按 Agent 类型走确定性兜底：
 
 | Agent | 确定性兜底 |
 | --- | --- |
@@ -146,7 +146,8 @@ class LLMClient:
 ### 本章结论
 1. 业务代码只允许调用 `LLMClient.complete_json` / `complete_text`，所有 SDK（litellm/openai）只能在 `src/textgame/llm/` 内出现。
 2. 依赖组合固定为 LiteLLM + instructor + tenacity + cachetools + Jinja2（均为运行时依赖，只允许在 `src/textgame/llm/` 内部 import），全部为 MIT/Apache-2.0/BSD-3-Clause，可闭源分发；LiteLLM 的 `enterprise/` 目录不得使用。
-3. 重试必须单一所有权：LiteLLM `num_retries=0`，网络重试只由 tenacity 计数（≤3 次），Schema 修复只由 instructor 做 1 次，避免成本失控。
+3. 重试必须单一所有权：LiteLLM `num_retries=0`，网络重试只由 tenacity 计数（≤3 次），Schema 修复只做 1 次（019 由 `validation.py`，021 评估 instructor，D-M5-2），避免成本失控。
 4. 校验失败一律走「一次修复 → 确定性兜底 → 无法处理」，未校验输出绝不写入状态；兜底路由按 Agent 类型固定，写入代码常量表。
 5. 批量合并只对无私有记忆的公共群演 NPC 开放（每批 ≤4 个），角色 Agent 默认串行；休眠策略用 `agent_invocation_log` 做可审计断言。
 6. 第一版预算按「单回合默认 2 次、最多 3 次调用；P95 首版 ≤8 s（M2 缓存命中目标 ≤3 s）；单回合成本 ≤¥0.20」设 SLO，实测两周后校准，并把「模型名/供应商」以配置化「待定」项留给 M5。
+7. M5 实施口径（ADR `docs/decisions/2026-11-10-m5-api-governance.md`）：同步签名（D-M5-1）、修复链 019 留 `validation.py`（D-M5-2）、`output_schema` 用模型类且不用 `schema` alias（D-M5-3）、配置 JSON-only（D-M5-4）、默认离线 `TEXTGAME_LLM_ENABLED=false` 且启用时缺 key 构造期失败（D-M5-6）。本章与 ADR 冲突时以 ADR 为准。
