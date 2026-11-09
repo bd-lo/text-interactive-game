@@ -12,10 +12,14 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 
+from fakes import FakeLLM
 from textgame.agents.character_agent import DeterministicCharacterAgent
+from textgame.agents.craft_agent import CraftAgent
+from textgame.agents.dto import ParseOutcome
 from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.settings import get_settings
+from textgame.domain.models import ActionIntent
 from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
 from textgame.llm.client import DisabledLLMClient
@@ -60,6 +64,40 @@ class M4GameHarness(GameHarness):
 
     craft: CraftService
     catalog: RecipeCatalog
+
+
+@dataclass
+class M4FreeHarness(M4GameHarness):
+    """M4 自由制造装配额外暴露 CraftAgent 与 FakeLLM（脚本可注入，017 用）。"""
+
+    generator: CraftAgent
+    fake_llm: FakeLLM
+
+
+class FreeCraftIntentParser:
+    """017 测试专用确定性解析器：任意输入映射为 craft_item(mode=free)。
+
+    只用于端到端验证自由制造校验/回滚链路（不进入生产装配）；真正的意图解析仍由
+    006/016 的解析器负责。
+    """
+
+    def parse(
+        self,
+        text: str,
+        *,
+        perception: object = None,
+        ctx: object = None,
+    ) -> ParseOutcome:
+        del perception, ctx
+        description = text.strip()[:200] or "做一个简单物件"
+        args = {"mode": "free", "free_description": description}
+        return ParseOutcome(
+            intent=ActionIntent(action="craft_item", params=args, confidence=1.0),
+            tool="craft_item",
+            args=args,
+            confidence=1.0,
+            source="keyword",
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -212,4 +250,45 @@ def m4_game_harness() -> Iterator[M4GameHarness]:
             query=query,
             craft=craft,
             catalog=catalog,
+        )
+
+
+@pytest.fixture
+def m4_free_harness() -> Iterator[M4FreeHarness]:
+    """M4 自由制造装配：free_craft_enabled=True + CraftAgent(FakeLLM) + free 解析器。
+
+    与 m4_game_harness 同构（M2 单角色路径 + scenario=m4）；FakeLLM 脚本由用例通过
+    harness.fake_llm.reset([...]) 注入，保证不联网、可复现。
+    """
+    repo = InMemoryRepository()
+    engine = GameEngine(repo)
+    query = QueryService(repo)
+    action = ActionService(query)
+    catalog = RecipeCatalog.load_builtin()
+    fake_llm = FakeLLM()
+    generator = CraftAgent(fake_llm)
+    craft = CraftService(catalog, generator=generator, free_craft_enabled=True)
+    registry = build_game_tool_registry()
+    gate = ToolGate(registry=registry, query=query, action=action, craft=craft)
+    orchestrator = TurnOrchestrator(
+        repo=repo,
+        engine=engine,
+        query=query,
+        action=action,
+        parser=FreeCraftIntentParser(),
+        gate=gate,
+        narrator=TemplateNarrator(),
+        rules=RuleEngine(),
+        save_seed_default="save-42",
+    )
+    with TestClient(create_app(orchestrator=orchestrator, query_service=query)) as client:
+        yield M4FreeHarness(
+            client=client,
+            repo=repo,
+            orchestrator=orchestrator,
+            query=query,
+            craft=craft,
+            catalog=catalog,
+            generator=generator,
+            fake_llm=fake_llm,
         )

@@ -48,6 +48,12 @@ class FakeLLM:
         """剩余未消费的脚本响应数 (便于断言“只修复一次”)。"""
         return len(self._responses) - self._cursor
 
+    def reset(self, responses: Sequence[FakeResponse] | None = None) -> None:
+        """重置脚本队列并清空调用记录（供一次装配多次注入用例；不改变原有 API）。"""
+        self._responses = list(responses or [])
+        self._cursor = 0
+        self.calls.clear()
+
     def complete_json(self, req: LLMRequest) -> Result:
         """消费下一条脚本响应并返回 ``Result``；耗尽或异常一律映射为 ``LLM_UNAVAILABLE``。"""
         self.calls.append(req)

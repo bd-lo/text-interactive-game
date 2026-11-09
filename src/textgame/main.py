@@ -15,6 +15,7 @@ M5 接入；``DisabledLLMClient`` 保证默认装配零联网、可复现 (第 1
 from fastapi import FastAPI
 
 from textgame.agents.character_agent import DeterministicCharacterAgent
+from textgame.agents.craft_agent import CraftAgent
 from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.rng import save_seed_from_settings
@@ -51,6 +52,7 @@ def _build_app() -> FastAPI:
     catalog = RecipeCatalog.load_builtin()
     craft_service = CraftService(
         catalog,
+        generator=CraftAgent(DisabledLLMClient()),
         free_craft_enabled=settings.free_craft_enabled,
     )
     registry = build_game_tool_registry()

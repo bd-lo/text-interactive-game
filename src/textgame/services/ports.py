@@ -11,8 +11,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from textgame.domain.crafting import CraftView
 from textgame.domain.events import Event
 from textgame.domain.models import GameState
+from textgame.domain.results import Result
 
 
 @dataclass(frozen=True)
@@ -136,3 +138,21 @@ class GameRepository(Protocol):
         ``game_id`` 不存在时返回空列表（不报错）。
         """
         ...
+
+
+class CraftGenerator(Protocol):
+    """制造 Agent 生成端口（第 13 章 §13.4）：只产出 CraftDraft，不写状态、不调仓储。
+
+    实现见 textgame.agents.craft_agent.CraftAgent（M4 由 FakeLLM 覆盖，M5 接真实 LLM）；
+    成功 data={"parsed": CraftDraft dict, "content", "repaired", "prompt_version"}，
+    失败透传 SCHEMA_VIOLATION/LLM_UNAVAILABLE 且零事件。
+    """
+
+    def generate(
+        self,
+        view: CraftView,
+        *,
+        turn_id: int,
+        save_seed: str,
+        idempotency_key: str,
+    ) -> Result: ...

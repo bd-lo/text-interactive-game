@@ -27,15 +27,18 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import GameState, Item
 from .rules.dice import DerivedRandom
-from .types import CharacterId
+from .types import CharacterId, ItemId
 
 __all__ = [
     "Byproduct",
+    "CraftDraft",
     "CraftInput",
+    "CraftItemView",
     "CraftMode",
     "CraftRequest",
     "CraftResult",
     "CraftStateSlice",
+    "CraftView",
     "ItemTemplate",
     "ItemTemplateId",
     "QualityBand",
@@ -44,6 +47,7 @@ __all__ = [
     "calculate_craft_result",
     "derive_item_id",
     "instantiate_craft_result",
+    "recipe_from_draft",
 ]
 
 #: 物品模板键：复用第 5 章 §5.7 的定义（规范写法 item.<name>；item_<name> 亦接受）。
@@ -396,4 +400,102 @@ def build_craft_state_slice(state: GameState, actor_id: str) -> CraftStateSlice:
         skill_levels={},
         station_id=station_id,
         next_seq=state.rng_state.last_seq + 1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# M4-017 自由制造生成路径契约（第 13 章 §13.4、第 8 章 §8.2、D-M4-3/D-M4-7）
+# ---------------------------------------------------------------------------
+
+
+class CraftDraft(BaseModel):
+    """CraftOutput 规范化后的草案（第 13 章 §13.2）：只含名称/材料/工位/步骤。
+
+    extra=forbid：任何额外字段（stats/damage/quality/成功率等 LLM 数值）都会被
+    pydantic 拒绝，经一次修复重试后仍失败 → SCHEMA_VIOLATION（第 12 章 §12.6）。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    item_name: str = Field(min_length=1, max_length=30)
+    output_template_id: ItemTemplateId | None = None
+    inputs: list[CraftInput] = Field(min_length=1, max_length=8)
+    station: str | None = None
+    steps: list[str] = Field(default_factory=list, max_length=8)
+
+
+class CraftItemView(BaseModel):
+    """CraftView 中的背包行（服务层投影，不暴露 GameState/其他角色数据）。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    item_id: ItemId
+    template_id: ItemTemplateId
+    name: str = Field(min_length=1, max_length=32)
+    qty: int = Field(ge=1)
+
+
+class CraftView(BaseModel):
+    """制造 Agent 的私有只读视图（第 13 章 §13.4、第 8 章 §8.2）：不含全局状态。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor_id: CharacterId
+    inventory: list[CraftItemView] = Field(default_factory=list)
+    station_id: str | None = None
+    known_recipe_ids: list[str] = Field(default_factory=list)
+    free_description: str = Field(min_length=1, max_length=200)
+
+
+def _free_output_template_id(item_name: str) -> str:
+    """为自由制造产出派生确定性模板键（item.crafted_<8hex>，匹配 ItemTemplateId）。"""
+    digest = hashlib.blake2b(item_name.encode("utf-8"), digest_size=4).hexdigest()
+    return f"item.crafted_{digest}"
+
+
+def recipe_from_draft(
+    draft: CraftDraft,
+    view: CraftView,
+    *,
+    save_seed: str,
+    turn_id: int,
+    actor_id: str,
+) -> Recipe:
+    """把自由制造草案折算为临时 Recipe（第 13 章 §13.4 步骤 5、D-M4-7）。
+
+    - inputs 取 draft.inputs；output_template_id 取 draft.output_template_id，缺省时按
+      item_name 确定性派生 item.crafted_<8hex>（匹配 ItemTemplateId 正则）；
+    - item_templates 仅内嵌该产出模板（name=draft.item_name，description 空，stats 空，
+      rarity=common，stackable=False；不接收 LLM 数值）；
+    - station=draft.station；output_qty=1；skill_req={}；byproducts=[]；
+    - 数值口径由框架固定：base_success_rate=0.5、quality_bands=[0.0 common, 0.8 fine]；
+    - save_seed/turn_id/actor_id 由服务层传入，保留给 M5 配方版本/缓存键使用（M4 不写事件）。
+    """
+    del save_seed, turn_id, actor_id  # M4 临时 Recipe 不进入目录/事件；保留签名供 M5 扩展
+    output_template_id = draft.output_template_id or _free_output_template_id(draft.item_name)
+    template = ItemTemplate(
+        template_id=output_template_id,
+        name=draft.item_name,
+        description="",
+        tags=[],
+        stats={},
+        rarity="common",
+        stackable=False,
+    )
+    return Recipe(
+        recipe_id=f"recipe.free_{hashlib.blake2b(draft.item_name.encode('utf-8'), digest_size=4).hexdigest()}",
+        name=draft.item_name,
+        version=1,
+        inputs=list(draft.inputs),
+        output_template_id=output_template_id,
+        output_qty=1,
+        station=draft.station,
+        skill_req={},
+        base_success_rate=0.5,
+        quality_bands=[
+            QualityBand(min_roll=0.0, quality="common"),
+            QualityBand(min_roll=0.8, quality="fine"),
+        ],
+        byproducts=[],
+        item_templates={output_template_id: template},
     )
