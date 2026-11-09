@@ -1,7 +1,8 @@
 """只读查询服务 (第 6 章 6.3 的 ``QueryService``，契约 §4.2)。
 
 所有方法只读 ``GameState``/仓储：零事件、不写库、不调模型。房间/背包/感知切片供
-解析与工具门使用；``get_game_view`` 供 ``GET /api/v1/games/{game_id}`` 刷新/重连恢复。
+解析与工具门使用；``get_game_view`` 供 ``GET /api/v1/games/{game_id}`` 刷新/重连恢复；
+``get_player_view`` 供 ``GET /api/v1/games/{game_id}/view`` 提供结构化状态面板数据。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Any, Literal
 from textgame.domain.events import Event
 from textgame.domain.models import Character, EntityRef, GameState, PerceptionSlice
 from textgame.domain.perception import filter_local_events
+from textgame.domain.scenario import PLAYER_ID
 from textgame.services.ports import GameRepository
 
 #: 感知切片实体种类（与 ``EntityRef.kind`` 的 Literal 对齐）。
@@ -183,6 +185,39 @@ class QueryService:
             "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
             "status": "active",
             "last_text": last_text,
+        }
+
+    def get_player_view(self, game_id: str) -> dict[str, Any]:
+        """返回玩家视角对局视图（只读、零事件、不写库、不调模型）。
+
+        契约（M6 前端 StatusPanel / 终端客户端共用）：
+
+        ``{game_id, turn, version, snapshot_version, status, hp, max_hp,
+        inventory:[{item_id,name}], room:{room_id,title,description,exits,items,npcs}}``。
+
+        ``turn``/``version``/``snapshot_version``/``status`` 与 ``get_game_view`` 同口径
+        （``version`` 仍是下一次提交的 ``expected_version``；本方法不产生任何事件）；
+        ``hp``/``max_hp``/``inventory`` 取玩家角色（``PLAYER_ID``）当前状态，
+        ``room`` 复用 :meth:`get_room_view` 的可见性口径。存档不存在抛
+        :class:`GameNotFoundError`（接入层映射 404 ``NOT_FOUND`` 信封）。
+        """
+        record = self._repo.load(game_id)
+        if record is None:
+            raise GameNotFoundError(game_id)
+        state = record.state
+        character = self._require_character(state, PLAYER_ID)
+        max_hp = character.attributes.get("max_hp")
+        snapshot = self._repo.latest_snapshot(game_id)
+        return {
+            "game_id": game_id,
+            "turn": state.turn,
+            "version": record.version,
+            "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
+            "status": "active",
+            "hp": character.hp,
+            "max_hp": max_hp if max_hp is not None else character.hp,
+            "inventory": self.get_inventory(state, PLAYER_ID)["items"],
+            "room": self.get_room_view(state, PLAYER_ID),
         }
 
     @staticmethod

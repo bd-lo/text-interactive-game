@@ -16,6 +16,7 @@ from textgame.domain.scenario import DIRECTION_KEYWORDS
 from textgame.services.tool_context import ToolContext
 
 _LOOK_WORDS: tuple[str, ...] = ("环顾", "四周", "查看", "观察", "看")
+_INVENTORY_WORDS: tuple[str, ...] = ("背包", "行囊", "物品栏", "身上", "带了", "装备")
 _USE_WORDS: tuple[str, ...] = ("使用", "服用", "喝", "吃", "用")
 _TAKE_WORDS: tuple[str, ...] = ("拿起", "拿", "捡", "拾", "取")
 _MOVE_WORDS: tuple[str, ...] = ("走", "去", "前往", "进", "向")
@@ -98,6 +99,10 @@ class DeterministicIntentParser:
         item = _match_entity(normalized, items)
         npc = _match_entity(normalized, npcs)
 
+        if _contains_any(normalized, _INVENTORY_WORDS):
+            # 背包/行囊查询必须优先于 ``_LOOK_WORDS``：修「查看背包」被 ``查看`` 抢占为
+            # 房间查看（M6 状态面板/终端客户端的可观察状态入口）。
+            return _outcome("get_inventory", {})
         if _contains_any(normalized, _LOOK_WORDS):
             # 读工具名用第 7 章 §7.3 的规范名 ``get_room_view``（``look`` 只是服务方法名）。
             return _outcome("get_room_view", {})

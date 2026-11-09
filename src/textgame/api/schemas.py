@@ -60,6 +60,56 @@ class GameViewResponse(BaseModel):
     last_text: str | None = None
 
 
+class ItemRefResponse(BaseModel):
+    """实体引用（房间可见物品 / 玩家背包物品共用）：``{item_id, name}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    name: str
+
+
+class NpcRefResponse(BaseModel):
+    """房间可见 NPC 引用：``{npc_id, name}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    npc_id: str
+    name: str
+
+
+class RoomViewResponse(BaseModel):
+    """玩家所在房间视图（只读；与 ``QueryService.get_room_view`` 同口径）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    room_id: str
+    title: str
+    description: str
+    exits: dict[str, str]
+    items: list[ItemRefResponse]
+    npcs: list[NpcRefResponse]
+
+
+class GamePlayerViewResponse(BaseModel):
+    """``GET /api/v1/games/{game_id}/view`` 200 响应（M6 状态面板/终端客户端契约）。
+
+    只读：不产生事件、``version`` 不变；``version`` 语义与 ``GameViewResponse`` 一致。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    game_id: str
+    turn: int
+    version: int
+    snapshot_version: int
+    status: Literal["active", "ended"]
+    hp: int
+    max_hp: int
+    inventory: list[ItemRefResponse]
+    room: RoomViewResponse
+
+
 class AuditRecordResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/audit`` 单条审计记录（读模型）。"""
 
@@ -93,6 +143,10 @@ __all__ = [
     "AuditRecordResponse",
     "CreateGameBody",
     "CreatedGameResponse",
+    "GamePlayerViewResponse",
     "GameViewResponse",
+    "ItemRefResponse",
+    "NpcRefResponse",
+    "RoomViewResponse",
     "TurnRequestBody",
 ]

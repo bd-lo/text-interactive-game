@@ -19,6 +19,7 @@ from textgame.api.schemas import (
     AuditRecordResponse,
     CreatedGameResponse,
     CreateGameBody,
+    GamePlayerViewResponse,
     GameViewResponse,
 )
 from textgame.domain.results import ErrorCode
@@ -72,6 +73,23 @@ def get_game(
     except GameNotFoundError as exc:
         raise ApiError(ErrorCode.NOT_FOUND, f"存档不存在: {game_id}") from exc
     return GameViewResponse(**view)
+
+
+@router.get("/games/{game_id}/view", response_model=GamePlayerViewResponse)
+def get_game_player_view(
+    game_id: str,
+    query_service: Annotated[QueryService, Depends(get_query_service)],
+) -> GamePlayerViewResponse:
+    """返回玩家视角对局视图（只读，零事件、version 不变）；未知存档 404 信封。
+
+    契约：``{game_id, turn, version, snapshot_version, status, hp, max_hp,
+    inventory[], room{room_id,title,description,exits,items,npcs}}``（M6 状态面板/终端客户端）。
+    """
+    try:
+        view = query_service.get_player_view(game_id)
+    except GameNotFoundError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, f"存档不存在: {game_id}") from exc
+    return GamePlayerViewResponse(**view)
 
 
 @router.get("/games/{game_id}/audit", response_model=AuditListResponse)
