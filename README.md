@@ -2,7 +2,7 @@
 
 复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
-> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）与 M3 多角色（5/5）均已完成并通过出口独立验收** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；下一步 M4 制造（015-recipe-model）。
+> 当前阶段：开发文档 v0.3 已定稿；**M1 骨架（4/4）、M2 单场景 MVP（5/5）与 M3 多角色（5/5）均已完成并通过出口独立验收** —— 环境与依赖锁定、领域模型、EventLog 固定种子回放、CI 质量门/许可证门禁、`POST /api/v1/games` + `POST /api/v1/turns` 回合 API（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放与注入 0 写入用例；M3 交付角色私有感知切片、`actor_scope` 可见性矩阵与越权拒绝安全用例、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表/查询端点与 10 回合多角色 golden 回放；M4 制造进行中（015-recipe-model 已交付 1/4，下一步 016-deterministic-craft）。
 
 ## 开发模式（v0.3）
 
@@ -44,7 +44,7 @@ curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"o
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 981 passed；M4 文档回写前基线 0c62e00）
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 1001 passed，M4-015 后）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
@@ -52,7 +52,7 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 > **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
 
-> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（M2 期已验证 3.10.22 全量 638 passed，属历史值；当前 HEAD 全量 981 passed）。CI 在 ubuntu（UTF-8）上不受影响。
+> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（M2 期已验证 3.10.22 全量 638 passed，属历史值；当前 HEAD 全量 1001 passed）。CI 在 ubuntu（UTF-8）上不受影响。
 
 ## M2 单场景 MVP 快速试玩（已交付）
 
