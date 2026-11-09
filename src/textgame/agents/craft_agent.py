@@ -61,7 +61,7 @@ class CraftAgent:
         del save_seed  # M4 不参与数值/缓存；保留签名与 CraftGenerator 端口一致
         request = LLMRequest(
             task=_TASK,
-            output_schema=CraftOutput.model_json_schema(),
+            output_schema=CraftOutput,
             agent_id=_AGENT_ID,
             turn_id=turn_id,
             idempotency_key=idempotency_key,

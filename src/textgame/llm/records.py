@@ -1,0 +1,158 @@
+"""LLM 调用记录与调用日志端口（第 12 章 12.2 ``LLMCallRecord``、12.7 幂等缓存）。
+
+职责边界（D-M5-3，2026-11-10 定案）：
+- **019**：本模块只定义 `LLMCallRecord` / `LLMCallEntry` / `LLMCallLog` 端口 +
+  `InMemoryLLMCallLog` 内存实现 + 结构化日志；单进程内幂等复用与「在飞」判定。
+- **022**：`llm_call_log` 表 + Alembic 0003 + SQL 实现（`persistence/` 实现同一端口），
+  由组合根注入；本模块与 client 不改（`llm/` 不得 import `persistence/`）。
+
+成功复用语义（第 12 章 12.7）：同键成功记录直接复用，不重复扣费；同键「在飞」返回
+`LLM_UNAVAILABLE`（019 单进程立即失败，不阻塞等待；022 再评估等待/占位）。
+失败记录（含 Schema 失败）只落 `append_failure` 供成本归集与审计，不进入成功复用表。
+"""
+
+from __future__ import annotations
+
+import threading
+from typing import Any, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from textgame.domain.results import ErrorCode
+from textgame.llm.client import ModelTier
+
+__all__ = ["InMemoryLLMCallLog", "LLMCallEntry", "LLMCallLog", "LLMCallRecord"]
+
+
+class LLMCallRecord(BaseModel):
+    """一次 LLM 调用（含重试/修复）的治理元数据（第 12 章 12.2 字段）。
+
+    ``request_id`` 由 ``客户端 + 幂等键`` 派生，只用于关联日志，不含私密内容；
+    ``cost_usd`` 在 019 恒为 0（价格表归 022），M5 出口前由 022 填真实成本；
+    ``latency_ms`` 是整次调用（含重试与修复请求）的墙钟耗时。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    task: str = Field(min_length=1, max_length=64)
+    agent_id: str = Field(min_length=1, max_length=32)
+    model_tier: ModelTier
+    provider: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=128)
+    prompt_version: str = Field(default="unversioned", max_length=64)
+    attempt: int = Field(ge=1)
+    cache_hit: bool = False
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0)
+    latency_ms: int = Field(ge=0)
+    error_code: ErrorCode | None = None
+
+    @property
+    def total_tokens(self) -> int:
+        """输入 + 输出 token 总数（成本/预算归集的中间量）。"""
+        return self.prompt_tokens + self.completion_tokens
+
+
+class LLMCallEntry(BaseModel):
+    """幂等复用所需的结果载荷：原始文本 + token 用量 + 调用记录。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    content: str
+    usage: dict[str, int] = Field(default_factory=dict)
+    record: LLMCallRecord
+
+
+class LLMCallLog(Protocol):
+    """调用日志端口：019 由内存实现，022 由 `persistence` 的 SQL 实现同一接口。
+
+    ``try_begin``/``end`` 用于「在飞」判定（防同键并发重复扣费）；``find_success``/
+    ``save_success`` 用于幂等复用；``append_failure`` 只记失败、不参与复用。
+    """
+
+    def try_begin(self, idempotency_key: str) -> bool:
+        """标记一次调用开始；同键已在飞返回 False（调用方映射 LLM_UNAVAILABLE）。"""
+        ...
+
+    def end(self, idempotency_key: str) -> None:
+        """标记一次调用结束（必须与 ``try_begin`` 成对，异常路径也要调用）。"""
+        ...
+
+    def find_success(self, idempotency_key: str) -> LLMCallEntry | None:
+        """同键成功记录（有则直接复用，不再发起供应商调用）。"""
+        ...
+
+    def save_success(self, entry: LLMCallEntry) -> None:
+        """保存一次成功调用；同键重复保存以首次为准（幂等）。"""
+        ...
+
+    def append_failure(self, record: LLMCallRecord) -> None:
+        """记录一次失败调用（含 Schema 失败），只供成本/审计，不参与复用。"""
+        ...
+
+
+class InMemoryLLMCallLog:
+    """`LLMCallLog` 的进程内线程安全实现（019；022 换 SQL 实现，接口不变）。"""
+
+    def __init__(self) -> None:
+        """创建空日志：成功表、失败表与在飞集合均为空。"""
+        self._success: dict[str, LLMCallEntry] = {}
+        self._failures: list[LLMCallRecord] = []
+        self._in_flight: set[str] = set()
+        self._lock = threading.Lock()
+
+    def try_begin(self, idempotency_key: str) -> bool:
+        """原子占用键；已在飞则返回 False。"""
+        with self._lock:
+            if idempotency_key in self._in_flight:
+                return False
+            self._in_flight.add(idempotency_key)
+            return True
+
+    def end(self, idempotency_key: str) -> None:
+        """释放键（幂等：未占有时无副作用）。"""
+        with self._lock:
+            self._in_flight.discard(idempotency_key)
+
+    def find_success(self, idempotency_key: str) -> LLMCallEntry | None:
+        """返回同键成功记录副本（不存在返回 None）。"""
+        with self._lock:
+            return self._success.get(idempotency_key)
+
+    def save_success(self, entry: LLMCallEntry) -> None:
+        """保存成功记录；同键已存在时保留首次（幂等复用口径）。"""
+        with self._lock:
+            self._success.setdefault(entry.idempotency_key, entry)
+
+    def append_failure(self, record: LLMCallRecord) -> None:
+        """追加失败记录（列表只增，供测试/成本归集）。"""
+        with self._lock:
+            self._failures.append(record)
+
+    @property
+    def failures(self) -> list[LLMCallRecord]:
+        """失败记录只读快照（测试与成本归集用）。"""
+        with self._lock:
+            return list(self._failures)
+
+    @property
+    def success_count(self) -> int:
+        """成功记录条数（测试断言复用是否发生）。"""
+        with self._lock:
+            return len(self._success)
+
+
+def usage_to_tokens(usage: dict[str, Any]) -> tuple[int, int]:
+    """从供应商 usage 字典提取 ``(prompt_tokens, completion_tokens)``。
+
+    缺失/类型不符按 0 处理（第 12 章 12.2：优先供应商 usage，缺失由 022 估算并标注）。
+    """
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    return (
+        prompt if isinstance(prompt, int) and prompt >= 0 else 0,
+        completion if isinstance(completion, int) and completion >= 0 else 0,
+    )

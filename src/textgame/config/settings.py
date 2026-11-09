@@ -27,8 +27,10 @@ class Settings(BaseSettings):
     # M4 制造（第 13 章 §13.4、D-M4-6）：自由制造开关默认关闭；M5 预算/真实 LLM 前不开启。
     free_craft_enabled: bool = False
 
-    # LLM 接入（第 12 章）：模型分级与回退链在 M5 落 config/llm.yaml；
+    # LLM 接入（第 12 章）：模型分级与回退链在 M5 落 config/llm.json；
     # 当前先配置单供应商单模型 + 凭据，凭据永不写入纳入 git 的文件。
+    # D-M5-6：默认离线（DisabledLLMClient）；true 时构造真实客户端且缺 key 立即失败。
+    llm_enabled: bool = False
     llm_provider: str = "deepseek"
     llm_model: str = "deepseek-flash"
     llm_base_url: str = "https://api.deepseek.com"

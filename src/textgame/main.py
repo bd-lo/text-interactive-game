@@ -9,7 +9,8 @@
 的位置 (第 4 章 4.2、第 16 章 16.1)。
 
 M3 采用第 3 章 §3.6 方案 A（离线确定性）：解析/叙事/角色 Agent 默认确定性，真实 LLM 在
-M5 接入；``DisabledLLMClient`` 保证默认装配零联网、可复现 (第 12 章 12.1)。
+M5 接入；``build_llm_client`` 默认返回 ``DisabledLLMClient``，保证默认装配零联网、可复现
+(第 12 章 12.1、D-M5-6：``TEXTGAME_LLM_ENABLED=true`` 才构造真实客户端，缺密钥 fail-fast)。
 """
 
 from fastapi import FastAPI
@@ -22,7 +23,7 @@ from textgame.config.rng import save_seed_from_settings
 from textgame.config.settings import get_settings
 from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
-from textgame.llm.client import DisabledLLMClient
+from textgame.llm.factory import build_llm_client
 from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
 from textgame.orchestration.resolver import Resolver, ToolGateRouter
@@ -50,9 +51,10 @@ def _build_app() -> FastAPI:
     query = QueryService(repo)
     action = ActionService(query)
     catalog = RecipeCatalog.load_builtin()
+    llm_client = build_llm_client(settings)
     craft_service = CraftService(
         catalog,
-        generator=CraftAgent(DisabledLLMClient()),
+        generator=CraftAgent(llm_client),
         free_craft_enabled=settings.free_craft_enabled,
     )
     registry = build_game_tool_registry()
@@ -70,7 +72,7 @@ def _build_app() -> FastAPI:
     character_agents = dict.fromkeys(M3_NPC_PLANS, character_agent)
     audit_service = AuditService(repo)
     parser = IntentParseAgent(
-        DisabledLLMClient(),
+        llm_client,
         DeterministicIntentParser(recipe_names=catalog.name_index()),
         tool_specs=registry.visible_tools(PLAYER_ID, frozenset({"player"})),
     )

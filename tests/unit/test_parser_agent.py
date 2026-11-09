@@ -115,9 +115,10 @@ def test_request_matches_llm_contract() -> None:
     assert request.idempotency_key == "idem-parse-0001"
     assert request.model_tier.value == "economy"
     assert request.max_repair == 1
-    assert request.output_schema is not None
-    assert request.output_schema["additionalProperties"] is False
-    assert {"intent", "tool"} <= set(request.output_schema["required"])
+    assert request.output_schema is ParseOutput
+    assert request.output_schema_json is not None
+    assert request.output_schema_json["additionalProperties"] is False
+    assert {"intent", "tool"} <= set(request.output_schema_json["required"])
     assert request.messages[0].role == "system"
     assert request.messages[1].role == "user"
     assert request.messages[1].content == "向北走"

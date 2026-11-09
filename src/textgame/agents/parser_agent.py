@@ -169,7 +169,7 @@ class IntentParseAgent:
         ]
         return LLMRequest(
             task=_TASK,
-            output_schema=ParseOutput.model_json_schema(),
+            output_schema=ParseOutput,
             agent_id=_AGENT_ID,
             turn_id=ctx.turn_id,
             idempotency_key=ctx.idempotency_key,

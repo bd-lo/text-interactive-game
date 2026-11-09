@@ -1,15 +1,51 @@
-"""LLM 供应商适配：全仓唯一 import LiteLLM 的位置（第 12 章 12.1、第 16 章 16.2）。
+"""LiteLLM 供应商适配：全仓唯一 import LiteLLM 的位置（第 12 章 12.1、第 16 章 16.2）。
 
-M1 阶段只需要「配置可用性自检」的最小非流式文本补全；完整 LLMClient
-（整链 deadline、tenacity 重试、限流、幂等键、token 计量、Schema 修复、
-供应商回退、熔断）在 M5 切片 019-llmclient 实现，见第 12 章 12.2、
-12.3、12.9。业务代码不得在本模块之外 import 任何供应商 SDK。
+职责（第 12 章 12.3）：只做**协议适配 + 异常分类**，不做重试（``num_retries=0``，重试
+唯一计数者是 ``litellm_client`` 内的 tenacity）、不做 Schema 校验、不写状态。供应商异常
+统一翻译为 :class:`textgame.llm.errors.ProviderCallError`，上层只按 ``retryable`` 决策。
+
+``sanitize_no_proxy_env()`` 必须在 LiteLLM 构造 httpx 客户端前执行（本机 NO_PROXY 含
+httpx 0.28 无法解析的方括号 IPv6 条目，会抛 ``InvalidURL``）。
 """
 
 from __future__ import annotations
 
 import os
 from typing import Any, TypedDict
+
+from textgame.llm.errors import ProviderCallError, classify_status_code
+
+__all__ = [
+    "ChatCompletionResult",
+    "chat_completion",
+    "classify_exception",
+    "litellm_model_id",
+    "sanitize_no_proxy_env",
+]
+
+#: 异常类名 → 可重试判定（类名匹配避免在模块顶层 import 供应商异常类型；
+#: 状态码可用时优先按状态码判定，见 ``classify_exception``）。
+_RETRYABLE_EXCEPTION_NAMES: frozenset[str] = frozenset(
+    {
+        "Timeout",
+        "APITimeoutError",
+        "APIConnectionError",
+        "RateLimitError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+        "MidStreamFallbackError",
+    }
+)
+_PERMANENT_EXCEPTION_NAMES: frozenset[str] = frozenset(
+    {
+        "AuthenticationError",
+        "BadRequestError",
+        "NotFoundError",
+        "PermissionDeniedError",
+        "UnprocessableEntityError",
+        "ContextWindowExceededError",
+    }
+)
 
 
 class ChatCompletionResult(TypedDict):
@@ -44,6 +80,30 @@ def litellm_model_id(provider: str, model: str) -> str:
     return model if "/" in model else f"{provider}/{model}"
 
 
+def classify_exception(exc: BaseException) -> ProviderCallError:
+    """把供应商 SDK 异常翻译为 ``ProviderCallError``（不泄漏密钥/响应体原文）。
+
+    判定优先级：HTTP 状态码（如有）> 异常类名白名单 > 默认不可重试（避免反复计费）。
+    """
+    status_code: int | None = None
+    for attr in ("status_code", "status", "http_status"):
+        raw = getattr(exc, attr, None)
+        if isinstance(raw, int):
+            status_code = raw
+            break
+    retryable = classify_status_code(status_code)
+    if status_code is None:
+        name = type(exc).__name__
+        if name in _RETRYABLE_EXCEPTION_NAMES:
+            retryable = True
+        elif name in _PERMANENT_EXCEPTION_NAMES:
+            retryable = False
+        elif isinstance(exc, (TimeoutError, ConnectionError)):
+            retryable = True
+    message = f"{type(exc).__name__}: {str(exc)[:200]}"
+    return ProviderCallError(message, retryable=retryable, status_code=status_code)
+
+
 def chat_completion(
     *,
     provider: str,
@@ -54,26 +114,37 @@ def chat_completion(
     timeout_s: float = 20.0,
     max_tokens: int | None = None,
 ) -> ChatCompletionResult:
-    """发一次非流式 chat completion 并返回业务字段；异常向上抛给调用方处理。"""
+    """发一次非流式 chat completion 并返回业务字段；失败抛 ``ProviderCallError``。"""
     sanitize_no_proxy_env()
     # 延迟导入：先修复 NO_PROXY 再让 LiteLLM 构造 httpx 客户端；同时保持全仓唯一
     # import 点（第 16 章 16.2、第 12 章 12.1）。
     from litellm import completion
 
-    response: Any = completion(
-        model=litellm_model_id(provider, model),
-        messages=messages,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=timeout_s,
-        # 网络重试所有权归 tenacity（第 12 章 12.3），LiteLLM 只做协议适配，必须关闭
-        num_retries=0,
-        max_tokens=max_tokens,
-    )
+    try:
+        response: Any = completion(
+            model=litellm_model_id(provider, model),
+            messages=messages,
+            api_key=api_key,
+            api_base=api_base,
+            timeout=timeout_s,
+            # 网络重试所有权归 tenacity（第 12 章 12.3），LiteLLM 只做协议适配，必须关闭
+            num_retries=0,
+            max_tokens=max_tokens,
+        )
+    except ProviderCallError:
+        raise
+    except Exception as exc:
+        raise classify_exception(exc) from exc
+    try:
+        choice = response.choices[0]
+        content = choice.message.content or ""
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise ProviderCallError(
+            f"malformed provider response: {type(exc).__name__}", retryable=False
+        ) from exc
     usage = getattr(response, "usage", None)
-    choice = response.choices[0]
     return ChatCompletionResult(
-        content=choice.message.content or "",
+        content=str(content),
         model=str(getattr(response, "model", "") or ""),
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),

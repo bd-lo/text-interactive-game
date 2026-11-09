@@ -26,7 +26,7 @@ def _request(*, max_repair: int = 1) -> LLMRequest:
     """构造与解析 Agent 实际调用形态一致的请求 (ECONOMY / intent_parse)。"""
     return LLMRequest(
         task="intent_parse",
-        output_schema=SampleOutput.model_json_schema(),
+        output_schema=SampleOutput,
         agent_id="parse",
         turn_id=2,
         idempotency_key="idem-parse-0001",
