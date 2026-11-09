@@ -67,7 +67,9 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 结论：单次请求最多 3 次网络尝试 + 1 次修复，各层不得私自重试。**M5-019 实施口径（D-M5-2）**：修复链暂留 `validation.py`（Agent 显式调用），`LLMClient` 只做 transport 治理并返回原始文本；021-schema-repair 再评估「迁入客户端 / 启用 instructor」，无论归属，修复次数上限固定 1（共 2 次请求）不得变。
 
 ### 12.4 模型分级与供应商回退
-按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**：A. 单供应商双档（运维最简，推荐）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.json`（**JSON-only**，D-M5-4：PyYAML 非声明依赖、第 19 章明示不新增；包内默认 `src/textgame/llm/config/llm.default.json` + `TEXTGAME_LLM_CONFIG` 覆盖路径），按 `model_tier` 声明 `primary/fallback` 链；020 起落地。
+按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**：A. 单供应商双档（运维最简，推荐）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.json`（**JSON-only**，D-M5-4：PyYAML 非声明依赖、第 19 章明示不新增；包内默认 `src/textgame/llm/config/llm.default.json` + `TEXTGAME_LLM_CONFIG` 覆盖路径），按 `model_tier` 声明 `primary/fallback` 链。
+
+**020 已落地（2026-11-10，D-M5-4 / D-TEAM-6）**：① 配置包 `src/textgame/llm/config/`（`__init__.py` + `llm.default.json`；`LLMClientConfig` 导入路径不变，原 `llm/config.py` 迁入包）；② 新增 `LLMConfig`（`schema_version`/`providers`/`tiers`/`cache`，`extra=forbid`，两档 `strong|economy` 必须声明且 provider 必须在 `providers` 中）与 `load_llm_config(path=None)`（包内默认 → `TEXTGAME_LLM_CONFIG`；文件缺失/JSON 非法/字段越界一律构造期 fail-fast）；③ `LiteLLMClient` 按 `req.model_tier` 经 `LLMConfig.backend_for()` 选 `(provider, model, api_base)`，**JSON 是模型名/分级/价格的唯一权威**，`Settings` 只保留密钥/开关/配置路径（历史 `TEXTGAME_LLM_PROVIDER/MODEL/BASE_URL` 仅兼容、不再驱动请求）；④ 回退链/价格字段预留，024/022 消费；真实调用仍默认关闭（D-M5-6）。
 
 人物卡生成任务（`task=character_card_generate`，v0.2 新增）：`model_tier=STRONG`、`timeout_s=20`、`max_repair=1`、缓存不适用（同 brief 可重复生成）；幂等分两层——HTTP 幂等键用客户端 UUID `Idempotency-Key`（第 6、23 章），服务端另算 `sha256(canonical payload)`（brief/schema_version/options）用于同键异参 `CONFLICT` 与审计；成本按 `agent_id=character_card` 归集，单用户限流 5 次/分钟；失败降级为确定性模板（brief+默认属性草稿），与第 6 章 `POST /api/v1/character-cards/generate` 对齐。
 
@@ -92,8 +94,10 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 | 缓存层 | 内容 | 实现 | 失效 |
 | --- | --- | --- | --- |
 | 预生成内容库 | 固定寒暄、环境描述 | 打包进资源文件 | 版本更新 |
-| 进程内缓存 | 低风险可复用响应 | cachetools `TTLCache(maxsize=1024, ttl=600)` | TTL / 模板版本 |
+| 进程内缓存（**020 已落地**） | 低风险可复用响应 | cachetools `TTLCache(maxsize, ttl)` + 任务 allowlist（`cache.allowed_tasks` 默认空=不缓存）；仅 `cache_ttl_s>0` 且 `task ∈ allowed_tasks` 生效，命中 `cache_hit=true`、不调用 transport；key 由 `sha256(task/model_tier/messages/prompt_version/output_schema)` 派生（跨回合可复用，不含 turn/幂等键）；失败不缓存、线程安全、不落盘/不落日志 | TTL / 模板版本 / allowlist |
 | 供应商前缀缓存 | 长 System Prompt 前缀 | 经 LiteLLM 透传，需按供应商实测 | 供应商策略 |
+
+020 缓存口径（D-TEAM-3/5）：进程内、默认生产**不缓存任何任务**（allowlist 空），由真实 LLM 接线切片按任务逐个评估后加入；缓存命中记 `cache_hit=true` 但不重复计费。
 
 幂等缓存：`llm_call_log.idempotency_key` 唯一索引，同键成功复用结果；执行中等待或返回 `LLM_UNAVAILABLE`，不重复扣费。
 
