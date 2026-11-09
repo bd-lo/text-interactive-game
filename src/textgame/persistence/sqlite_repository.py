@@ -3,9 +3,11 @@
 职责边界：只做事件行/快照/当前状态缓存的读写与 CAS，不承载业务规则（不 import 任何
 服务实现；重建时复用 ``GameState.apply`` 纯投影，哈希复用 ``domain.hashing``）。
 
-- ``commit``：单事务。先校验事件已盖章、``seq`` 与 ``id`` 自洽且紧接该存档已有序号，
-  再 CAS ``UPDATE game_state_current SET ... WHERE game_id=? AND version=?``；影响行数 0
-  → 回滚返回 ``False``。任何异常先回滚再抛出/返回，绝不部分写入。
+- ``commit``：单事务。先校验事件已盖章、``seq`` 与 ``id`` 自洽且紧接**该存档**已有序号
+  （``events`` 主键为 ``(game_id, seq)``，同库不同存档的 ``seq`` 各自从 1 起），再 CAS
+  ``UPDATE game_state_current SET ... WHERE game_id=? AND version=?``；影响行数 0 → 回滚
+  返回 ``False``。重复 ``(game_id, seq)`` / ``(game_id, event_uid)`` 由数据库唯一约束兜底
+  （``IntegrityError`` → 回滚返回 ``False``），任何异常先回滚再抛出/返回，绝不部分写入。
 - ``load``：current 行优先；缺失时用「最新快照 + ``after_seq`` 之后事件」经
   ``GameState.apply`` 重建，并用 ``state_hash`` 校验快照；无快照时要求事件流首条为
   ``game_created``（否则视为损坏抛 ``ValueError``）。current 行丢失时重建出的
@@ -306,7 +308,11 @@ class SqliteRepository:
 
     # ------------------------------------------------------------------ commit
     def commit(self, payload: CommitPayload) -> bool:
-        """单事务原子提交；版本冲突/序号不连续/唯一键重复返回 ``False`` 且零写入。"""
+        """单事务原子提交；版本冲突/序号不连续/唯一键重复返回 ``False`` 且零写入。
+
+        同库多存档（D-008-3）：事件唯一性按 ``(game_id, seq)`` 主键与
+        ``(game_id, event_uid)`` 唯一约束判定，其它存档的同序号/同 ``evt_*`` 不冲突。
+        """
         events = list(payload.stamped_events)
         if not self._events_well_formed(events):
             return False

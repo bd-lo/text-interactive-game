@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Engine, delete, inspect, select
+from sqlalchemy import Engine, delete, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -882,3 +882,233 @@ def test_m3_memory_repository_rebuilds_version_with_same_rule() -> None:
     assert rebuilt.version == 3 == before.version  # 1 + 快照后 distinct turn 数（2、3）
     assert rebuilt.last_seq == 4
     assert state_hash(rebuilt.state) == state_hash(before.state)
+
+
+# ===========================================================================
+# M4 D-008-3 只增补：events 复合主键 (game_id, seq) 与同库多存档
+#
+# 既有单存档断言全部保持原样；以下新增用例覆盖：同库两存档交错回合/重启恢复/缓存
+# 重建无串档、每存档 seq/id 各自从 1 起、跨存档同 event_uid 允许而存档内重复仍拒绝、
+# 复合主键/复合索引参与查询计划。
+# ===========================================================================
+_M4_GAME_A = "game-m4-a"
+_M4_GAME_B = "game-m4-b"
+
+
+def _delete_current_state(factory: sessionmaker[Session], game_id: str) -> None:
+    """删除指定存档的 current 行（模拟缓存丢失，触发快照 + 事件重建）。"""
+    with factory() as session, session.begin():
+        session.execute(delete(GameStateCurrentRow).where(GameStateCurrentRow.game_id == game_id))
+
+
+def test_m4_two_saves_interleaved_restart_and_rebuild(tmp_path: Path) -> None:
+    """同库两存档：交错回合、重启、删 current 行重建均互不串档，seq 各自从 1 起。"""
+    db_url = _db_url(tmp_path)
+    engine, factory, repo = _open(db_url)
+    game_engine = GameEngine(repo, snapshot_every_turns=2)
+    assert game_engine.create_game(save_seed=SAVE_SEED, game_id=_M4_GAME_A).ok
+    assert game_engine.create_game(save_seed="save-99", game_id=_M4_GAME_B).ok
+
+    # 两个存档交错提交 2 个回合（每回合 1 条事件）
+    for game_id in (_M4_GAME_A, _M4_GAME_B):
+        submitted = game_engine.submit(
+            game_id=game_id,
+            expected_version=1,
+            drafts=[
+                _move_draft(
+                    turn_id=2,
+                    from_room=ROOM_ENTRY,
+                    to_room=ROOM_CELLAR,
+                    direction="north",
+                )
+            ],
+        )
+        assert submitted.ok, submitted.message
+    for game_id in (_M4_GAME_A, _M4_GAME_B):
+        submitted = game_engine.submit(
+            game_id=game_id,
+            expected_version=2,
+            drafts=[
+                _move_draft(
+                    turn_id=3,
+                    from_room=ROOM_CELLAR,
+                    to_room=ROOM_ENTRY,
+                    direction="south",
+                )
+            ],
+        )
+        assert submitted.ok, submitted.message
+
+    before: dict[str, GameState] = {}
+    for game_id in (_M4_GAME_A, _M4_GAME_B):
+        record = repo.load(game_id)
+        assert record is not None
+        assert (record.version, record.last_seq) == (3, 3)
+        assert [event.seq for event in repo.read_events(game_id)] == [1, 2, 3]
+        assert [event.id for event in repo.read_events(game_id)] == [
+            "evt_000001",
+            "evt_000002",
+            "evt_000003",
+        ]
+        before[game_id] = record.state
+    assert repo.load(_M4_GAME_A).state.rng_state.save_seed == SAVE_SEED
+    assert repo.load(_M4_GAME_B).state.rng_state.save_seed == "save-99"
+
+    # 原始表行：同 seq/同 event_uid 按 game_id 区分，互不覆盖
+    with factory() as session:
+        rows = session.execute(
+            select(EventRow.game_id, EventRow.seq, EventRow.event_uid).order_by(
+                EventRow.game_id.asc(), EventRow.seq.asc()
+            )
+        ).all()
+    assert [tuple(row) for row in rows] == [
+        (_M4_GAME_A, 1, "evt_000001"),
+        (_M4_GAME_A, 2, "evt_000002"),
+        (_M4_GAME_A, 3, "evt_000003"),
+        (_M4_GAME_B, 1, "evt_000001"),
+        (_M4_GAME_B, 2, "evt_000002"),
+        (_M4_GAME_B, 3, "evt_000003"),
+    ]
+
+    # 重启（同一文件库新实例）：各自 state_hash/version/last_seq/快照正确
+    engine.dispose()
+    engine2, factory2, repo2 = _open(db_url)
+    try:
+        for game_id in (_M4_GAME_A, _M4_GAME_B):
+            restored = repo2.load(game_id)
+            assert restored is not None
+            assert (restored.version, restored.last_seq) == (3, 3)
+            assert state_hash(restored.state) == state_hash(before[game_id])
+            snapshot = repo2.latest_snapshot(game_id)
+            assert snapshot is not None
+            assert (snapshot.version, snapshot.last_seq, snapshot.turn_id) == (3, 3, 3)
+
+        # 两个存档的 current 行都丢失 → 各自从「快照 + 事件」重建，无串档
+        _delete_current_state(factory2, _M4_GAME_A)
+        _delete_current_state(factory2, _M4_GAME_B)
+        for game_id in (_M4_GAME_A, _M4_GAME_B):
+            rebuilt = repo2.load(game_id)
+            assert rebuilt is not None
+            assert (rebuilt.version, rebuilt.last_seq) == (3, 3)
+            assert state_hash(rebuilt.state) == state_hash(before[game_id])
+
+        # 重建后在 A 上续写：B 不受影响
+        game_engine2 = GameEngine(repo2, snapshot_every_turns=2)
+        submitted = game_engine2.submit(
+            game_id=_M4_GAME_A,
+            expected_version=3,
+            drafts=[
+                _move_draft(
+                    turn_id=4,
+                    from_room=ROOM_ENTRY,
+                    to_room=ROOM_CELLAR,
+                    direction="north",
+                )
+            ],
+        )
+        assert submitted.ok, submitted.message
+        record_a = repo2.load(_M4_GAME_A)
+        record_b = repo2.load(_M4_GAME_B)
+        assert record_a is not None and record_b is not None
+        assert (record_a.version, record_a.last_seq) == (4, 4)
+        assert (record_b.version, record_b.last_seq) == (3, 3)
+        assert [event.seq for event in repo2.read_events(_M4_GAME_A)] == [1, 2, 3, 4]
+        assert [event.seq for event in repo2.read_events(_M4_GAME_B)] == [1, 2, 3]
+    finally:
+        engine2.dispose()
+
+
+def test_m4_event_uid_unique_is_per_game_but_seq_is_per_game(tmp_path: Path) -> None:
+    """(game_id, event_uid) 复合唯一：(跨存档同 uid 允许、同存档重复仍拒绝；同存档同 seq 拒绝。"""
+    engine, factory, repo = _open(_db_url(tmp_path))
+    try:
+        _create_game(repo)  # GAME_ID 已有 seq=1 / evt_000001
+        other = EventRow(
+            seq=1,
+            event_uid="evt_000001",
+            game_id="game-m4-other",
+            turn_id=1,
+            event_type=EventType.GAME_CREATED.value,
+            actor_id="system",
+            method="game_created",
+            params="{}",
+            result="{}",
+            rng_seed=0,
+            ts=datetime.now(timezone.utc),
+        )
+        with factory() as session:
+            session.add(other)
+            session.commit()  # 跨存档同 event_uid/seq 允许
+
+        duplicated_uid = EventRow(
+            seq=2,
+            event_uid="evt_000001",
+            game_id=GAME_ID,
+            turn_id=2,
+            event_type=EventType.CHARACTER_MOVED.value,
+            actor_id=PLAYER_ID,
+            method="move_to",
+            params="{}",
+            result="{}",
+            rng_seed=0,
+            ts=datetime.now(timezone.utc),
+        )
+        with factory() as session:
+            session.add(duplicated_uid)
+            with pytest.raises(IntegrityError):
+                session.commit()
+
+        duplicated_seq = EventRow(
+            seq=1,
+            event_uid="evt_999999",
+            game_id=GAME_ID,
+            turn_id=2,
+            event_type=EventType.CHARACTER_MOVED.value,
+            actor_id=PLAYER_ID,
+            method="move_to",
+            params="{}",
+            result="{}",
+            rng_seed=0,
+            ts=datetime.now(timezone.utc),
+        )
+        with factory() as session:
+            session.add(duplicated_seq)
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_m4_events_composite_key_and_index_used_by_query_plan(tmp_path: Path) -> None:
+    """复合主键覆盖按存档读事件/取 max seq，复合索引覆盖按回合查询（无全表扫描）。"""
+    engine, _factory, _repo = _open(_db_url(tmp_path))
+    try:
+        with engine.connect() as connection:
+            read_plan = [
+                str(row[-1])
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT * FROM events "
+                        "WHERE game_id = :game_id AND seq > :after_seq ORDER BY seq ASC"
+                    ),
+                    {"game_id": "game-x", "after_seq": 0},
+                ).all()
+            ]
+            by_turn_plan = [
+                str(row[-1])
+                for row in connection.execute(
+                    text(
+                        "EXPLAIN QUERY PLAN SELECT * FROM events "
+                        "WHERE game_id = :game_id AND turn_id = :turn_id ORDER BY seq ASC"
+                    ),
+                    {"game_id": "game-x", "turn_id": 2},
+                ).all()
+            ]
+        read_plan_text = " | ".join(read_plan)
+        by_turn_plan_text = " | ".join(by_turn_plan)
+        assert "SCAN events" not in read_plan_text
+        assert "sqlite_autoindex_events" in read_plan_text or "PRIMARY KEY" in read_plan_text
+        assert "SCAN events" not in by_turn_plan_text
+        assert "ix_events_game_turn_seq" in by_turn_plan_text
+    finally:
+        engine.dispose()

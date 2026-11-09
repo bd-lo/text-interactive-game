@@ -102,7 +102,7 @@ def _get_game(client: TestClient, game_id: str) -> dict[str, Any]:
 # prepare_db：目录创建 / 内存库 / 非 sqlite 拒绝
 # ---------------------------------------------------------------------------
 def test_prepare_db_creates_parent_directory_and_schema(tmp_path: Path) -> None:
-    """文件库 URL 自动创建父目录（默认 data/ 同理），init_schema 建 4 张表。"""
+    """文件库 URL 自动创建父目录（默认 data/ 同理），init_schema 建 5 张表（含 audit_events）。"""
     db_path = tmp_path / "var" / "m2" / "app.db"
     assert not db_path.exists()
 

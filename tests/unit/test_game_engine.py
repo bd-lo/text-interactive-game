@@ -317,3 +317,51 @@ def test_engine_rejects_non_positive_thresholds() -> None:
 
     with pytest.raises(ValueError):
         GameEngine(repo, snapshot_every_events=0)
+
+
+# ---------------------------------------------------------------------------
+# M4 D-008-3：同库多存档（events 复合主键 (game_id, seq)）
+# ---------------------------------------------------------------------------
+def test_create_two_games_on_same_repository_are_isolated() -> None:
+    """同一 repo 建两个 game 都成功；各自 seq=1 的 game_created 共存且状态隔离。"""
+    repo, engine = _engine()
+    game_a = "game_m4_a_0001"
+    game_b = "game_m4_b_0001"
+
+    first = engine.create_game(save_seed=_SAVE_SEED, game_id=game_a)
+    second = engine.create_game(save_seed="save-99", game_id=game_b)
+
+    assert first.ok and second.ok
+    for game_id in (game_a, game_b):
+        record = repo.load(game_id)
+        assert record is not None
+        assert (record.version, record.last_seq) == (1, 1)
+        events = repo.read_events(game_id)
+        assert [event.seq for event in events] == [1]
+        assert events[0].id == "evt_000001"  # Event.id 是每存档编号
+        assert events[0].event_type is EventType.GAME_CREATED
+        assert events[0].params["save_seed"] == record.state.rng_state.save_seed
+
+    # A 继续提交：B 的版本/事件流不受影响
+    assert engine.submit(game_id=game_a, expected_version=1, drafts=[_move_draft()]).ok
+    record_a = repo.load(game_a)
+    record_b = repo.load(game_b)
+    assert record_a is not None and record_b is not None
+    assert (record_a.version, record_a.last_seq) == (2, 2)
+    assert (record_b.version, record_b.last_seq) == (1, 1)
+    assert [event.seq for event in repo.read_events(game_a)] == [1, 2]
+    assert [event.seq for event in repo.read_events(game_b)] == [1]
+
+
+def test_create_game_duplicate_game_id_message_is_generic() -> None:
+    """重复同一 game_id 仍 CONFLICT，但文案不再限定「每库单存档」（D-008-3）。"""
+    _, engine = _engine()
+    assert _create(engine).ok
+
+    second = _create(engine)
+
+    assert second.ok is False
+    assert second.error_code is ErrorCode.CONFLICT
+    message = second.message or ""
+    assert "already exists" in message or "已存在" in message
+    assert "单存档" not in message

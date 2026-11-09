@@ -2,7 +2,8 @@
 
 冻结的迁移目标（与 ``textgame.persistence.tables`` 当前 ORM 定义一致）：
 
-- ``events``（只 INSERT；``seq`` 单主键，M3 不改为多存档复合主键，见 D-008-3 登记）
+- ``events``（只 INSERT；本 revision 仍是 ``seq`` 单主键；0002 再改为
+  ``(game_id, seq)`` 复合主键以支持同库多存档，见 D-008-3 / R5）
 - ``snapshots``（M3 增 ``version`` 列：快照对应的提交版本号）
 - ``game_state_current``（CAS 版本缓存）
 - ``idempotency``（同键同参回放）

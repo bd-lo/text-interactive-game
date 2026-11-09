@@ -1,19 +1,30 @@
 """SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency / audit_events。
 
-M2 契约 §6、M3 契约 §3.5/D-M3-6/D-M3-7 与第 14 章 14.3：SQLAlchemy 2.0 同步 ORM +
-SQLite，新库建表走 ``Base.metadata.create_all``；M3 起同时提供 Alembic 最小 baseline
-（``alembic/versions/0001_m3_baseline.py``，仅用于新库/测试，旧 M2 库由迁移责任登记）。
-SQLite 的 JSON 列统一用 ``TEXT`` 存规范 JSON 文本；``events.seq`` 是存档内全局单调
-序号、由 ``EventLog`` 分配（**不使用数据库自增**），``event_uid`` 唯一且即领域
-``Event.id``。事件表只 INSERT，不 UPDATE/DELETE（第 14 章 14.6 写入口禁令）；M3 新增的
-``audit_events`` 同为只增表（审计只 INSERT，不 UPDATE/DELETE）。
+M2 契约 §6、M3 契约 §3.5/D-M3-6/D-M3-7、M4 前 D-008-3 与第 14 章 14.3：SQLAlchemy 2.0
+同步 ORM + SQLite，新库建表走 ``Base.metadata.create_all``；迁移走 Alembic
+（``alembic/versions/0001_m3_baseline.py`` 空库 5 表，``0002_composite_event_key.py``
+把 events 改为 ``(game_id, seq)`` 复合主键以支持同库多存档）。
+
+``events.seq`` 是**每存档内**全局单调序号、由 ``EventLog`` 分配（**不使用数据库自增**），
+``id = f"evt_{seq:06d}"`` 即领域 ``Event.id``——因此 ``event_uid`` 只在存档内唯一，
+数据库约束必须是 ``(game_id, event_uid)``，禁止再做成全局唯一（D-008-3）。事件表只
+INSERT，不 UPDATE/DELETE（第 14 章 14.6 写入口禁令）；M3 新增的 ``audit_events`` 同为
+只增表（审计只 INSERT，不 UPDATE/DELETE）。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,15 +33,25 @@ class Base(DeclarativeBase):
 
 
 class EventRow(Base):
-    """事件表：一行 = 一条盖章事件（``params``/``result`` 为 JSON 文本）。"""
+    """事件表：一行 = 一条盖章事件（``params``/``result`` 为 JSON 文本）。
+
+    主键 ``(game_id, seq)``：``seq`` 只在一个存档内单调，同库多存档各自从 1 起
+    （D-008-3）；``event_uid`` 唯一约束为 ``(game_id, event_uid)``，``(game_id, seq)``
+    复合主键前缀同时覆盖按存档取事件/取最大 seq 的查询，``(game_id, turn_id, seq)``
+    索引覆盖按回合回放/审计关联查询。
+    """
 
     __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("game_id", "event_uid", name="uq_events_game_event_uid"),
+        Index("ix_events_game_turn_seq", "game_id", "turn_id", "seq"),
+    )
 
-    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    game_id: Mapped[str] = mapped_column(String(64), primary_key=True, nullable=False)
     # = f"evt_{seq:06d}"，即领域 Event.id；供 Resolution.applied_events 与审计引用
-    event_uid: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
-    game_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    turn_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    event_uid: Mapped[str] = mapped_column(String(16), nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    turn_id: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
     method: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -55,7 +76,7 @@ class SnapshotRow(Base):
     state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # M3 D-M3-6：快照对应的提交版本号；旧 M2 快照/未显式传值时为 0，读取端按
-    # 「last_seq + 快照后 distinct turn 数」兜底（见 persistence.versions）。
+    # 「last_seq + 快照后 distinct turn 数」兜底（见 persistence.versioning）。
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

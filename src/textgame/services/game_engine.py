@@ -63,7 +63,8 @@ class GameEngine:
         ``scenario`` 为 M3 新增（``m2``=M2 单场景，默认，保证 M2 golden 不回归；
         ``m3``=多角色场景，见 ``domain/scenario.py::build_m3_state``）。
         返回 ``Result.data = {"game_id", "turn", "version", "snapshot_version", "save_seed"}``；
-        同一 ``game_id`` 已存在时返回 ``CONFLICT``。
+        同一 ``game_id`` 已存在时返回 ``CONFLICT``；同一数据库可创建多个不同 ``game_id``
+        的存档（D-008-3 复合主键落地后，``events.seq`` 每存档各自从 1 起）。
         """
         if not save_seed:
             return Result.fail(ErrorCode.INVALID_INPUT, "save_seed must be a non-empty string")
@@ -112,7 +113,7 @@ class GameEngine:
         if not self._repo.commit(payload):
             return Result.fail(
                 ErrorCode.CONFLICT,
-                "创建存档失败：当前数据库已存在存档（M2 每库单存档，见 PROGRESS §5 D-008-3）",
+                "创建存档失败：同一 game_id 的存档已存在或并发写入冲突",
             )
         self._save_snapshot(
             new_game_id,
