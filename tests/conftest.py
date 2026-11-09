@@ -6,7 +6,7 @@
 DeterministicCharacterAgent/AuditService 全接线），供 013/014 集成与回放测试使用。
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 import pytest
@@ -19,7 +19,7 @@ from textgame.agents.dto import ParseOutcome
 from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.settings import get_settings
-from textgame.domain.models import ActionIntent
+from textgame.domain.models import ActionIntent, PerceptionSlice
 from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
 from textgame.llm.client import DisabledLLMClient
@@ -74,21 +74,37 @@ class M4FreeHarness(M4GameHarness):
     fake_llm: FakeLLM
 
 
-class FreeCraftIntentParser:
-    """017 测试专用确定性解析器：任意输入映射为 craft_item(mode=free)。
+@dataclass
+class M4ProdHarness(M4FreeHarness):
+    """M4 生产同构装配（D-M4-13）：M3 编排链路 + 制造工具 + 审计（018 golden 用）。"""
 
-    只用于端到端验证自由制造校验/回滚链路（不进入生产装配）；真正的意图解析仍由
-    006/016 的解析器负责。
+    audit: AuditService
+
+
+class FreeCraftIntentParser:
+    """测试专用确定性解析器：配方名命中→craft_item(recipe)，否则制造关键词→free。
+
+    - ``recipe_names=None``（017 m4_free_harness）：任意输入映射为 craft_item(mode=free)，
+      只用于端到端验证自由制造校验/回滚链路；
+    - 注入 ``recipe_names``（018 m4_prod_harness）：先走确定性解析器，配方路径优先，
+      其次制造关键词→free，其余动作（移动/拿取/查看等）保持原解析结果。
     """
 
-    def parse(
+    _CRAFT_WORDS: tuple[str, ...] = ("打造", "锻造", "制作", "制造", "合成", "做个", "做成")
+
+    def __init__(
         self,
-        text: str,
+        recipe_names: Mapping[str, str] | None = None,
         *,
-        perception: object = None,
-        ctx: object = None,
-    ) -> ParseOutcome:
-        del perception, ctx
+        free_enabled: bool = True,
+    ) -> None:
+        self._recipe_names: dict[str, str] | None = (
+            dict(recipe_names) if recipe_names is not None else None
+        )
+        self._free_enabled = free_enabled
+        self._base = DeterministicIntentParser(recipe_names=self._recipe_names)
+
+    def _free_outcome(self, text: str) -> ParseOutcome:
         description = text.strip()[:200] or "做一个简单物件"
         args = {"mode": "free", "free_description": description}
         return ParseOutcome(
@@ -98,6 +114,22 @@ class FreeCraftIntentParser:
             confidence=1.0,
             source="keyword",
         )
+
+    def parse(
+        self,
+        text: str,
+        *,
+        perception: PerceptionSlice,
+        ctx: object = None,
+    ) -> ParseOutcome:
+        if self._recipe_names is None:
+            return self._free_outcome(text)
+        outcome = self._base.parse(text, perception=perception, ctx=ctx)  # type: ignore[arg-type]
+        if outcome.tool == "craft_item":
+            return outcome
+        if self._free_enabled and any(word in text for word in self._CRAFT_WORDS):
+            return self._free_outcome(text)
+        return outcome
 
 
 @pytest.fixture(autouse=True)
@@ -292,3 +324,75 @@ def m4_free_harness() -> Iterator[M4FreeHarness]:
             generator=generator,
             fake_llm=fake_llm,
         )
+
+
+def build_m4_prod_harness() -> tuple[M4ProdHarness, TestClient]:
+    """构建 018 golden 用「生产同构」装配（D-M4-13）。
+
+    与 main.py 同构：M3 编排链路（ProposalQueue→Resolver→ToolGate）+ 制造服务 +
+    审计服务；character_agents={}（m4 无 NPC Agent，无跨角色冲突），自由制造开关
+    打开但生成器为 CraftAgent(FakeLLM)（仅自由 case 注入脚本，不联网）。
+    """
+    repo = InMemoryRepository()
+    engine = GameEngine(repo)
+    query = QueryService(repo)
+    action = ActionService(query)
+    catalog = RecipeCatalog.load_builtin()
+    fake_llm = FakeLLM()
+    generator = CraftAgent(fake_llm)
+    craft = CraftService(catalog, generator=generator, free_craft_enabled=True)
+    registry = build_game_tool_registry()
+    gate = ToolGate(registry=registry, query=query, action=action, craft=craft)
+    rules = RuleEngine()
+    actors = ActorDirectory(nonplayer_tags=M3_NONPLAYER_TAGS)
+    resolver = Resolver(
+        rules=rules,
+        services=ToolGateRouter(gate),
+        actors=actors,
+        save_seed="save-42",
+    )
+    audit = AuditService(repo)
+    parser = IntentParseAgent(
+        DisabledLLMClient(),
+        FreeCraftIntentParser(catalog.name_index(), free_enabled=True),
+        tool_specs=registry.visible_tools(PLAYER_ID, frozenset({"player"})),
+    )
+    orchestrator = TurnOrchestrator(
+        repo=repo,
+        engine=engine,
+        query=query,
+        action=action,
+        parser=parser,
+        gate=gate,
+        narrator=TemplateNarrator(),
+        rules=rules,
+        save_seed_default="save-42",
+        registry=registry,
+        resolver=resolver,
+        actors=actors,
+        character_agents={},
+        audit=audit,
+    )
+    client = TestClient(
+        create_app(orchestrator=orchestrator, query_service=query, audit_service=audit)
+    )
+    harness = M4ProdHarness(
+        client=client,
+        repo=repo,
+        orchestrator=orchestrator,
+        query=query,
+        craft=craft,
+        catalog=catalog,
+        generator=generator,
+        fake_llm=fake_llm,
+        audit=audit,
+    )
+    return harness, client
+
+
+@pytest.fixture
+def m4_prod_harness() -> Iterator[M4ProdHarness]:
+    """M4 生产同构装配 fixture（018 golden 回放用）；每个用例独立内存仓储。"""
+    harness, client = build_m4_prod_harness()
+    with client:
+        yield harness

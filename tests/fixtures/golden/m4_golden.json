@@ -1,0 +1,537 @@
+{
+  "_comment": "M4 golden 固定种子回放数据（018）：save_seed=save-42、生产同构装配（M3 编排链路 + ToolGate/CraftService + 审计，character_agents={}，D-M4-13）、scenario=m4；5 case 覆盖确定性成功/材料不足零写入/自由成功/自由 Schema 违规回滚/自由一致性违规回滚。一次性生成并人工核对，变更必须 Lead 审核并在进度文档登记，禁止 snapshot-update 掩盖回归。",
+  "save_seed": "save-42",
+  "create_game": {
+    "seed": 42,
+    "idempotency_key": "m4-golden-create-0001",
+    "scenario": "m4"
+  },
+  "cases": [
+    {
+      "case_id": "m4_case_deterministic_success",
+      "script": [
+        "拿起火把",
+        "向东走进铁匠铺",
+        "打造铁剑"
+      ],
+      "llm_responses": [],
+      "turns": [
+        {
+          "input": "拿起火把",
+          "attempted_turn": 2,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 2,
+          "version": 2,
+          "last_seq": 2,
+          "event_ids": [
+            "evt_000002"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "take_item"
+          ],
+          "event_types": [
+            "ITEM_TAKEN"
+          ],
+          "rng_seeds": [
+            2377220360283670050
+          ],
+          "state_hash": "45d4ef143f383254636da5cd9c29f380a5a78c910af57125e9cad28065a9e9a8",
+          "text_len": 81,
+          "audit": [
+            {
+              "proposal_id": "p_000002_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "take_item",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "向东走进铁匠铺",
+          "attempted_turn": 3,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 3,
+          "version": 3,
+          "last_seq": 3,
+          "event_ids": [
+            "evt_000003"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "move_to"
+          ],
+          "event_types": [
+            "CHARACTER_MOVED"
+          ],
+          "rng_seeds": [
+            5260049642926770845
+          ],
+          "state_hash": "03eb12a88e2e428d8ec8847529b589f1c2d86e82a7c4b00813fcea99817978b2",
+          "text_len": 85,
+          "audit": [
+            {
+              "proposal_id": "p_000003_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "move_to",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "打造铁剑",
+          "attempted_turn": 4,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 4,
+          "version": 4,
+          "last_seq": 4,
+          "event_ids": [
+            "evt_000004"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "craft_item"
+          ],
+          "event_types": [
+            "CRAFT_DETERMINISTIC"
+          ],
+          "rng_seeds": [
+            5495617991584760311
+          ],
+          "state_hash": "54ad18bcc386d1694b440767d6b248185d0ab72cb663585a3bc9d259c97cb1e3",
+          "text_len": 105,
+          "audit": [
+            {
+              "proposal_id": "p_000004_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "craft_item",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        }
+      ],
+      "final_state_hash": "54ad18bcc386d1694b440767d6b248185d0ab72cb663585a3bc9d259c97cb1e3",
+      "final_version": 4,
+      "final_last_seq": 4,
+      "final_turn": 4,
+      "event_total": 4,
+      "audit_total": 3
+    },
+    {
+      "case_id": "m4_case_insufficient_materials",
+      "script": [
+        "拿起火把",
+        "向东走进铁匠铺",
+        "打造铁剑",
+        "打造铁剑"
+      ],
+      "llm_responses": [],
+      "turns": [
+        {
+          "input": "拿起火把",
+          "attempted_turn": 2,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 2,
+          "version": 2,
+          "last_seq": 2,
+          "event_ids": [
+            "evt_000002"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "take_item"
+          ],
+          "event_types": [
+            "ITEM_TAKEN"
+          ],
+          "rng_seeds": [
+            2377220360283670050
+          ],
+          "state_hash": "45d4ef143f383254636da5cd9c29f380a5a78c910af57125e9cad28065a9e9a8",
+          "text_len": 81,
+          "audit": [
+            {
+              "proposal_id": "p_000002_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "take_item",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "向东走进铁匠铺",
+          "attempted_turn": 3,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 3,
+          "version": 3,
+          "last_seq": 3,
+          "event_ids": [
+            "evt_000003"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "move_to"
+          ],
+          "event_types": [
+            "CHARACTER_MOVED"
+          ],
+          "rng_seeds": [
+            5260049642926770845
+          ],
+          "state_hash": "03eb12a88e2e428d8ec8847529b589f1c2d86e82a7c4b00813fcea99817978b2",
+          "text_len": 85,
+          "audit": [
+            {
+              "proposal_id": "p_000003_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "move_to",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "打造铁剑",
+          "attempted_turn": 4,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 4,
+          "version": 4,
+          "last_seq": 4,
+          "event_ids": [
+            "evt_000004"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "craft_item"
+          ],
+          "event_types": [
+            "CRAFT_DETERMINISTIC"
+          ],
+          "rng_seeds": [
+            5495617991584760311
+          ],
+          "state_hash": "54ad18bcc386d1694b440767d6b248185d0ab72cb663585a3bc9d259c97cb1e3",
+          "text_len": 105,
+          "audit": [
+            {
+              "proposal_id": "p_000004_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "craft_item",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "打造铁剑",
+          "attempted_turn": 5,
+          "ok": false,
+          "error_code": "INVALID_INPUT",
+          "turn_id": 4,
+          "version": 4,
+          "last_seq": 4,
+          "event_ids": [],
+          "event_actors": [],
+          "event_methods": [],
+          "event_types": [],
+          "rng_seeds": [],
+          "state_hash": "54ad18bcc386d1694b440767d6b248185d0ab72cb663585a3bc9d259c97cb1e3",
+          "text_len": 16,
+          "audit": [
+            {
+              "proposal_id": "p_000005_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "craft_item",
+              "verdict": "rejected",
+              "status": "aborted",
+              "attempt": 1
+            }
+          ]
+        }
+      ],
+      "final_state_hash": "54ad18bcc386d1694b440767d6b248185d0ab72cb663585a3bc9d259c97cb1e3",
+      "final_version": 4,
+      "final_last_seq": 4,
+      "final_turn": 4,
+      "event_total": 4,
+      "audit_total": 4
+    },
+    {
+      "case_id": "m4_case_free_craft_success",
+      "script": [
+        "拿起火把",
+        "向北走进地窖",
+        "用铁锭和铜线制作一个简易电击棒"
+      ],
+      "llm_responses": [
+        {
+          "item_name": "简易电击棒",
+          "output_template_id": "item.makeshift_taser",
+          "inputs": [
+            {
+              "template_id": "item.iron_ingot",
+              "qty": 1,
+              "role": "material"
+            },
+            {
+              "template_id": "item.copper_wire",
+              "qty": 1,
+              "role": "material"
+            }
+          ],
+          "station": null,
+          "steps": [
+            "把铜线缠在铁锭上",
+            "固定接头"
+          ]
+        }
+      ],
+      "turns": [
+        {
+          "input": "拿起火把",
+          "attempted_turn": 2,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 2,
+          "version": 2,
+          "last_seq": 2,
+          "event_ids": [
+            "evt_000002"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "take_item"
+          ],
+          "event_types": [
+            "ITEM_TAKEN"
+          ],
+          "rng_seeds": [
+            2377220360283670050
+          ],
+          "state_hash": "45d4ef143f383254636da5cd9c29f380a5a78c910af57125e9cad28065a9e9a8",
+          "text_len": 81,
+          "audit": [
+            {
+              "proposal_id": "p_000002_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "take_item",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "向北走进地窖",
+          "attempted_turn": 3,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 3,
+          "version": 3,
+          "last_seq": 3,
+          "event_ids": [
+            "evt_000003"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "move_to"
+          ],
+          "event_types": [
+            "CHARACTER_MOVED"
+          ],
+          "rng_seeds": [
+            5260049642926770845
+          ],
+          "state_hash": "1eab39244259f9f8a01d61e646aec82a3a1183530c0a6554500093f0f2aed050",
+          "text_len": 84,
+          "audit": [
+            {
+              "proposal_id": "p_000003_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "move_to",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "input": "用铁锭和铜线制作一个简易电击棒",
+          "attempted_turn": 4,
+          "ok": true,
+          "error_code": null,
+          "turn_id": 4,
+          "version": 4,
+          "last_seq": 4,
+          "event_ids": [
+            "evt_000004"
+          ],
+          "event_actors": [
+            "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
+          ],
+          "event_methods": [
+            "craft_item"
+          ],
+          "event_types": [
+            "CRAFT_GENERATED"
+          ],
+          "rng_seeds": [
+            5495617991584760311
+          ],
+          "state_hash": "9e8112d057ccd38e643e53a297a5671f5701d286e96549399e8580fa7b2f7d1e",
+          "text_len": 108,
+          "audit": [
+            {
+              "proposal_id": "p_000004_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "craft_item",
+              "verdict": "applied",
+              "status": "committed",
+              "attempt": 1
+            }
+          ]
+        }
+      ],
+      "final_state_hash": "9e8112d057ccd38e643e53a297a5671f5701d286e96549399e8580fa7b2f7d1e",
+      "final_version": 4,
+      "final_last_seq": 4,
+      "final_turn": 4,
+      "event_total": 4,
+      "audit_total": 3
+    },
+    {
+      "case_id": "m4_case_free_schema_violation",
+      "script": [
+        "用铁锭和铜线制作一个简易电击棒"
+      ],
+      "llm_responses": [
+        "not-json",
+        "still-not-json"
+      ],
+      "turns": [
+        {
+          "input": "用铁锭和铜线制作一个简易电击棒",
+          "attempted_turn": 2,
+          "ok": false,
+          "error_code": "INVALID_INPUT",
+          "turn_id": 1,
+          "version": 1,
+          "last_seq": 1,
+          "event_ids": [],
+          "event_actors": [],
+          "event_methods": [],
+          "event_types": [],
+          "rng_seeds": [],
+          "state_hash": "72893a49adc41ecc34877de278d48a7f76529b837983e3627b21d4abb7066ba4",
+          "text_len": 16,
+          "audit": [
+            {
+              "proposal_id": "p_000002_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "craft_item",
+              "verdict": "rejected",
+              "status": "aborted",
+              "attempt": 1
+            }
+          ]
+        }
+      ],
+      "final_state_hash": "72893a49adc41ecc34877de278d48a7f76529b837983e3627b21d4abb7066ba4",
+      "final_version": 1,
+      "final_last_seq": 1,
+      "final_turn": 1,
+      "event_total": 1,
+      "audit_total": 1
+    },
+    {
+      "case_id": "m4_case_free_consistency_violation",
+      "script": [
+        "用铁锭和铜线制作一个简易电击棒"
+      ],
+      "llm_responses": [
+        {
+          "item_name": "简易电击棒",
+          "output_template_id": "item.makeshift_taser",
+          "inputs": [
+            {
+              "template_id": "item.unobtainium",
+              "qty": 1,
+              "role": "material"
+            }
+          ],
+          "station": null,
+          "steps": [
+            "把铜线缠在铁锭上",
+            "固定接头"
+          ]
+        }
+      ],
+      "turns": [
+        {
+          "input": "用铁锭和铜线制作一个简易电击棒",
+          "attempted_turn": 2,
+          "ok": false,
+          "error_code": "INVALID_INPUT",
+          "turn_id": 1,
+          "version": 1,
+          "last_seq": 1,
+          "event_ids": [],
+          "event_actors": [],
+          "event_methods": [],
+          "event_types": [],
+          "rng_seeds": [],
+          "state_hash": "72893a49adc41ecc34877de278d48a7f76529b837983e3627b21d4abb7066ba4",
+          "text_len": 16,
+          "audit": [
+            {
+              "proposal_id": "p_000002_001",
+              "actor_id": "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN",
+              "tool": "craft_item",
+              "verdict": "rejected",
+              "status": "aborted",
+              "attempt": 1
+            }
+          ]
+        }
+      ],
+      "final_state_hash": "72893a49adc41ecc34877de278d48a7f76529b837983e3627b21d4abb7066ba4",
+      "final_version": 1,
+      "final_last_seq": 1,
+      "final_turn": 1,
+      "event_total": 1,
+      "audit_total": 1
+    }
+  ]
+}
