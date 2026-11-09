@@ -15,7 +15,7 @@
 
 ### 21.1 阅读约定
 - 本附录是**契约速查**，不是最终实现：签名以第 5–15 章正文为准；若正文与本附录冲突，以正文为准并回填本附录。
-- 类型只引用不重复定义：`TurnInput`/`TurnResult`（第 9 章）、`CraftRequest`/`CraftMode`/`CraftDraft`（第 13 章）、`MemoryStore`/`MemoryOp`（第 8 章）、`QueryService.build_perception_slice(actor_id, turn_id, save_seed)`（第 6 章）等，来源见 §21.1.1。
+- 类型只引用不重复定义：`TurnInput`/`TurnResult`（第 9 章）、`CraftRequest`/`CraftMode`/`CraftDraft`（第 13 章）、`MemoryStore`/`MemoryOp`（第 8 章）、`QueryService.build_perception_slice(state, actor_id, *, turn_id, save_seed, plan_hint=None, events=())`（第 6 章 M3 实际签名）等，来源见 §21.1.1。
 - 上下文统一为 `ToolContext`（第 6 章 §6.2：`actor_id` / `actor_tags` / `turn_id` / `save_seed` / `idempotency_key` / `caller`）；LLM 调用统一为 `LLMClient.complete_json(req: LLMRequest) -> Result`（第 12 章）；解析输出统一为 `ParseOutput`（第 8 章）。
 - 所有写路径最终只经过 `GameEngine.submit`；服务层只返回 `Result(events=[草稿 Event])`，不提交、不写库；所有 LLM 输出必须先过 JSON Schema 校验。
 - **词表分离**：`Resolution.verdict ∈ {applied, rejected, conflict, deferred}`（第 9、11 章）；提案审计状态另用 `{committed, conflicted, aborted}`（第 11 章审计表），二者不得混用。
@@ -291,32 +291,70 @@ class LLMClient:
 ```python
 class CraftService:
     def craft(self, ctx: ToolContext, req: CraftRequest, *, idempotency_key: str) -> Result:
-        # CraftRequest / CraftMode / CraftStateSlice / Recipe / CraftResult / CraftDraft 见第 13 章
+        # CraftRequest / CraftMode / CraftStateSlice / Recipe / CraftResult / CraftDraft 见第 13 章；
+        # 材料引用一律是物品模板键（CraftInput.template_id），背包/产出仍是物品实例 ItemId（D-M4-1）
         state = self.state_reader.craft_state_slice(ctx.actor_id)      # 只读快照切片（第 6、13 章）
-        rng_seed = RandomSource.derive_seed(ctx.save_seed, ctx.turn_id, ctx.actor_id, "craft_item", seq) & 0x7FFF_FFFF_FFFF_FFFF  # 第 10 章类方法
+        # D-M4-4：seq 不来自 ToolContext（六字段不扩），服务层取当前存档 last_seq + 1 注入 next_seq
+        next_seq = self.state_reader.last_seq() + 1   # 存档级 last_seq（state.rng_state.last_seq，第 13 章）
+        state = state.model_copy(update={"next_seq": next_seq})
+        rng_seed = RandomSource.derive_seed(ctx.save_seed, ctx.turn_id, ctx.actor_id,
+                                            "craft_item", next_seq)  # 第 10 章类方法（已掩码，不重复掩码）
         if req.mode is CraftMode.RECIPE:
             recipe = self.recipes.require(req.recipe_id)               # Recipe（第 13 章 §13.2）
+            checked = self.preconditions.check(state, recipe)          # 材料/工具/工位/参数（第 13 章 §13.4）
+            if not checked.ok:
+                return checked                                         # 前置校验失败 → Result(ok=False) 且零事件（D-M4-5）
             # 唯一数值权威：domain/crafting.py 纯函数，成功率/消耗/质量/产出全部由它计算
             result = calculate_craft_result(state, recipe, ctx.actor_id, rng_seed)
+            # 实例化（D-M4-1）：产出/副产物实例 ID 由 derive_item_id(save_seed, turn_id, actor_id,
+            # "craft_item", next_seq, ordinal) 确定性派生；事件 result.produced_items 带完整 Item 定义
+            result, produced_items = instantiate_craft_result(
+                result, recipe, save_seed=ctx.save_seed, turn_id=ctx.turn_id,
+                actor_id=ctx.actor_id, event_seq=next_seq)
+            event_type = EventType.CRAFT_DETERMINISTIC
+            params = {"mode": "recipe", "recipe_id": recipe.recipe_id,
+                      "recipe_version": recipe.version}
         else:
             # 自由制造：CraftAgent 只生成草案（模型调用在 Agent 内，第 12 章）；
             # 服务层做 Schema + 状态一致性检查，再用同一纯函数重算数值（第 13 章 §13.4）
             generated = self.craft_agent.generate(req)                 # data["parsed"] 为 CraftDraft
             if not generated.ok:                                       # SCHEMA_VIOLATION / LLM_UNAVAILABLE
-                return generated
-            draft = CraftDraft.model_validate(generated.data["parsed"])
+                return generated                                       # 失败零事件
+            draft = CraftDraft.model_validate(generated.data["parsed"])  # extra="forbid"：带数值即违规
             if not self.consistency.check(draft, state):
                 return Result.fail(ErrorCode.NOT_ALLOWED, "draft violates world state")
             recipe = self.recipes.from_draft(draft)                    # 草案折算为临时 Recipe
-            result = calculate_craft_result(state, recipe, ctx.actor_id, rng_seed)
+            checked = self.preconditions.check(state, recipe)
+            if not checked.ok:
+                return checked                                         # 零事件
+            result = calculate_craft_result(state, recipe, ctx.actor_id, rng_seed)  # 数值由框架重算
+            result, produced_items = instantiate_craft_result(
+                result, recipe, save_seed=ctx.save_seed, turn_id=ctx.turn_id,
+                actor_id=ctx.actor_id, event_seq=next_seq)
+            event_type = EventType.CRAFT_GENERATED
+            params = {"mode": "free",
+                      "free_description_sha256": sha256_hex(req.free_description),
+                      "proposal_hash": params_hash({"draft": draft.model_dump(mode="json"),
+                                                    "free_description": req.free_description}),
+                      "prompt_version": generated.data["prompt_version"]}  # "craft@v1"
+        # 固定一条草稿事件：成功 → CRAFT_DETERMINISTIC/CRAFT_GENERATED；掷骰失败仍走本事件，
+        # result.craft.success=false 且 consumed/produced/byproducts 为空（状态只推进 turn/world_time）
         draft_event = Event(turn_id=ctx.turn_id, actor_id=ctx.actor_id, method="craft_item",
-                            params={"recipe_id": req.recipe_id, "mode": req.mode.value,
-                                    "proposal_id": self.proposal_id_for(idempotency_key)},
-                            result={"craft": result})
-        # 不调 GameEngine.submit、不写库：返回 Result(ok=True, events=[草稿 Event], data=CraftResult)，
-        # 由 Resolver 取草稿事件、GameEngine 统一盖章提交（第 6、13 章）
+                            event_type=event_type,
+                            params={**params, "proposal_id": self.proposal_id_for(idempotency_key)},
+                            result={"craft": result.model_dump(mode="json"),
+                                    "produced_items": [i.model_dump(mode="json") for i in produced_items]})
+        # 不调 GameEngine.submit、不写库：返回 Result(ok=True, data={"craft": result}, events=[草稿 Event])；
+        # M4 单角色场景（scenario="m4"，无 NPC Agent）由编排层直接交 GameEngine.submit，
+        # 不接 ProposalQueue/Resolver（CraftProposal 仅 M5 契约保留，D-M4-3）；
+        # CRAFT_REJECTED M4 不产生（仅预留 identity reducer）。断言：盖章后 event.rng_seed 必须等于
+        # result.rng_seed（EventLog.stamp 用同一 (save_seed, turn_id, actor_id, "craft_item", next_seq) 派生，D-M4-5）
         return Result.ok(data={"craft": result}, events=[draft_event])
 ```
+
+辅助名说明：`preconditions.check` / `instantiate_craft_result` / `recipes.from_draft` 为伪代码辅助名，分别对应第 13 章 §13.4 的状态一致性校验、§13.2 的实例化规则（`derive_item_id` 派生实例 ID，事件带完整 `Item` 定义）与 §13.4 步骤 5 的草案折算；实现以第 13 章契约为准。
+
+**M4 口径说明（D-M4-1/3/4/5，2026-11-09 回写）**：`CraftStateSlice.next_seq`（= 当前存档 `last_seq + 1`）是制造种子序号的唯一来源，由服务层注入、不扩 `ToolContext` 六字段，并要求玩家 `craft_item` 事件是本次提交批次首条事件（D-M4-4）；产出/副产物实例 ID 由 `derive_item_id(save_seed, turn_id, actor_id, craft_kind, event_seq, ordinal)` 确定性派生，事件 `result.produced_items` 记录完整 `Item` 定义，回放不依赖配方目录（D-M4-1）；`result.craft.produced`/`byproducts` 保持模板键与数量（实例化前），实例 ID 与完整 `Item` 定义只出现在 `produced_items`（N-01）；`CRAFT_REJECTED` M4 不产生（仅预留 identity reducer），前置校验失败返回 `Result(ok=False)` 且零事件、掷骰失败提交一条 `CRAFT_DETERMINISTIC(success=false)`（consumed/produced/byproducts 为空，状态只推进 turn/world_time）（D-M4-5）；`params` 按路径记 `mode/recipe_id/recipe_version` 或 `free_description_sha256/proposal_hash/prompt_version`，`rng_seed` 由 `EventLog.stamp` 派生且必须等于 `result.craft.rng_seed`；M4 单角色场景（`scenario="m4"`，无 NPC Agent）由编排层直接交 `GameEngine.submit`，不接 `ProposalQueue`/`Resolver`（`CraftProposal` 仅 M5 契约保留，D-M4-3；M5 接线前必须迁移到 pre-queue）。
 
 #### 21.2.6 TurnOrchestrator.run（单回合主链路）
 ```python
@@ -327,7 +365,8 @@ class TurnOrchestrator:
                           actor_tags=self.actors.tags_of(req.player_id),  # ActorDirectory（第 6、8 章）
                           turn_id=state.turn, save_seed=req.save_seed,
                           idempotency_key=req.idempotency_key, caller="player")
-        slice_ = self.query.build_perception_slice(ctx.actor_id, ctx.turn_id, ctx.save_seed)  # 第 6 章
+        slice_ = self.query.build_perception_slice(
+            state, ctx.actor_id, turn_id=ctx.turn_id, save_seed=ctx.save_seed)  # 第 6 章（events 可选）
         resp = await self.llm.complete_json(LLMRequest(
             task="intent_parse", agent_id="parse", model_tier=ModelTier.ECONOMY,
             messages=self.prompt.parse(req.text, slice_), output_schema=ParseOutput,
@@ -373,19 +412,24 @@ class ProposalQueue:
 ```python
 class GameEngine:
     def create_game(self, ctx: ToolContext, *, card_id: CardId,
-                    seed: int | None = None, idempotency_key: str) -> Result:
-        """第 6 章 §6.7 / 第 14 章 §14.7：校验人物卡 → 映射 Character → 组装 `game_created` 首事件
-        （`method` 即 reducer 路由键 event_type；turn_id=1）→ 内部仍经 submit 原子落库（第 11 章 §11.2）。"""
+                    seed: int | None = None,
+                    scenario: Literal["m2", "m3", "m4"] = "m2",
+                    idempotency_key: str) -> Result:
+        """第 6 章 §6.7 / 第 14 章 §14.7：校验人物卡 → 映射 Character → 按 `scenario` 装配初始状态
+        （`m2`/`m3`/`m4`，缺省 `m2`；`m2`/`m3` 初始状态与既有 golden 字节不变，D-M4-11）→
+        组装 `game_created` 首事件（`method` 即 reducer 路由键 event_type；turn_id=1）→ 内部仍经 submit 原子落库（第 11 章 §11.2）。"""
         card = self.cards.get_verified(ctx, card_id)  # 第 5 章 §5.7 已校验的 CharacterCard
+        initial_state = self.build_initial_state(scenario=scenario, save_seed=ctx.save_seed)
         events = [Event(turn_id=1, actor_id="system", method="game_created",
                         params={"card_id": card_id,
                                 "card_snapshot": card.model_dump(mode="json"),  # 开局卡面快照，回放据此重建
                                 "starting_room_id": self.default_room_id,
                                 "initial_character_id": f"char_{self.new_ulid()}",
+                                "scenario": scenario,
                                 "snapshot_version": 1,
                                 "save_seed": ctx.save_seed})]
         return self.submit(expected_version=0, events=events, idempotency_key=idempotency_key)
-        # 返回 Result，data={game_id, turn, version, snapshot_version}（第 6 章 §6.7；version 为存档状态版本）
+        # 返回 Result，data={game_id, turn, version, snapshot_version, scenario, save_seed}（第 6 章 §6.7；version 为存档状态版本）
 
 
 class EventService:
@@ -394,7 +438,7 @@ class EventService:
         """只读回放分页（按全局 seq）：data={"events", "from_seq", "to_seq"}（第 6 章 §6.7）。"""
 ```
 
-对应 HTTP 成功形状（v0.2 前端）：`POST /api/v1/games` → 201 `{game_id, turn, version, snapshot_version}`；`GET /api/v1/games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /api/v1/games/{game_id}/replay?from_seq=&limit=` → 200 `{events, from_seq, to_seq}`（第 6 章 §6.7）。
+对应 HTTP 成功形状（v0.2 前端）：`POST /api/v1/games` → 201 `{game_id, turn, version, snapshot_version, scenario, save_seed}`（body 可带可选 `scenario`：`m2`/`m3`/`m4`，缺省 `m2`）；`GET /api/v1/games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /api/v1/games/{game_id}/replay?from_seq=&limit=` → 200 `{events, from_seq, to_seq}`（第 6 章 §6.7）。
 
 ### 21.3 JSON 示例
 
@@ -638,14 +682,14 @@ PARSE_OUTPUT_SCHEMA = ParseOutput.model_json_schema()
   }
 }
 ```
-（12）`POST /api/v1/games`（创建存档；请求体 `{card_id}`，必带 `Idempotency-Key`；`game_created` 系统事件随事务落 `EventLog`，第 6 章 §6.7）
+（12）`POST /api/v1/games`（创建存档；请求体 `{card_id, scenario?}`，`scenario` 可选：`m2`/`m3`/`m4`、缺省 `m2`，必带 `Idempotency-Key`；`game_created` 系统事件随事务落 `EventLog`，第 6 章 §6.7）
 请求：
 ```json
-{"card_id": "card_01J9Z3K4Q7ABCDEFGHJKMNPQRS"}
+{"card_id": "card_01J9Z3K4Q7ABCDEFGHJKMNPQRS", "scenario": "m4"}
 ```
 成功响应（201）：
 ```json
-{"game_id": "game_01J9Z4A2B6CDEFGHJKMNPQRSTU", "turn": 1, "version": 1, "snapshot_version": 1}
+{"game_id": "game_01J9Z4A2B6CDEFGHJKMNPQRSTU", "turn": 1, "version": 1, "snapshot_version": 1, "scenario": "m4"}
 ```
 
 （13）`GET /api/v1/games/{game_id}`（存档状态；前端进入游戏/刷新时调用，只读，第 6 章 §6.7）

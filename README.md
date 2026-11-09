@@ -28,7 +28,7 @@
 | 领域模型 / 校验 | Pydantic v2 |
 | 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`） |
 | 接入层 | FastAPI |
-| 编排 | LangGraph（待评估是否改用自建 loop） |
+| 编排 | 自建显式 loop（Q1 定案；LangGraph 仅保留可选封装，第 8 章 §8.4） |
 | 模型调用 | 统一 LLMClient 封装（当前已接入 DeepSeek `deepseek-flash` 凭据与连通性自检，完整治理在 M5） |
 | 质量门 / CI | GitHub Actions：ruff + mypy + import-linter + pytest（3.10/3.12 矩阵）+ pip-licenses/pip-audit/CycloneDX；本地 pre-commit 钩子 |
 | Web 前端（M6） | Vue 3 + TypeScript + Vite + Pinia + Vue Router（构建期 Node，产物由 FastAPI 托管） |
@@ -44,7 +44,7 @@ curl --noproxy '*' http://127.0.0.1:8000/healthz          # → 200 {"status":"o
 uv run ruff format --check . && uv run ruff check .        # lint / format
 uv run mypy src/textgame                                   # 类型检查（strict）
 uv run lint-imports                                        # 分层依赖契约（第 16 章 16.2）
-uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 960 passed）
+uv run pytest -q                                           # 单元 + 集成 + 回放测试（当前 981 passed；M4 文档回写前基线 0c62e00）
 uv run pre-commit install --install-hooks                  # 一次性：安装提交前质量门
 ```
 
@@ -52,7 +52,7 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 > **Windows + 非 ASCII 仓库路径提示**：本仓库路径含中文（`D:\ProgramData\游戏开发`）时，`pre-commit install --install-hooks` 生成的 `.git/hooks/pre-commit` 在 Git Bash 下可能报 `pre-commit` not found（Win32 路径编码问题）。本机 hook 已改为优先 `uv run pre-commit` 调用；若重新 install 覆盖后提交失败，用 `uv run pre-commit run --all-files` 手动执行，或恢复该 hook 的 uv 调用分支即可。
 
-> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（已验证 3.10.22 全量 638 passed）。CI 在 ubuntu（UTF-8）上不受影响。
+> **Python 3.10 本地验证提示**：中文路径下 editable 安装的 `.pth` 会被 Python 3.10 的 `site.py` 用 GBK 读取而失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（M2 期已验证 3.10.22 全量 638 passed，属历史值；当前 HEAD 全量 981 passed）。CI 在 ubuntu（UTF-8）上不受影响。
 
 ## M2 单场景 MVP 快速试玩（已交付）
 

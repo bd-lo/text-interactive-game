@@ -278,6 +278,10 @@ class Quest(BaseModel):
         return self
 ```
 
+**物品实例与模板引用（A-01 / D-M4-1）**：`Item` 是物品**实例**（`ItemId = item_<26位ULID>`），`Character.inventory` 是 `list[ItemId]`，**没有独立数量字段——同种物品多件即列表中的重复项**（如 2 块铁锭 = 2 个 `item_...`，上限 64），扣材料即移除对应实例。配方、草案与制造事件里的“材料引用”一律用**物品模板键** `ItemTemplateId`（不是实例 ID），模板到实例的转换在开局与产出时由服务层完成；`ItemTemplate` 模型、配方对模板键的引用与产出实例 ID 的确定性派生规则统一归第 13 章制造域（D-M4-1），回放只读事件里的 `result.produced_items`、不依赖配方目录（第 14 章 §14.7）。实例化时 `Item.tags` 以模板键（规范写法 `item.<name>`）为首项、再接模板 tags（实例 tags ≤8），服务层据此把 `Character.inventory` 聚合为 `dict[ItemTemplateId, int]`（第 13 章 §13.2、D-M4-1）。
+
+**技能系统（A-02 / D-M4-2）**：M4 **不**给 `Character` 增加 `skills` 字段（`attributes` 白名单保持 7 键不变），技能校验与技能成长后移到 M5/内容系统；第 13 章的 `Recipe.skill_req` 与 `CraftStateSlice.skill_levels` 字段保留但 M4 恒为空、不参与校验，也不新增技能/经验事件。
+
 ### 5.5 GameState 与其余模型
 
 本节定义唯一写入者（Single Writer）持有的世界状态 `GameState`，以及事件之源上的四个协作对象：提案（Proposal）、裁决（Resolution）、动作意图（Action Intent）、感知切片（Perception Slice）与工具规格（Tool Spec）。
@@ -324,8 +328,10 @@ class GameState(BaseModel):
         return self
 
     def apply(self, events: list[Event]) -> "GameState":
-        """纯投影：返回新状态，不写库、不改 self。实现见第 14 章。"""
-        raise NotImplementedError  # 由 persistence/replay 模块提供投影
+        """纯投影：返回新状态，不写库、不改 self（第 14 章 §14.4/§14.7）。"""
+        from .reducers import apply_events  # 局部 import 避免 models ↔ reducers 循环依赖
+
+        return apply_events(self, events)
 
 
 class Proposal(BaseModel):
@@ -425,12 +431,12 @@ class ToolSpec(BaseModel):
 | `NarrativeOutput` | 第 8 章 §8.2 | `narrative`（80～150 字）、`tone` | `agents/schemas.py` | 不进入 `GameState`；文本进 `TurnResult`，来源记 `narrative_source ∈ {llm, template}` | 第 8 章字数/字符校验 + Schema；失败 → 模板兜底，不改状态 |
 | `MemoryOutput` | 第 8 章 §8.2 | `ops: list[MemoryOp]`、`summary` | `agents/schemas.py`；`MemoryOp` 由 `MemoryStore` 应用（接口见第 8 章记忆 Agent） | 不进入 `GameState`；写入按 `actor_id` 隔离的私有记忆库 | Schema + 命名空间归属校验；失败 → `SCHEMA_VIOLATION`，丢弃本次记忆（不阻塞回合） |
 | `CharacterOutput` | 第 8 章 §8.2 | `proposals: list[Proposal]`（≤2）、`dialogue`、`memory_ops` | `agents/schemas.py` | 不直接进入；提案进 `ProposalQueue`（第 11 章） | Schema + 第 7 章工具门 + 第 11 章 Resolver；失败 → `SCHEMA_VIOLATION`/`NOT_ALLOWED`，本回合不行动 |
-| `CraftOutput` | 第 8 章 §8.2 | `item_name`、`slots`、`materials`、`steps`；**无任何数值字段** | `agents/schemas.py`，第 13 章规范化为 `CraftProposal` | 不进入；产物经 `CraftService` 校验后转 `Proposal` | Schema + 第 13 章状态一致性检查；失败 → `SCHEMA_VIOLATION`/`NOT_ALLOWED`，退回确定性路径 |
+| `CraftOutput` | 第 8 章 §8.2 | `item_name`、`output_template_id`、`inputs`、`station`、`steps`（与第 13 章 `CraftDraft` 同构）；**无任何数值字段** | `agents/schemas.py`，按第 13 章 `CraftDraft` 同构校验 | 不进入；经 `CraftService` 校验与数值重算后形成草稿事件（M4 不转 `Proposal`） | Schema + 第 13 章状态一致性检查；失败 → `SCHEMA_VIOLATION`/`NOT_ALLOWED`、零写入（无匹配配方时无确定性回退） |
 | `ToolCall` | 第 8 章（`ParseOutput.tool` 引用） | `name: str`、`args: dict`（字段以第 8 章为准） | 契约类型，不持久化 | 不进入；由第 7 章 `build_proposal` 消费 | 第 7 章参数 Schema；失败 → `INVALID_INPUT`/`NOT_ALLOWED` |
 | `CheckResult`/`DiceRoll`/`Modifier` | 本章 5.6 定稿（第 10 章 §10.2 使用） | 见下方代码块 | `domain/rules/types.py`（判定值对象，纯确定性） | 整对象不落库；`dice` 与 `rng_seed` 以摘要形式进 `Event.result` | 第 10 章 `RuleEngine` 计算 + Pydantic 校验，禁止 LLM 生成或修改；构造失败 → `INTERNAL`（代码 bug）；参数越界 → `INVALID_INPUT`/`OUT_OF_RANGE` |
 | `RandomSource` | 本章 5.6 定稿接口（第 10 章实现） | `derive_seed(save_seed, turn_id, actor_id, method, seq) -> int`、`mask_seed(raw) -> int` | 接口 `domain/rules/types.py`；实现 `domain/rules/dice.py`（`DerivedRandom`） | 不进入；`save_seed`/`last_seq` 进 `GameState.rng_state` | 实现必须掩码到 `0..2^63-1`，否则 → `INTERNAL`；第 10/14 章按类方法调用 |
 
-其余跨章类型只引用、不重定义：`JudgeOutput`/`NarrativeOutput`/`MemoryOutput`/`MemoryOp`/`MemoryStore` 见第 8 章（智能体设计）；`CraftRequest`/`CraftMode`/`CraftDraft`/`CraftProposal`/`CraftStateSlice`/`CraftResult`/`QualityBand`/`Byproduct` 见第 13 章（制造系统）；`TurnInput`/`TurnResult` 见第 9 章（单回合调用链）。第 6/7 章引用这些类型时不再重复定义字段。
+其余跨章类型只引用、不重定义：`JudgeOutput`/`NarrativeOutput`/`MemoryOutput`/`MemoryOp`/`MemoryStore` 见第 8 章（智能体设计）；`CraftRequest`/`CraftMode`/`CraftDraft`/`CraftProposal`/`CraftStateSlice`/`CraftResult`/`QualityBand`/`Byproduct`/`ItemTemplate`/`CraftView` 见第 13 章（制造系统；`ItemTemplateId` 见本章 §5.7）；`TurnInput`/`TurnResult` 见第 9 章（单回合调用链）。第 6/7 章引用这些类型时不再重复定义字段。
 
 第 10 章的判定值对象在第 5 章定稿如下（`domain/rules/types.py`；`rng_seed` 约束与本章 `Event` 一致）：
 

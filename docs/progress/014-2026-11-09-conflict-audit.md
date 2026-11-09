@@ -28,4 +28,5 @@
 ## 4. 下一步与风险
 
 - 下一步：M3 出口已满足，进入 M4 制造（015-recipe-model）；M4 前评估 D-008-3 多存档复合主键与 Alembic 接入 CI。
-- 风险：① M2 旧库（已存在 snapshots 表）不在 baseline upgrade 范围，开发期删旧库/生产式迁移留待决策（R5）；② 审计 uid 为确定性 `(game, turn, attempt, proposal)` 去重（同 attempt 重投幂等、首次为准），未来若需严格 append 再评估（R6）；③ `events` 主键仍为 `seq` 单列（D-008-3 复合主键延后，M3 单库单存档不触发）。
+- 后续（2026-11-09 回写）：D-008-3 已关闭（Alembic 0002 + 旧库升级脚本）、Alembic 不新增 CI 专属 job 已定案（见 `docs/PROGRESS.md` §5/§7）；契约变更：无。
+- 风险：① M2 旧库（已存在 snapshots 表）不在 baseline upgrade 范围，开发期删旧库/生产式迁移留待决策（R5）；② 审计 uid 为确定性 `(game, turn, attempt, proposal)` 去重（同 attempt 重投幂等、首次为准），未来若需严格 append 再评估（R6）；③ `events` 已改复合主键 `(game_id, seq)`（D-008-3 已关闭，Alembic 0002；见 `docs/PROGRESS.md` §5/§7）。

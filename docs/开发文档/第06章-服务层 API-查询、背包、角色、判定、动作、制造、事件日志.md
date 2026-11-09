@@ -41,6 +41,7 @@ class ToolContext(BaseModel):
 
 - **幂等键（Idempotency Key）**：接入层收到 `Idempotency-Key` 后原样放进 `ToolContext`；同一键重复提交时 `GameEngine` 返回首次结果（命中幂等表），不重复写事件。工具层在缺省时派生子键：`sha256(f"{turn_id}:{actor_id}:{tool}:{canonical_json(args)}")`，同一参数可安全重试。
 - **`actor_id` vs `actor_scope`**：`actor_scope` 是工具可见性（第 7 章，回答“这个 Agent 能不能看到并调用这个工具”）；服务层只做**数据归属校验**（回答“这个 actor 能不能动这条数据”）。两者分开后，新增一个 NPC 不需要改服务代码。
+- **`ToolContext` 六字段固定（M4 复核，不扩字段）**：制造不新增 `seq`/`next_seq` 等上下文字段；`calculate_craft_result` 所需的序号由服务层取当前存档 `last_seq + 1` 注入 `CraftStateSlice.next_seq` 后派生种子（D-M4-4，第 13 章），并要求玩家 `craft_item` 事件是本次提交批次的首条事件（编排层 player→npc 顺序保证，M4 补断言测试）。
 - **错误码口径（全队统一）**：工具/LLM 参数不符合 JSON Schema → `INVALID_INPUT`；LLM 原始文本无法解析或未过输出 Schema → `SCHEMA_VIOLATION`；`actor_scope` 越权 → `NOT_ALLOWED`；业务前置条件 → `NOT_FOUND`/`NOT_ALLOWED`/`OUT_OF_RANGE`/`CONFLICT`；模型调用失败 → `LLM_UNAVAILABLE`；其余 → `INTERNAL`。所有失败 `Result.events` 必须为空（第 5 章模型已强制），保证“失败零状态变更”。
 
 ### 6.3 七个模块的方法签名
@@ -65,10 +66,14 @@ class QueryService:
     def search_entities(self, ctx: ToolContext, keyword: str,
                         kinds: frozenset[str] = frozenset({"item", "npc"})) -> Result: ...
 
-    def build_perception_slice(self, actor_id: str, turn_id: int, save_seed: str) -> PerceptionSlice:
-        """编排层专用（本章定稿，第 8/9/21 章按此引用）：组装私有感知切片（Perception Slice）；
-        `save_seed` 为存档种子字符串，与 `ToolContext.save_seed` / 第 10 章 `derive_seed(save_seed: str, ...)` 一致；
-        只可能是 INTERNAL 失败（快照损坏）"""
+    def build_perception_slice(self, state: GameState, actor_id: str, *,
+                               turn_id: int, save_seed: str,
+                               plan_hint: str | None = None,
+                               events: Sequence[Event] = ()) -> PerceptionSlice:
+        """编排层专用（M3 实际实现口径，第 8/9/21 章按此引用）：组装私有感知切片（Perception Slice）；
+        `state` 为已载入的只读快照；`events` 只用于筛选 actor 自己的最近事件（`local_events` 按 seq 升序）；
+        `plan_hint` 只由调度器显式注入；`save_seed` 与 `ToolContext.save_seed` / 第 10 章 `derive_seed(save_seed: str, ...)` 一致；
+        只可能是 INTERNAL 失败（快照损坏/actor 不存在）"""
 ```
 
 ```python
@@ -177,22 +182,30 @@ class CraftService:
 
     def craft(self, ctx: ToolContext, req: CraftRequest, *, idempotency_key: str) -> Result:
         """与第 13 章的职责边界一致（13.2/13.5）：
-        1) 解析 ctx（actor_id / save_seed / idempotency_key）与背包上下文；
+        1) 解析 ctx（actor_id / save_seed / idempotency_key）与背包上下文，构造 `CraftStateSlice`
+           （`next_seq` = 当前存档 `last_seq + 1`，由服务层注入，D-M4-4）；
         2) 常规路径直接调用 domain/crafting.py 的纯函数（签名固定，第 13 章）：
            `calculate_craft_result(state: CraftStateSlice, recipe: Recipe,
                                    actor_id: CharacterId, rng_seed: int) -> CraftResult`；
+           `rng_seed = RandomSource.derive_seed(save_seed, turn_id, actor_id, "craft_item", next_seq)`，
            成功率、消耗、质量、产出全部由该纯函数计算，服务层不重算、不改写数值；
-        3) 生成路径先把第 8 章 `CraftOutput` 规范化为 `CraftProposal`，再过 JSON Schema
-           + 状态一致性检查（第 13 章 §13.4），失败即拒绝；
-        4) 无论哪条路径，只返回 Result(ok=True, events=[草稿 Event])：
+        3) 生成路径先把第 8 章 `CraftOutput` 规范化为 `CraftDraft`，再过 JSON Schema
+           + 状态一致性检查（第 13 章 §13.4），失败即拒绝；M4 单角色场景（`scenario="m4"`，无 NPC Agent）
+           不接 ProposalQueue/Resolver：`CraftProposal` 仅作为 M5 契约保留，草稿事件由编排层直接交
+           `GameEngine.submit`（D-M4-3；M5 接线前须迁移到 pre-queue，否则违反第 11 章 Resolver 纯函数约束）；
+        4) 无论哪条路径，都只返回 Result(ok=True, data={"craft": CraftResult}, events=[草稿 Event])（`CraftResult` 为实例化前模板级结果；实例 ID/完整定义见事件 `result.produced_items`，N-01）：
            **服务层不提交状态、不调 GameEngine**（提交只由 GameEngine 做）。
-        事件（event_type 以第 13 章为准）：`CRAFT_DETERMINISTIC` / `CRAFT_GENERATED` / `CRAFT_REJECTED`；
+        事件（event_type 以第 13、14 章为准）：配方路径 `CRAFT_DETERMINISTIC`、自由路径 `CRAFT_GENERATED`
+        （`params` 分别记 `mode/recipe_id/recipe_version` 与 `free_description_sha256/proposal_hash/prompt_version`；
+        `result.craft` 为 CraftResult、`result.produced_items` 为 Item 定义列表，D-M4-5）；
+        `CRAFT_REJECTED` M4 不产生（仅预留 identity reducer）：前置校验失败 → `Result(ok=False)` 且零事件，
+        掷骰失败 → 一条 `CRAFT_DETERMINISTIC`（success=false、consumed/produced/byproducts 为空）。
         错误码：NOT_FOUND(无配方)、INVALID_INPUT(数量/参数非法)、OUT_OF_RANGE(数值越界)、
         NOT_ALLOWED(工具/技能/越权/草案违反世界状态)、CONFLICT(并发 CAS 失败)、
         SCHEMA_VIOLATION(LLM 原始草案未过 Schema，经第 12 章修复重试后仍失败)"""
 ```
 
-制造模块的边界重申：`calculate_craft_result` 是 `domain/crafting.py` 的纯函数、唯一数值权威（不依赖数据库、不调 LLM），`CraftService.craft()` 只解析 `ctx`、组装 `CraftStateSlice` 与 `recipe`、把 `CraftResult` 转成草稿事件；服务层既不重新实现数值，也不提交状态——与第 13 章“`CraftService` 只是服务入口包装、提交只能由 `GameEngine` 做”是同一口径。
+制造模块的边界重申：`calculate_craft_result` 是 `domain/crafting.py` 的纯函数、唯一数值权威（不依赖数据库、不调 LLM），`CraftService.craft()` 只解析 `ctx`、组装 `CraftStateSlice` 与 `recipe`、把 `CraftResult` 转成草稿事件；服务层既不重新实现数值，也不提交状态——与第 13 章“`CraftService` 只是服务入口包装、提交只能由 `GameEngine` 做”是同一口径；M4 单角色场景（`scenario="m4"`）下草稿事件由编排层直接交 `GameEngine.submit`、不接 ProposalQueue/Resolver（D-M4-3）。
 
 ```python
 # services/event_service.py —— 事件日志服务：包装 domain/events.py 的 EventLog（append 只允许 GameEngine 调用）
@@ -232,7 +245,7 @@ class EventService:
 | 角色 | `apply_damage`/`heal`/`apply_status`/`update_attributes` | `character_damaged`/`character_healed`/`status_applied`/`attributes_changed` | 必需 | `NOT_FOUND`/`INVALID_INPUT`/`OUT_OF_RANGE`/`NOT_ALLOWED` | 同上 | 只能作用于自己或同房间目标；系统状态限 `caller=system` |
 | 判定 | `RuleService.check`/`calculate_damage`/`evaluate_preconditions` | 无（结果嵌入后续动作事件） | 结果内含 `rng_seed` | `NOT_FOUND`/`OUT_OF_RANGE`/`NOT_ALLOWED` | 无需（纯函数、同种子同结果） | 仅服务层/Resolver 可调，不对 Agent 暴露工具 |
 | 动作 | `move_to`/`take_item`/`drop_item`/`attack_target`/`use_item`/`talk_to` | `character_moved`/`item_taken`/`item_dropped`/`attack_resolved`+`character_damaged`/`item_used`/`dialogue_exchanged` | 必需 | `NOT_FOUND`/`NOT_ALLOWED`/`OUT_OF_RANGE`/`CONFLICT` | 同上 | `ctx.actor_id` 必须是行动角色本人（NPC 走提案通道） |
-| 制造 | `craft`（内部调 `calculate_craft_result` 纯函数） | `craft_item`（event_type=`CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`/`CRAFT_REJECTED`，第 14 章） | 必需 | `NOT_FOUND`/`INVALID_INPUT`/`OUT_OF_RANGE`/`NOT_ALLOWED`/`CONFLICT`/`SCHEMA_VIOLATION` | 同上 | 只能为自己制造；自由制造草案需 Resolver 复核 |
+| 制造 | `craft`（内部调 `calculate_craft_result` 纯函数；`data={"craft": CraftResult}`） | `craft_item`（event_type=`CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`；`CRAFT_REJECTED` 仅预留、M4 不产生，第 14 章） | 必需 | `NOT_FOUND`/`INVALID_INPUT`/`OUT_OF_RANGE`/`NOT_ALLOWED`/`CONFLICT`/`SCHEMA_VIOLATION` | 同上 | 只能为自己制造；M4 自由制造不接 Resolver（单角色场景直交 `GameEngine`，D-M4-3） |
 | 事件日志 | `EventService.stamp`/`append`/`query`/`replay`/`snapshot`（包装 `EventLog`） | 不产生事件（它就是事件存储） | — | `NOT_ALLOWED`/`CONFLICT`/`SCHEMA_VIOLATION`/`INTERNAL` | `append` 用幂等键 + `expected_version` | `caller` 必须是 `system`（GameEngine） |
 
 写事件统一要求：`method` = 工具名（如 `attack_target`），`params` = 工具参数 + `proposal_id`，`result` = 判定摘要与效果数值，`rng_seed` 必填，`actor_id` = 实际行为者。一次动作可以产多个事件（攻击=判定 + 伤害两个事件），它们必须在同一个 `Resolution.applied_events` 里被原子提交。并发提交冲突（`CONFLICT`）的重试由调用方负责，全队统一措辞为「最多 3 次尝试（首次 + 2 次重试）」（第 11 章）。
@@ -306,11 +319,11 @@ v0.2 前端（Vue 3 SPA，第 23 章）只经 `/api/v1` 与后端交互：**前�
 
 **响应约定（v0.2 定稿；第 21、23 章按本节对齐）**：服务层方法仍返回 `Result`（6.1–6.5 的内部约定不变），但接入层对外**不使用 `ok`/`data` 信封**。
 
-- **成功响应**：HTTP 200/201（`DELETE` 用 204 无 body）+ **直接返回业务 payload**——`GET /character-cards/schema` → JSON Schema 对象本身；`GET /character-cards` → `{cards, total}`；`GET /character-cards/{card_id}` → `{card}`；`POST /character-cards/import` → 201 `{card_id, card, warnings}`；`POST /character-cards/validate` → 200 `{valid, errors}`；`POST /character-cards/generate` → 200 `{draft, validation, generated_by}`；`POST /character-cards`（保存）→ 201 `{card_id, card}`；`DELETE /character-cards/{card_id}` → 204 无 body；`POST /games` → 201 `{game_id, turn, version, snapshot_version}`；`GET /games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /games/{game_id}/replay` → 200 `{events, from_seq, to_seq}`。
+- **成功响应**：HTTP 200/201（`DELETE` 用 204 无 body）+ **直接返回业务 payload**——`GET /character-cards/schema` → JSON Schema 对象本身；`GET /character-cards` → `{cards, total}`；`GET /character-cards/{card_id}` → `{card}`；`POST /character-cards/import` → 201 `{card_id, card, warnings}`；`POST /character-cards/validate` → 200 `{valid, errors}`；`POST /character-cards/generate` → 200 `{draft, validation, generated_by}`；`POST /character-cards`（保存）→ 201 `{card_id, card}`；`DELETE /character-cards/{card_id}` → 204 无 body；`POST /games` → 201 `{game_id, turn, version, snapshot_version, scenario}`（body 可选 `scenario`：`m2`/`m3`/`m4`，缺省 `m2`，D-M4-11）；`GET /games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /games/{game_id}/replay` → 200 `{events, from_seq, to_seq}`。
 - **失败响应（所有端点统一）**：对应 4xx/5xx + `{"ok": false, "error_code": <ErrorCode>, "message": "...", "violations": [...]?}`；HTTP 映射：`INVALID_INPUT`→422（文件过大→413）、`SCHEMA_VIOLATION`→422（带 `violations`）、`NOT_FOUND`→404、`NOT_ALLOWED`→403、`CONFLICT`→409、`LLM_UNAVAILABLE`→503、`INTERNAL`→500；`OUT_OF_RANGE`：数值超范围→422，配额/限流→429（带 `Retry-After`）。
-- **既有 `POST /api/v1/turns` 例外**：保持第 9 章 `TurnResult` 不变，body 增补 `game_id`/`input`/`expected_version`；**`TurnResult` 增 `version`**（本次提交后的新 `row_version`，即下一次提交的 `expected_version`，第 9 章同步）。
+- **既有 `POST /api/v1/turns` 例外**：保持第 9 章 `TurnResult` 不变，body 增补 `game_id`/`input`/`expected_version`；**`TurnResult` 增 `version`**（本次提交后的新 `version`，即下一次提交的 `expected_version`，第 9 章同步）。
 
-**对局版本链（CAS 乐观锁的唯一版本来源）**：`version` = 持久化状态行的 `row_version`，所有响应里返回的 `version` 统一表示**下一次提交的 `expected_version`**。`POST /games` 返回初始 `version`；每次 `POST /turns` 成功后以 `TurnResult.version` 刷新；前端提交 `POST /turns` 时必须带 `expected_version`（来自 `POST /games` 或最近一次 `TurnResult.version`）。`GET /games/{game_id}` 用于刷新/重连恢复（`{game_id, turn, version, snapshot_version, status, last_text}`，`status ∈ {"active","ended"}`，`last_text` 为最近一屏 80～150 字文本、尚未提交时为 `null`），不产生状态变更；版本冲突（`CONFLICT`）按新提交处理：前端重新 `GET /games/{game_id}` 取最新 `version` 后重提，可生成新 `Idempotency-Key`。
+**对局版本链（CAS 乐观锁的唯一版本来源）**：`version` = 持久化状态行的版本列 `version`（文档概念称 `row_version`），所有响应里返回的 `version` 统一表示**下一次提交的 `expected_version`**。`POST /games` 返回初始 `version`；每次 `POST /turns` 成功后以 `TurnResult.version` 刷新；前端提交 `POST /turns` 时必须带 `expected_version`（来自 `POST /games` 或最近一次 `TurnResult.version`）。`GET /games/{game_id}` 用于刷新/重连恢复（`{game_id, turn, version, snapshot_version, status, last_text}`，`status ∈ {"active","ended"}`，`last_text` 为最近一屏 80～150 字文本、尚未提交时为 `null`），不产生状态变更；版本冲突（`CONFLICT`）按新提交处理：前端重新 `GET /games/{game_id}` 取最新 `version` 后重提，可生成新 `Idempotency-Key`。
 
 端点总表（前缀 `/api/v1`；本组写操作 `POST`/`DELETE` 必带 `Idempotency-Key` 请求头，GET 不需要）：
 
@@ -324,7 +337,7 @@ v0.2 前端（Vue 3 SPA，第 23 章）只经 `/api/v1` 与后端交互：**前�
 | POST | `/character-cards/generate` | `generate_card`（返回未保存草稿） | 200 | `LLM_UNAVAILABLE`/`SCHEMA_VIOLATION`/`NOT_ALLOWED`/`INVALID_INPUT` |
 | POST | `/character-cards` | `create_card`（保存，**方案 A**） | 201 | `SCHEMA_VIOLATION`/`NOT_ALLOWED`/`NOT_FOUND`/`CONFLICT`/`INVALID_INPUT` |
 | DELETE | `/character-cards/{card_id}` | `delete_card`（软删除） | 204 | `NOT_FOUND`/`CONFLICT` |
-| POST | `/games` | `GameEngine.create_game`（返回初始 `version`） | 201 | `NOT_FOUND`（card）/`SCHEMA_VIOLATION`/`NOT_ALLOWED`/`CONFLICT` |
+| POST | `/games` | `GameEngine.create_game`（返回初始 `version`；body 可带 `scenario`） | 201 | `NOT_FOUND`（card）/`SCHEMA_VIOLATION`/`NOT_ALLOWED`/`CONFLICT` |
 | GET | `/games/{game_id}` | `QueryService.get_game_view`（v0.2 补充，刷新/重连恢复） | 200 | `NOT_FOUND`/`INVALID_INPUT` |
 | GET | `/games/{game_id}/replay` | `EventService.replay_range`（`?from_seq=&limit=`） | 200 | `NOT_FOUND`/`INVALID_INPUT` |
 | POST | `/turns` | 既有回合接口（第 9 章，返回 `TurnResult`） | 200 | 见第 9 章 |
@@ -351,7 +364,10 @@ class CharacterCardService:
 # 开局：唯一写入者的 v0.2 补充签名（提交/CAS 细节见第 11、14 章）
 class GameEngine:
     def create_game(self, ctx: ToolContext, *, card_id: CardId, seed: int | None = None,
-                    idempotency_key: str) -> Result: ...
+                    scenario: Literal["m2", "m3", "m4"] = "m2",
+                    idempotency_key: str) -> Result:
+        """`scenario` 可选：`m2`（单角色）/`m3`（多角色）/`m4`（M4 制造），缺省 `m2`；
+        `m2`/`m3` 初始状态与既有 golden 字节不变（D-M4-11）。"""
 
 
 # 回放：6.3 EventService 的 v0.2 补充方法（只读，按全局 seq 分页）
@@ -410,7 +426,7 @@ Content-Type: application/json
 
 （7）`DELETE /character-cards/{card_id}` → **204 无 body**（软删除）。
 
-（8）`POST /games` → 201：请求 `{"card_id": "card_01J9Z3K4Q7..."}`；响应 `{"game_id": "game_01J9Z4A2B6...", "turn": 1, "version": 1, "snapshot_version": 1}`。
+（8）`POST /games` → 201：请求 `{"card_id": "card_01J9Z3K4Q7...", "scenario": "m4"}`（`scenario` 可选：`m2`/`m3`/`m4`，缺省 `m2`）；响应 `{"game_id": "game_01J9Z4A2B6...", "turn": 1, "version": 1, "snapshot_version": 1, "scenario": "m4", "save_seed": "save-42"}`（`save_seed` 供确定性回放/复现）。
 
 （9）`GET /games/{game_id}` → 200：`{"game_id": "game_01J9Z4A2B6...", "turn": 7, "version": 12, "snapshot_version": 12, "status": "active", "last_text": "火把的光在湿漉漉的岩壁上摇晃。你蹲下身，泥地上有几枚模糊的脚印。"}`（`version` 即下一次 `POST /turns` 的 `expected_version`）。
 

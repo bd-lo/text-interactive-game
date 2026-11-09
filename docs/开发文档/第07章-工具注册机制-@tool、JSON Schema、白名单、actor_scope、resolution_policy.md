@@ -132,7 +132,7 @@ def build_game_tools(services: ServiceContainer) -> list[Callable[..., Result]]:
 
 ### 7.3 白名单与 actor_scope
 
-`actor_scope` 的元素是**授权标签**而不是单个角色 ID：`"player"`、`"npc"`、`"npc:blacksmith"`、`"system"`。这样 200 个 NPC 共享标签，只有需要差异化的 NPC（例如铁匠能交易）才加细粒度标签。`ToolContext.actor_tags` 由 `ActorDirectory` 在回合开始时解析（第 8 章的角色 Agent 只拿标签，不拿全局角色表）。`ToolContext`（第 6 章 6.2）字段固定为 `actor_id` / `actor_tags` / `turn_id` / `save_seed` / `idempotency_key` / `caller`，工具层只读不改写。
+`actor_scope` 的元素是**授权标签**而不是单个角色 ID：`"player"`、`"npc"`、`"npc:blacksmith"`、`"system"`。这样 200 个 NPC 共享标签，只有需要差异化的 NPC（例如铁匠能交易）才加细粒度标签。`ToolContext.actor_tags` 由 `ActorDirectory` 在回合开始时解析（第 8 章的角色 Agent 只拿标签，不拿全局角色表）。`ToolContext`（第 6 章 6.2）字段固定为 `actor_id` / `actor_tags` / `turn_id` / `save_seed` / `idempotency_key` / `caller`，工具层只读不改写。M4 制造不为 `craft_item` 扩字段：`actor_scope` 与这六个字段均保持不变，制造所需序号由服务层从存档 `last_seq + 1` 注入 `CraftStateSlice.next_seq`（D-M4-4，第 6 章 §6.2/§6.3）。
 
 ```python
 class ToolRegistry:
@@ -176,20 +176,25 @@ class ToolRegistry:
                 if actor_id in spec.actor_scope or not spec.actor_scope.isdisjoint(actor_tags)]
 ```
 
-可见性矩阵（M2 单场景 MVP 的初始值，新增工具必须同步第 22 章进度文档）：
+可见性矩阵（M2 初始值 + M3 细标签 + M4 `craft_item`；新增工具必须同步第 22 章进度文档）：
 
 | 工具 | side_effect | resolution_policy | player | npc | npc:blacksmith | system |
 | --- | --- | --- | --- | --- | --- | --- |
-| `get_room_view` | READ_ONLY | deterministic | ✅ | ✅ | ✅ | ✅ |
-| `get_inventory` | READ_ONLY | deterministic | ✅ | ✅ | ✅ | ✅ |
-| `move_to` | DESTRUCTIVE | deterministic | ✅ | ✅ | ✅ | ✅ |
-| `take_item` | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
-| `attack_target` | DESTRUCTIVE | deterministic | ✅ | ✅ | ❌ | ✅ |
-| `transfer_item` | DESTRUCTIVE | agent_assisted | ❌ | ❌ | ✅ | ✅ |
-| `craft_item` | DESTRUCTIVE | deterministic | ✅ | ❌ | ✅ | ✅ |
-| `talk_to` | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
+| `get_room_view`（M2） | READ_ONLY | deterministic | ✅ | ✅ | ✅ | ✅ |
+| `get_inventory`（M2） | READ_ONLY | deterministic | ✅ | ✅ | ✅ | ✅ |
+| `move_to`（M2） | DESTRUCTIVE | deterministic | ✅ | ✅ | ✅ | ✅ |
+| `take_item`（M2） | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
+| `attack_target`（后续，未实现） | DESTRUCTIVE | deterministic | ✅ | ✅ | ❌ | ✅ |
+| `transfer_item`（后续，未实现） | DESTRUCTIVE | agent_assisted | ❌ | ❌ | ✅ | ✅ |
+| `craft_item`（M4） | DESTRUCTIVE | deterministic | ✅ | ❌ | ✅ | ✅ |
+| `use_item`（M2） | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
+| `talk_to`（M2） | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
 
-**M3 多角色扩展（2026-11-09 活文档回写，≤10 行）**：`take_item` 新增细粒度授权标签 `npc:scavenger`（仅「拾荒者」非玩家角色可见；默认 `npc`/`npc:blacksmith` 仍 ❌，安全用例逐格断言未放宽）；`use_item` 为 M2 新增动作（矩阵行已在 M2 补齐：player/system ✅，npc 系列 ❌）；`move_to` 对 `npc` 标签的 ✅ 在 M3 校正落地。完整偏离登记见 `docs/PROGRESS.md` §5 D-M3-5。
+**里程碑标注（A-09 回写）**：上表 9 个工具中，M2 已实现 6 个（`get_room_view`/`get_inventory`/`move_to`/`take_item`/`use_item`/`talk_to`，见 `tools/builtin/m2.py`）；`craft_item` 由 M4 落地（`tools/builtin/crafting.py`，新增 `build_game_tool_registry()`，不改 `build_m2_tool_registry`）；`attack_target`/`transfer_item` 为后续里程碑计划、当前未注册。`use_item` 为 M2 新增动作，矩阵行本次回写补齐（player/system ✅、npc 系列 ❌），不放宽既有授权。
+
+**`craft_item` 的 M4 执行链**：`ToolGate.dispatch` → `CraftService.craft`（第 6 章 §6.3，服务层只产草稿事件）→ 单角色场景 `scenario="m4"`（无 NPC Agent）由编排层直接交 `GameEngine.submit`；M4 不接 `ProposalQueue`/`Resolver`（`CraftProposal` 仅 M5 契约保留，D-M4-3），`rng_seed` 由服务层用 `CraftStateSlice.next_seq` 派生（D-M4-4），事件语义按 D-M4-5（成功 `CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`，`CRAFT_REJECTED` M4 不产生）。
+
+**M3 多角色扩展（2026-11-09 活文档回写，≤10 行）**：`take_item` 新增细粒度授权标签 `npc:scavenger`（仅「拾荒者」非玩家角色可见；默认 `npc`/`npc:blacksmith` 仍 ❌，安全用例逐格断言未放宽）；`use_item` 为 M2 新增动作（矩阵行见上表，本次回写补齐：player/system ✅，npc 系列 ❌）；`move_to` 对 `npc` 标签的 ✅ 在 M3 校正落地。完整偏离登记见 `docs/PROGRESS.md` §5 D-M3-5。
 
 边界澄清（v0.2）：**人物卡生成不走工具层、不经 Agent 工具白名单**——它由第 6 章 6.7 的 `CharacterCardService.generate_card()` 直接构造 `LLMRequest(task="character_card_generate", output_schema=CharacterCard, agent_id="character_card", model_tier=ModelTier.STRONG, max_repair=1)` 并调 `LLMClient.complete_json(req)` 完成结构化生成（模型分级/重试/限流以第 12 章为准），输出经 `CharacterCard` JSON Schema 校验（第 5 章 5.7）与内容安全后才作为草稿返回；人物卡在开局前不进入 `GameState`，因此不存在“写工具 → 提案 → 裁决”链路，也不参与 `actor_scope` 过滤。`@tool`、`side_effect`、`resolution_policy` 只约束游戏世界内的工具调用。
 
@@ -202,6 +207,8 @@ class ToolRegistry:
 | DESTRUCTIVE | agent_assisted | 同上，但 `Resolver` 允许 `JudgeAgent` 覆盖（必须带 `reason` 且 `confidence>=0.7`，否则保守裁决） | 同上 + 裁判失败 → 确定性兜底（Deterministic Fallback） |
 | DESTRUCTIVE | manual | 进入人工/作者审核队列（MVP 不启用）；`Resolver` 返回 `deferred` | `NOT_ALLOWED`（未授权）/ `deferred` |
 | NETWORK | 任意 | 注册期直接拒绝（`ToolSpec` 不变量），核心工具层没有网络工具 | 注册失败 |
+
+**链路差异（M4 回写）**：上表的「DESTRUCTIVE → Proposal → Resolver」是启用 Resolver 的 M3 多角色链路；`scenario="m2"`/`"m4"` 单角色场景未注入 Resolver，DESTRUCTIVE 工具由 `ToolGate` 直接路由服务层后交 `GameEngine`（第 6 章 §6.1、§6.3），`craft_item` 的 M4 执行链见 §7.3。
 
 `agent_assisted` 的复核与兜底接口由 `RuleEngine`（`domain/rules/engine.py`）定稿两个方法名，第 11 章 §11.2 与第 21 章 §21.2.2 直接引用，本节只引用、不新增模型：
 

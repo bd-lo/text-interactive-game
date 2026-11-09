@@ -62,29 +62,34 @@ class GameEngine:
     def submit(self, expected_version: int, events: list[Event],
                idempotency_key: str) -> Result: ...
     def create_game(self, ctx: ToolContext, *, card_id: CardId,
-                    seed: int | None = None, idempotency_key: str) -> Result: ...
+                    seed: int | None = None, idempotency_key: str,
+                    scenario: Literal["m2", "m3", "m4"] = "m2") -> Result: ...
 
 class EventService:
     def replay_range(self, ctx: ToolContext, *, game_id: GameId,
                      from_seq: int = 0, limit: int = 200) -> Result: ...
 ```
 
-`GameEngine.submit` 签名与第 21 章 §21.2.1 一致：`submit(expected_version: int, events: list[Event], idempotency_key: str) -> Result`；`expected_version` 为持久化层状态行的 `version_id`，不写入 `GameState` 基线字段。`GameEngine.create_game` 用已保存的 `card_id` 创建存档，返回 `Result.data={game_id, turn, version, snapshot_version}`（`version` 为下一次提交的 `expected_version`），并在同一事务内提交 `game_created` 系统事件（事件类型见第 14 章 §14.7：`game_created`）；写操作必带 `Idempotency-Key`。`EventService.replay_range(ctx, *, game_id, from_seq=0, limit=200)` 为只读分页回放，签名与第 6 章 §6.7 一致，按全局 `seq` 升序返回。`Resolver.resolve` 必须是纯函数：不调模型、不写库、不读时钟；同一输入必得同一 `Resolution` 列表，否则回放会漂移。
+`GameEngine.submit` 签名与第 21 章 §21.2.1 一致：`submit(expected_version: int, events: list[Event], idempotency_key: str) -> Result`；`expected_version` 为持久化层状态行的版本列 `version`（文档概念亦称 `row_version`，接口字段 `expected_version`；第 14 章 §14.3/§14.5），不写入 `GameState` 基线字段。`GameEngine.create_game` 用已保存的 `card_id` 创建存档，返回 `Result.data={game_id, turn, version, snapshot_version, scenario, save_seed}`（`version` 为下一次提交的 `expected_version`），并在同一事务内提交 `game_created` 系统事件（事件类型见第 14 章 §14.7：`game_created`）；写操作必带 `Idempotency-Key`。`EventService.replay_range(ctx, *, game_id, from_seq=0, limit=200)` 为只读分页回放，签名与第 6 章 §6.7 一致，按全局 `seq` 升序返回。`scenario` 是 M3/M4 追加的可选场景装配参数（`m2` 缺省单场景、`m3` 多角色、`m4` 制造场景，见 D-M4-11），缺省 `m2` 且 M2/M3 初始状态字节不变，既有 golden 不回归。`Resolver.resolve` 必须是纯函数：不调模型、不写库、不读时钟；同一输入必得同一 `Resolution` 列表，否则回放会漂移。
 
 `Resolver.resolve` 的 `judgements` 由编排层在第 9 章步骤 6 调用 `JudgeAgent` 并完成 Schema 校验后传入（与 `proposals` 顺序对齐，可为空）；`needs_judge` 分支只对 `confidence >= 0.7` 且 `reason` 非空的证据调用 `RuleEngine.verify_agent_override(ctx, proposal, judge)` 复核，证据缺失或低置信时调用 `RuleEngine.deterministic_fallback(ctx, proposal, snapshot)` 做确定性兜底（保守、不产生有利效果）。这两个 `RuleEngine` 方法均为纯计算、零事件，返回 `Outcome`；`Resolver` 本身仍不调模型、不写库、不读时钟。
 
+**自由制造的 M4 边界（D-M4-3）**：自由制造在 M4 单角色场景（`scenario="m4"`，无 NPC Agent）里由 `CraftService` 完成 Schema 校验与数值重算、产出草稿事件后，直接交 `GameEngine.submit`，**不经 `ProposalQueue`/`Resolver`**；`CraftProposal` 仅作为 M5 契约保留。M5 接真实 LLM 前必须把草案生成迁到 pre-queue（入队前完成），否则「同一输入必得同一 `Resolution`」的纯函数约束被破坏。
+
 ### 11.3 CAS 乐观锁与冲突重试
 
-持久化用 SQLAlchemy 的版本计数器（version counter）实现 CAS，行为已在 SQLAlchemy 2.0 文档《Configuring a Version Counter》确认：UPDATE 会附带 `WHERE id=? AND version_id=?`，匹配 0 行时抛 `StaleDataError`；版本列建议 `NOT NULL`。
+持久化用 SQLAlchemy 的版本计数器（version counter）实现 CAS，行为已在 SQLAlchemy 2.0 文档《Configuring a Version Counter》确认：UPDATE 会附带 `WHERE game_id=? AND version=?`（实现列名 `version`；文档概念称 `row_version`），匹配 0 行时抛 `StaleDataError`；版本列建议 `NOT NULL`。
 
 ```python
-class GameStateRow(Base):
-    __tablename__ = "game_states"
-    id = mapped_column(Integer, primary_key=True)
-    version_id = mapped_column(Integer, nullable=False)
-    payload = mapped_column(JSON)
-    __mapper_args__ = {"version_id_col": version_id}
+class GameStateCurrentRow(Base):
+    __tablename__ = "game_state_current"
+    game_id = mapped_column(String(64), primary_key=True)
+    version = mapped_column(Integer, nullable=False)   # 实现列名 version（文档概念 row_version）
+    state_json = mapped_column(JSON)
+    __mapper_args__ = {"version_id_col": version}
 ```
+
+表名与版本列与第 14 章 §14.3 一致（`game_state_current.version`，实现列名；文档概念称 `row_version`，接口字段 `expected_version`）；实现口径同第 14 章 §14.5 的显式 CAS：`UPDATE game_state_current SET ..., version = version + 1 WHERE game_id=? AND version=?`，影响行数为 0 即冲突（与上面 `version_id_col` 自动追加的 `WHERE` 条件等价）。
 
 提交循环（注意：**重试只重裁决，不重调模型**）：
 
