@@ -1,8 +1,10 @@
-"""``LiteLLMClient``：M5-019 的 LLM 客户端治理实现（第 12 章 12.2/12.3/12.7/12.9）。
+"""``LiteLLMClient``：M5-019 治理 + M5-020 模型分级/进程内缓存（第 12 章 12.2/12.3/12.7/12.9）。
 
 九项职责中本切片落地：整链 deadline、tenacity 单一重试（≤3 次，仅超时/429/5xx）、
 进程内 RPM 令牌桶、幂等键复用与在飞判定、结构化日志（不落原文/密钥）、token 计量、
-``LLMCallRecord``；模型分级/缓存（020）、成本预算（022）、批量/休眠（023）、
+``LLMCallRecord``；**020 增补**：按 ``LLMRequest.model_tier`` 选择 JSON 配置的
+``provider/model/api_base``、进程内 ``TTLCache`` 响应缓存（默认 allowlist 为空 = 不生效，
+命中不调 transport 且 ``cache_hit=true``，失败不缓存）；成本预算（022）、批量/休眠（023）、
 供应商回退（024）按切片推进。
 
 边界（D-M5-2，2026-11-10 定案）：Schema 校验与一次修复仍由 ``validation.py`` 承担，
@@ -25,8 +27,9 @@ from typing import Any, Protocol, cast
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 from textgame.domain.results import ErrorCode, Result
-from textgame.llm.client import LLMRequest, compose_idempotency_key
-from textgame.llm.config import LLMClientConfig
+from textgame.llm.cache import ResponseCache, cache_key
+from textgame.llm.client import LLMRequest, ModelTier, compose_idempotency_key
+from textgame.llm.config import LLMClientConfig, LLMConfig
 from textgame.llm.errors import ProviderCallError
 from textgame.llm.providers import ChatCompletionResult, chat_completion
 from textgame.llm.ratelimit import TokenBucket
@@ -108,19 +111,47 @@ class LiteLLMClient:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         logger: logging.Logger | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> None:
-        """``config`` 提供供应商/模型/重试/超时/RPM；其余依赖缺省用生产实现。"""
+        """``config`` 提供超时/重试/RPM/密钥；``llm_config`` 提供分级与缓存（020）。
+
+        ``llm_config=None`` 时完全保持 019 行为（所有分级使用 ``config`` 的单模型）；
+        传入时按 ``LLMRequest.model_tier`` 选择 JSON 配置的 provider/model/api_base，
+        并按 ``LLMConfig.cache`` 启用进程内响应缓存（allowlist 为空则不缓存）。
+        """
         self._config = config
+        self._llm_config = llm_config
         self._transport: LLMTransport = transport or default_transport
         self._calls: LLMCallLog = calls or InMemoryLLMCallLog()
         self._clock = clock
         self._sleep = sleep
         self._logger = logger or _LOGGER
+        self._cache = (
+            ResponseCache(llm_config.cache, clock=clock) if llm_config is not None else None
+        )
         self._bucket = TokenBucket(
             config.rpm_limit,
             refill_per_s=config.rpm_limit / 60.0,
             clock=clock,
         )
+
+    def _resolve_backend(self, tier: ModelTier) -> tuple[str, str, str]:
+        """返回该模型分级的 ``(provider, model, api_base)``。
+
+        未注入 ``LLMConfig``（019 兼容路径）时统一回退到 ``LLMClientConfig`` 的单模型；
+        注入时按 JSON 分级选择，配置错误已在 ``LLMConfig`` 构造期 fail-fast。
+        """
+        if self._llm_config is not None:
+            return self._llm_config.backend_for(tier)
+        return self._config.provider, self._config.model, self._config.api_base
+
+    def _lookup_cache(self, req: LLMRequest) -> LLMCallEntry | None:
+        """命中条件：缓存句柄存在 + ``cache_ttl_s>0`` + task 在 allowlist；否则 ``None``。"""
+        if self._cache is None or not self._cache.is_cacheable(
+            task=req.task, cache_ttl_s=req.cache_ttl_s
+        ):
+            return None
+        return self._cache.get(cache_key(req))
 
     # ------------------------------------------------------------------
     # 公共入口（第 12 章 12.2 权威签名：同步；D-M5-1）
@@ -147,8 +178,12 @@ class LiteLLMClient:
     # 内部：幂等 → 限流/重试/deadline → 记录/日志
     # ------------------------------------------------------------------
     def _execute(self, req: LLMRequest) -> Result:
-        """完整调用链：幂等复用/在飞判定 → 重试执行 → 记录与日志。"""
+        """完整调用链：缓存命中/幂等复用/在飞判定 → 重试执行 → 记录与日志。"""
         key = compose_idempotency_key(req)
+        provider, model, api_base = self._resolve_backend(req.model_tier)
+        cached = self._lookup_cache(req)
+        if cached is not None:
+            return self._finish_cache_hit(req, cached, provider=provider, model=model)
         reuse = self._calls.find_success(key)
         if reuse is not None:
             self._log(
@@ -196,10 +231,10 @@ class LiteLLMClient:
                 attempt_timeout = min(self._config.timeout_s, remaining)
                 try:
                     return self._transport(
-                        provider=self._config.provider,
-                        model=self._config.model,
+                        provider=provider,
+                        model=model,
                         api_key=self._config.api_key.get_secret_value(),
-                        api_base=self._config.api_base,
+                        api_base=api_base,
                         messages=[message.model_dump() for message in req.messages],
                         timeout_s=attempt_timeout,
                     )
@@ -261,6 +296,44 @@ class LiteLLMClient:
             req, key, started, attempts, cast(ChatCompletionResult, raw_outcome)
         )
 
+    def _finish_cache_hit(
+        self,
+        req: LLMRequest,
+        entry: LLMCallEntry,
+        *,
+        provider: str,
+        model: str,
+    ) -> Result:
+        """缓存命中路径：不调 transport，按本次请求重建 ``cache_hit=true`` 的记录并记日志。"""
+        prompt_tokens = int(entry.usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(entry.usage.get("completion_tokens", 0) or 0)
+        record = self._record(
+            req,
+            attempts=1,
+            started=self._clock(),
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            error_code=None,
+            cache_hit=True,
+        )
+        self._log(
+            req,
+            record=record,
+            attempts=1,
+            latency_ms=0,
+            cache_hit=True,
+            error_code=None,
+        )
+        return Result.success(
+            data={
+                "content": entry.content,
+                "repaired": False,
+                "usage": dict(entry.usage),
+                "call": record,
+            }
+        )
+
     def _finish_success(
         self,
         req: LLMRequest,
@@ -276,7 +349,7 @@ class LiteLLMClient:
             req,
             attempts=attempts,
             started=started,
-            model=str(outcome.get("model", "") or self._config.model),
+            model=str(outcome.get("model", "") or ""),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             error_code=None,
@@ -291,6 +364,10 @@ class LiteLLMClient:
             self._calls.save_success(entry)
         except Exception:
             self._logger.warning("llm_call_save_failed request_id=%s", record.request_id)
+        if self._cache is not None and self._cache.is_cacheable(
+            task=req.task, cache_ttl_s=req.cache_ttl_s
+        ):
+            self._cache.put(cache_key(req), entry, ttl_s=req.cache_ttl_s)
         self._log(
             req,
             record=record,
@@ -322,7 +399,7 @@ class LiteLLMClient:
             req,
             attempts=max(attempts, 1),
             started=started,
-            model=self._config.model,
+            model="",
             prompt_tokens=0,
             completion_tokens=0,
             error_code=code,
@@ -351,20 +428,27 @@ class LiteLLMClient:
         prompt_tokens: int,
         completion_tokens: int,
         error_code: ErrorCode | None,
+        cache_hit: bool = False,
     ) -> LLMCallRecord:
-        """组装一次调用的 ``LLMCallRecord``（``cost_usd`` 019 恒 0，022 填真实成本）。"""
+        """组装一次调用的 ``LLMCallRecord``（``cost_usd`` 019/020 恒 0，022 填真实成本）。
+
+        ``provider/model`` 按请求的 ``model_tier`` 取自 JSON 分层配置；``model`` 参数为
+        供应商响应回报的模型名（空串时回退到配置值，保持记录与配置可比）。
+        """
         key = compose_idempotency_key(req)
+        provider, default_model, _ = self._resolve_backend(req.model_tier)
+        resolved_model = model or default_model
         elapsed_ms = max(0, int((self._clock() - started) * 1000))
         return LLMCallRecord(
             request_id=f"{key[4:24]}:{attempts}"[:128],
             task=req.task,
             agent_id=req.agent_id,
             model_tier=req.model_tier,
-            provider=self._config.provider,
-            model=model,
+            provider=provider,
+            model=resolved_model,
             prompt_version=req.prompt_version,
             attempt=max(attempts, 1),
-            cache_hit=False,
+            cache_hit=cache_hit,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=0.0,

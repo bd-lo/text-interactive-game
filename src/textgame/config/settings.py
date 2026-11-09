@@ -5,8 +5,9 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,8 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # 允许按字段名构造（``Settings(llm_config_path=...)``），与默认 env 前缀行为并存
+        populate_by_name=True,
     )
 
     db_url: str = "sqlite:///data/textgame.db"
@@ -35,6 +38,13 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-flash"
     llm_base_url: str = "https://api.deepseek.com"
     llm_api_key: SecretStr | None = None
+    # M5-020（D-M5-4）：包内默认 llm/config/llm.default.json 的路径覆盖；
+    # env 名为 TEXTGAME_LLM_CONFIG（不是 TEXTGAME_LLM_CONFIG_PATH）。
+    llm_config_path: Path | None = Field(
+        default=None,
+        validation_alias="TEXTGAME_LLM_CONFIG",
+        description="020：模型分级/缓存 JSON 配置路径覆盖（缺省用包内默认）",
+    )
 
 
 @lru_cache
