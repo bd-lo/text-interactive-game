@@ -163,7 +163,7 @@ Python 兼容性备注（前 9 行）：上表 Python 侧各版本均可运行�
 
 ### 本章结论
 1. 分层与依赖方向定稿：`web（Vue 3 SPA，经 HTTP /api/v1）→ api → orchestration → agents/tools → services → domain`，`domain` 零外部依赖；状态权威只有 GameEngine + EventLog，任何框架或前端都不得成为第二写入者（Web 客户端层在 M6 025–028 交付，见第 23 章）。
-2. 各层轮子结论：接入 FastAPI、模型 Pydantic v2、持久化 SQLAlchemy、编排 LangGraph、LLM 治理 LiteLLM + tenacity + instructor（instructor 仅用于 `llm/` 内部的结构化修复重试）、Web 客户端 Vue 3 + Vite + Ajv（npm 安装型依赖，归入 `pip 依赖` 类，Node 仅构建期）；工具层与回合引擎均按「参考设计」自建（ToolRegistry 仅参考设计、不列为依赖，见第 7 章；回合引擎不直接依赖，见第 11 章）。
+2. 各层轮子结论：接入 FastAPI、模型 Pydantic v2、持久化 SQLAlchemy、编排**自建显式 loop**（LangGraph 保留可选封装，第 8 章 §8.4 于 2026-11-09 定案）、LLM 治理 LiteLLM + tenacity + instructor（instructor 仅用于 `llm/` 内部的结构化修复重试）、Web 客户端 Vue 3 + Vite + Ajv（npm 安装型依赖，归入 `pip 依赖` 类，Node 仅构建期）；工具层与回合引擎均按「参考设计」自建（ToolRegistry 仅参考设计、不列为依赖，见第 7 章；回合引擎不直接依赖，见第 11 章）。
 3. Python 3.10 下限与 SQLAlchemy 2.1（≥3.11）冲突，依赖清单必须锁 `SQLAlchemy<2.1`，并锁定其余版本（可执行建议，见第 19 章）。
 4. 许可证红线落到具体项目：`tldw_server`（GPL-3.0-only）、`open-tabletop-gm`（AGPL-3.0）、`MnesOS`（无 LICENSE 文件）只能参考设计，不得依赖或拷贝。
 5. 新增依赖须过「依赖方向检查 + 许可证检查 + Python 3.10 兼容检查」三道门，任一不过不进清单。

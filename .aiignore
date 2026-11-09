@@ -1,0 +1,35 @@
+# AI 上下文白名单边界（开发文档第 20 章 Q10 定案 B，2026-11-09）
+# 约定：以下路径/文件**禁止**进入 AI 编码上下文（Prompt、代码会话、审查材料）；
+# 需要示例时用 .env.example、脱敏后的固定种子数据。secret-scan pre-commit hook 继续兜底。
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials*
+secrets*
+
+# 本地临时工作区与构建产物（含审查/审计报告、golden 候选、备份）
+.work/
+artifacts/
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.bak-*
+*.log
+
+# 虚拟环境与工具缓存
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+node_modules/
+web/dist/
+
+# 版本控制内部数据与 IDE 私有配置
+.git/
+.idea/
+.vscode/

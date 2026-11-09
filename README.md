@@ -56,7 +56,7 @@ uv run pre-commit install --install-hooks                  # 一次性：安装�
 
 ## M2 单场景 MVP 快速试玩（已交付）
 
-服务默认使用 SQLite 存档（`TEXTGAME_DB_URL`，默认 `sqlite:///data/textgame.db`，`data/` 已 gitignore；M2 每库单存档）。启动后：
+服务默认使用 SQLite 存档（`TEXTGAME_DB_URL`，默认 `sqlite:///data/textgame.db`，`data/` 已 gitignore；M4 前已解除「每库单存档」限制：同一 SQLite 库支持多个存档，各自独立的 turn/version/事件序，仅相同 `game_id` 重复创建返回 409）。启动后：
 
 ```bash
 # 1) 创建存档（写操作必带 Idempotency-Key；可选 seed 用于固定种子）
@@ -100,6 +100,18 @@ curl --noproxy '*' "http://127.0.0.1:8000/api/v1/games/game_.../audit?turn_id=2"
 - 10 回合多角色固定种子 golden 回放见 `tests/replay/test_m3_golden_replay.py`（final `state_hash=df58e51d…`、13 条事件、审计 16 行）；越权/冲突/CAS 安全用例见 `tests/security/test_actor_scope.py`、`tests/security/test_resolver_security.py`、`tests/integration/test_resolver_cas.py`。
 - 审计状态词固定 `{committed, conflicted, aborted}`，与裁决 `verdict` 分离；审计表只 INSERT、不 UPDATE/DELETE（第 11 章 §11.4）。
 
+## 数据库迁移与多存档（M4 前已交付）
+
+- **同库多存档**：`events` 主键为 `(game_id, seq)`（`seq` 仍是每存档全局事件序号、`id=evt_{seq:06d}` 仍是每存档编号），`event_uid` 唯一约束为 `(game_id, event_uid)`；同一 SQLite 库可创建多个存档，仅相同 `game_id` 重复创建返回 409。
+- **新库**：测试/开发由 `init_schema`（`create_all`）建表；部署建议以 Alembic 管理 schema（`alembic/versions/0001_m3_baseline.py` → `0002_composite_event_key.py`）。
+- **旧库升级（M2 时代 schema：`snapshots` 无 `version` 列、无 `audit_events`、`events` 单主键）**：先停服务，再执行
+
+```bash
+uv run python -m textgame.persistence.legacy_upgrade --db-url sqlite:///data/textgame.db
+```
+
+  脚本会**先备份** `<db>.bak-<时间戳>`，补 `snapshots.version` 列、建 `audit_events` 表、`stamp 0001` 后 `upgrade head`（Alembic 0002 重建 `events` 复合主键），并校验 head 结构；重复执行为 `noop`。失败会自动恢复备份并报明确错误。注意：`downgrade 0002→0001` 仅对单存档库安全（多存档会因旧全局唯一约束报错而非静默丢数据）。
+
 ## LLM API 配置（DeepSeek）
 
 意图解析/叙事包装以后要经 LLM（第 8、12 章）。当前已接入 DeepSeek API：模型 `deepseek-flash`（DeepSeek-V4.1-Flash、1M 上下文）、兼容端点 `https://api.deepseek.com`。本阶段只做「凭据 + 连通性」配置；完整 LLMClient（超时/重试/校验修复/成本归集/供应商回退）在 M5 切片 019 实现。
@@ -128,7 +140,9 @@ uv run python scripts/check_licenses.py artifacts/licenses.json   # GPL/AGPL/LGP
 uv run pip-audit -r artifacts/requirements.lock.txt               # 已知漏洞
 ```
 
-CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint-imports → pytest，矩阵用 `uv sync --frozen --python <ver>` 验证解释器）与 `deps`（`uv export` → pip-licenses → 许可证门禁 → pip-audit → CycloneDX SBOM → artifact）。护栏：GPL/AGPL 出现即阻断；项目自身 license 未定前 `check_licenses.py` 默认忽略 `textgame`（第 19 章 R2）。
+CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint-imports → pytest，矩阵用 `uv sync --frozen --python <ver>` 验证解释器）与 `deps`（`uv export` → pip-licenses → 许可证门禁 → pip-audit → CycloneDX SBOM → artifact）。护栏：GPL/AGPL 出现即阻断；项目自身已声明 MIT（R2 关闭，门禁不再默认豁免 `textgame`）。
+
+**AI 上下文与网络护栏（Q9/Q10 定案，2026-11-09）**：仓库根 [.aiignore](.aiignore) 声明禁止进入 AI 上下文的路径（`.env*`、`.work/`、`artifacts/`、`data/`、`*.db`、`.venv/` 等），secret-scan pre-commit hook 继续兜底；测试套件默认禁网（`tests/conftest.py` 的 socket guard 只放行本机回环，真实 LLM 必须 FakeLLM/cassette）；CI job 设置 `timeout-minutes` 且 quality job 不注入任何密钥。
 
 ## 目录结构（M3 完成态）
 
@@ -169,4 +183,4 @@ CI 两个 job：`quality`（Python **3.10/3.12** 矩阵：ruff → mypy → lint
 
 ## 许可证
 
-待定（后续根据依赖清单与许可证风险评估确定；当前 `check_licenses.py` 在 CI 中把 `textgame` 自身排除在门禁外，发布前需补 `license` 字段）。
+本项目采用 **MIT License**（见 [LICENSE](LICENSE)）：`pyproject.toml` 以 SPDX 表达式 `license = "MIT"` 声明，构建元数据同时携带 LICENSE 文件。CI 许可证门禁（[scripts/check_licenses.py](scripts/check_licenses.py)）默认**不再豁免项目自身**（R2 于 2026-11-09 关闭），依赖侧仍要求 GPL/AGPL/LGPL/未知许可证 0 阻断（第 19 章 §19.5）。

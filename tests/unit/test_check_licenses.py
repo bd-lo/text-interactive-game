@@ -97,10 +97,10 @@ def test_clean_manifest_passes(tmp_path: Path) -> None:
     assert "[BLOCKED]" not in result.stdout
 
 
-def test_project_package_unknown_license_ignored_by_default(tmp_path: Path) -> None:
-    """项目自身 textgame 的 license 待定（UNKNOWN），默认被 --ignore-packages 放行。"""
+def test_project_package_mit_license_passes(tmp_path: Path) -> None:
+    """项目自身已声明 MIT（R2 关闭）：门禁默认不再豁免 textgame，且应放行。"""
     records = [
-        {"Name": "textgame", "Version": "0.1.0", "License": "UNKNOWN"},
+        {"Name": "textgame", "Version": "0.1.0", "License": "MIT"},
         {"Name": "fastapi", "Version": "0.162.2", "License": "MIT"},
     ]
 
@@ -108,6 +108,19 @@ def test_project_package_unknown_license_ignored_by_default(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "[OK]" in result.stdout
+
+
+def test_project_package_unknown_license_blocks_by_default(tmp_path: Path) -> None:
+    """默认无豁免：项目自身许可证元数据缺失/UNKNOWN 也必须阻断。"""
+    records = [
+        {"Name": "textgame", "Version": "0.1.0", "License": "UNKNOWN"},
+        {"Name": "fastapi", "Version": "0.162.2", "License": "MIT"},
+    ]
+
+    result = _run_gate(str(_write_licenses(tmp_path, records)))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "textgame" in result.stdout
 
 
 def test_stdin_input_passes() -> None:

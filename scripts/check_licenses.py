@@ -51,8 +51,9 @@ _PERMISSIVE_PATTERN = re.compile(r"\b(?:MIT|APACHE|BSD|ISC|PSF|MPL|ZLIB|UNLICENS
 _PERMISSIVE_PHRASES = ("PYTHON SOFTWARE FOUNDATION", "PUBLIC DOMAIN")
 # 缺少许可证信息（pip-licenses 对元数据缺失的包输出这些值）。
 _EMPTY_LICENSE_MARKERS = frozenset({"", "UNKNOWN", "NOASSERTION", "NONE"})
-# 项目自身 license 待定（第 19 章 §19.5 / 001 R2），默认不参与门禁。
-_IGNORE_PACKAGES_DEFAULT = "textgame"
+# 项目自身已声明 MIT（pyproject `license = "MIT"` + LICENSE 文件；R2 于 2026-11-09 关闭），
+# 因此默认**不再**豁免任何包：门禁会同样校验 `textgame` 自身的许可证元数据。
+_IGNORE_PACKAGES_DEFAULT = ""
 _PREVIEW_LENGTH = 80
 _EXIT_OK = 0
 _EXIT_BLOCKED = 1
@@ -143,8 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         default=_IGNORE_PACKAGES_DEFAULT,
         metavar="NAMES",
         help=(
-            "逗号/空格分隔的包名，不参与门禁（默认 textgame：项目自身 license 待定，"
-            "见第 19 章 §19.5）"
+            "逗号/空格分隔的包名，不参与门禁（默认空：项目自身已声明 MIT，见第 19 章 §19.5；"
+            "仅用于人工登记过的例外）"
         ),
     )
     args = parser.parse_args(argv)

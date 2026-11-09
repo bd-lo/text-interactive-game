@@ -59,6 +59,30 @@ def _clear_settings_cache() -> Iterator[None]:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Q9 定案：测试套件默认禁网（只放行本机回环，防真实 LLM/外网调用）。
+
+    通过拦截 ``socket.socket.connect`` 实现：任何非 127.0.0.1/::1/localhost 的连接抛
+    ``RuntimeError``。真实 LLM 路径必须用 ``FakeLLM``/cassette（第 12、18 章）。
+    """
+    import socket as socket_module
+
+    real_connect = socket_module.socket.connect
+    loopback = {"127.0.0.1", "::1", "localhost"}
+
+    def guarded_connect(self: socket_module.socket, address: object) -> None:
+        host = address[0] if isinstance(address, tuple) and address else None
+        if host in loopback:
+            return real_connect(self, address)  # type: ignore[arg-type]
+        raise RuntimeError(
+            f"network access is blocked in the test suite (Q9): {address!r}; "
+            "use FakeLLM/cassette instead"
+        )
+
+    monkeypatch.setattr(socket_module.socket, "connect", guarded_connect)
+
+
 @pytest.fixture
 def game_harness() -> Iterator[GameHarness]:
     """按 ``main.py`` 组合根口径装配一套内存游戏应用（M2 单角色路径）。"""

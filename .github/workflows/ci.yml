@@ -20,6 +20,10 @@ jobs:
   quality:
     name: quality (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # Q9 定案（2026-11-09）：GitHub 托管 runner 为临时容器边界 + 单 job 超时兜底；
+    # 测试套件由 tests/conftest.py 的 socket guard 默认禁网（真实 LLM 一律 FakeLLM/cassette，
+    # 本 job 不注入任何密钥）。
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +54,7 @@ jobs:
   deps:
     name: deps (Python 3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
