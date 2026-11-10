@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
 import CommandInput from '@/components/CommandInput.vue'
 import ErrorBanner from '@/components/ErrorBanner.vue'
@@ -72,6 +72,12 @@ watch(gameId, () => {
       <button class="btn btn-small" type="button" :disabled="busy" @click="onRefresh">
         刷新版本链
       </button>
+      <RouterLink
+        class="btn btn-small btn-secondary"
+        :to="{ name: 'replay', params: { id: gameId } }"
+      >
+        回放（只读）
+      </RouterLink>
       <span class="muted">
         手动刷新 = GET /games/{id} + GET /view；页面无自动轮询、无自动重试（D-M6-6④）。
       </span>

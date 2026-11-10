@@ -1,10 +1,10 @@
 /**
- * 前端契约类型快照（M6-025）。
+ * 前端契约类型快照（M6-025 骨架 + M6-027 完整回放）。
  *
  * 唯一来源是 live OpenAPI：`create_app().openapi()`（D-M6-2 / 第 23 章 §23.3）。
  * 字段集合由 `tests/integration/test_frontend_contract.py` 静态比对；后端契约变更未同步
- * 到本文件时契约测试会失败。M6-025 只使用现有 4 个端点，replay/character-cards 等
- * M6 后端前置交付后再做加法扩展。
+ * 到本文件时契约测试会失败。当前使用 5 个现有端点（含 M6 后端前置 replay），
+ * character-cards 等交付后再做加法扩展。
  */
 
 /** 前端实际调用的端点（必须是 live OpenAPI 的子集，契约测试逐项断言）。 */
@@ -12,6 +12,7 @@ export const API_PATHS = {
   createGame: '/api/v1/games',
   getGame: '/api/v1/games/{game_id}',
   getPlayerView: '/api/v1/games/{game_id}/view',
+  getReplay: '/api/v1/games/{game_id}/replay',
   submitTurn: '/api/v1/turns',
 } as const
 
@@ -101,6 +102,29 @@ export interface EventRecord {
   result: Record<string, unknown>
   rng_seed?: number | null
   ts?: string | null
+}
+
+/** `GET /api/v1/games/{game_id}/replay` 事件项（`ReplayEventResponse`，D-M6-3）。
+ *  `result.narrative` 是文本回放的数据源；`params`/`result` 原样保留但 UI 不直接展示 params。
+ */
+export interface ReplayEvent {
+  id: string
+  seq: number
+  turn_id: number
+  actor_id: string
+  method: string
+  event_type: string | null
+  params: Record<string, unknown>
+  result: Record<string, unknown>
+  rng_seed: number
+  ts: string
+}
+
+/** `GET /api/v1/games/{game_id}/replay` 200 响应（`ReplayResponse`，按全局 `seq` 升序；只读零写入）。 */
+export interface ReplayResponse {
+  events: ReplayEvent[]
+  from_seq: number
+  to_seq: number
 }
 
 /** `POST /api/v1/turns` 200 响应（`TurnResult`；业务失败也是 200 + `ok=false`）。 */

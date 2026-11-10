@@ -1,5 +1,5 @@
 /**
- * API client（M6-025）：只调现有 4 个端点，无自动重试、无 SSE。
+ * API client（M6-025 + M6-027）：只调现有 5 个端点（含只读 replay），无自动重试、无 SSE。
  *
  * 错误契约（第 6 章 §6.7、D-M6-6③）：业务失败仍是 HTTP 200 + `TurnResult(ok=false)`；
  * 协议错误走 4xx/5xx 统一失败信封 `{ok:false, error_code, message, violations?}`。
@@ -14,6 +14,7 @@ import type {
   CreatedGameResponse,
   GamePlayerViewResponse,
   GameViewResponse,
+  ReplayResponse,
   TurnRequest,
   TurnResult,
 } from './types'
@@ -160,6 +161,61 @@ export async function getPlayerView(gameId: string, signal?: AbortSignal): Promi
   const record = assertRecord(payload, 'GamePlayerViewResponse')
   assertKeys(record, 'GamePlayerViewResponse', PLAYER_VIEW_KEYS)
   return record as unknown as GamePlayerViewResponse
+}
+
+const REPLAY_KEYS = ['events', 'from_seq', 'to_seq'] as const
+const REPLAY_EVENT_KEYS = [
+  'id',
+  'seq',
+  'turn_id',
+  'actor_id',
+  'method',
+  'event_type',
+  'params',
+  'result',
+  'rng_seed',
+  'ts',
+] as const
+
+/** replay 端点查询参数：`from_seq` ≥1（默认 1）、`limit` 1..500（默认 200）。 */
+export interface ReplayQuery {
+  fromSeq?: number
+  limit?: number
+}
+
+/** `GET /api/v1/games/{game_id}/replay`：只读事件切片（D-M6-3），无幂等键（只读）。 */
+export async function getReplay(
+  gameId: string,
+  query: ReplayQuery = {},
+  signal?: AbortSignal,
+): Promise<ReplayResponse> {
+  const params = new URLSearchParams()
+  if (query.fromSeq !== undefined) {
+    params.set('from_seq', String(query.fromSeq))
+  }
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit))
+  }
+  const queryString = params.toString()
+  const suffix = queryString === '' ? '' : `?${queryString}`
+  const payload = await request<unknown>(
+    `/api/v1/games/${encodeURIComponent(gameId)}/replay${suffix}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'ReplayResponse')
+  assertKeys(record, 'ReplayResponse', REPLAY_KEYS)
+  if (!Array.isArray(record.events)) {
+    throw contractError('ReplayResponse', 'events 不是数组')
+  }
+  for (const item of record.events) {
+    const event = assertRecord(item, 'ReplayEventResponse')
+    assertKeys(event, 'ReplayEventResponse', REPLAY_EVENT_KEYS)
+    if (typeof event.seq !== 'number' || typeof event.turn_id !== 'number') {
+      throw contractError('ReplayEventResponse', 'seq/turn_id 类型不符')
+    }
+  }
+  return record as unknown as ReplayResponse
 }
 
 /** `POST /api/v1/turns`：提交回合（写，必带幂等键）；业务失败返回 `ok=false` 不抛异常。 */
