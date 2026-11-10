@@ -6,6 +6,7 @@ M5-019 追加：``classify_exception`` 的 retryable 判定（第 12 章 12.3：
 """
 
 import ast
+import importlib
 import os
 from pathlib import Path
 from typing import Any
@@ -193,3 +194,32 @@ def test_litellm_import_only_in_providers() -> None:
 def test_providers_module_has_single_sdk_boundary() -> None:
     """providers 模块暴露 chat_completion（默认 transport 边界），不暴露供应商原始对象。"""
     assert callable(providers.chat_completion)
+
+
+# ---------------------------------------------------------------------------
+# CI 回归（run 42701178389 / 42817576884）：litellm import 期远端成本表下载
+# ---------------------------------------------------------------------------
+def test_litellm_cost_map_env_forces_local_backup() -> None:
+    """测试会话必须强制离线成本表（Q9）：防止 ``import litellm`` 触发远端下载。
+
+    修复前 CI 两个用例的失败根因：``import litellm`` 在 import 期访问
+    ``raw.githubusercontent.com/model_prices_and_context_window.json``，被
+    ``tests/conftest.py`` 的 socket 禁网 guard 拦截后 ``RuntimeError`` 逃逸。
+    """
+    assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP", "").lower() == "true"
+
+
+def test_litellm_import_is_offline_under_socket_guard() -> None:
+    """禁网 guard 生效时重新执行 litellm import 仍成功，且 ``model_cost`` 非空。
+
+    用 ``importlib.reload`` 真正重走 LiteLLM 的模块初始化（含 import 期
+    ``get_model_cost_map``）：若 ``LITELLM_LOCAL_MODEL_COST_MAP`` 失效，import 会尝试
+    远端连接并被 Q9 guard 拦截，本用例即红。其它用例可能已 import 过 litellm，因此
+    不能靠普通 ``import`` 覆盖该路径。
+    """
+    import litellm
+
+    reloaded = importlib.reload(litellm)
+
+    assert reloaded.model_cost
+    assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"].lower() == "true"

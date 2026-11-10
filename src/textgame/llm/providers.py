@@ -6,6 +6,12 @@
 
 ``sanitize_no_proxy_env()`` 必须在 LiteLLM 构造 httpx 客户端前执行（本机 NO_PROXY 含
 httpx 0.28 无法解析的方括号 IPv6 条目，会抛 ``InvalidURL``）。
+
+**离线成本表（M5 出口 CI 修复）**：``import litellm`` 时 LiteLLM 默认从
+``raw.githubusercontent.com`` 拉取模型成本表；本项目成本归集使用自建价格表（022），
+不依赖远端成本表。因此模块导入时用 ``LITELLM_LOCAL_MODEL_COST_MAP`` 默认切到包内备份表，
+避免离线/CI 环境在 import 阶段发起连接（Q9 禁网守卫会抛 ``RuntimeError``，而 LiteLLM
+只捕获 httpx 异常，会导致 import 失败）；用户显式设为 ``False`` 时仍尊重用户选择。
 """
 
 from __future__ import annotations
@@ -14,6 +20,9 @@ import os
 from typing import Any, TypedDict
 
 from textgame.llm.errors import ProviderCallError, classify_status_code
+
+# 在导入 LiteLLM 之前设定（SDK 是函数内延迟 import）：默认离线、尊重用户显式配置。
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 __all__ = [
     "ChatCompletionResult",

@@ -6,6 +6,7 @@
 DeterministicCharacterAgent/AuditService 全接线），供 013/014 集成与回放测试使用。
 """
 
+import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
@@ -39,6 +40,15 @@ from textgame.services.recipe_catalog import RecipeCatalog
 from textgame.tools.builtin import build_game_tool_registry
 from textgame.tools.builtin.m2 import build_m2_tool_registry
 from textgame.tools.gate import ToolGate
+
+# ---- 测试必须离线（Q9）--------------------------------------------------------
+# ``import litellm`` 默认会从 raw.githubusercontent.com 拉取模型成本表
+# （litellm/__init__.py 的 get_model_cost_map 调用）；CI 无代理环境下会发起真实连接，
+# 被本文件下方的 socket 禁网 guard 拦截后抛 ``RuntimeError``，而 litellm 只捕获
+# ``httpx.HTTPError/InvalidURL``，导致 import 失败。上面这些 textgame import 不会导入
+# litellm（SDK 只在 ``llm/providers.py`` 函数内延迟 import，且 providers 模块自身也
+# setdefault 同名变量），这里在用例首次 import litellm 之前强制使用包内备份表。
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 
 
 @dataclass
