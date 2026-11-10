@@ -433,6 +433,8 @@ class EventService:
 
 对应 HTTP 成功形状（v0.2 前端）：`POST /api/v1/games` → 201 `{game_id, turn, version, snapshot_version, scenario, save_seed}`（body 可带可选 `scenario`：`m2`/`m3`/`m4`，缺省 `m2`）；`GET /api/v1/games/{game_id}` → 200 `{game_id, turn, version, snapshot_version, status, last_text}`；`GET /api/v1/games/{game_id}/replay?from_seq=&limit=` → 200 `{events, from_seq, to_seq}`（第 6 章 §6.7）。
 
+> **实现现状（2026-11-11 R3 登记，D-R3-5）**：实际 `game_created.params` **不含 `scenario` 字段**（`card_id` 仅在按卡开局时存在，另含 `initial_state` 初始状态快照），与本节伪代码示例的 v0.2 目标形态存在偏差；正确口径以第 6/16 章与 `docs/PROGRESS.md` §5（D-005-3 / D-R3-5）为准。旧格式存档（无 `scenario`/`quests` 等新键）的读取/继续/console 发现兼容由 R3 回归测试钉住。
+
 ### 21.3 JSON 示例
 
 示例中的 `player_01`、`npc_goblin_01`、`item_rusty_sword` 为示意 ID（非 ULID）；真实实现按第 5 章的 ID 规则生成。Event 的 `id`/`seq` 口径以第 5、14 章定稿为准（本示例按全局 `event_seq` 连续计数书写）。
