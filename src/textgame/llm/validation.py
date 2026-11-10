@@ -6,6 +6,12 @@
 ③ 仍失败 → 返回 ``SCHEMA_VIOLATION``，**绝不返回未校验数据** (第 12 章 12.6 红线)。
 
 M2 阶段不联网：客户端由 ``tests/fakes.py::FakeLLM`` 注入。
+
+归属最终结论（M5-021，2026-11-10 复核 D-M5-2 后定稿）：本模块保留为结构化输出
+「JSON 解析 + Schema 校验 + 恰好一次修复」的唯一实现，由 ``IntentParseAgent`` /
+``CraftAgent`` 显式调用；**不迁入 ``LiteLLMClient``、不启用 ``instructor`` 运行路径**
+（迁入需把 FakeLLM 重写为 transport 级替身、回归面大，且 M5 无此需求）。验收实证见
+``tests/integration/test_repair_fallback.py``（一次修复 → 确定性兜底 → 零写入）。
 """
 
 from __future__ import annotations
