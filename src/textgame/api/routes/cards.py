@@ -1,21 +1,23 @@
 """人物卡库路由（第 6 章 §6.7、第 23 章 §23.4/§23.5）：只做 HTTP 映射，业务在 ``CardService``。
 
-M6 后端前置 character-cards 核心的 **7 个**端点（``generate`` 留 M6-028 切片）：
+M6 后端前置 character-cards 的 **8 个**端点（``generate`` 为 M6-028 后端前置，本批交付）：
 
-===================================  ======  ==========================================
-端点                                 成功    说明
-===================================  ======  ==========================================
-GET  /api/v1/character-cards/schema  200     JSON Schema 对象本身（draft 2020-12）
-GET  /api/v1/character-cards         200     ``{cards, total}``（?query=&limit=&offset=）
-GET  /api/v1/character-cards/{id}    200     ``{card}``
-POST /api/v1/character-cards/import  201     multipart 上传 JSON（≤64KB，必带幂等键）
-POST /api/v1/character-cards/validate 200    ``{valid, errors}``（只读无副作用）
-POST /api/v1/character-cards         201     ``{card_id, card}``（保存已校验卡片，必带幂等键）
-DELETE /api/v1/character-cards/{id}  204     软删除（必带幂等键）
-===================================  ======  ==========================================
+=====================================  ======  ==========================================
+端点                                   成功    说明
+=====================================  ======  ==========================================
+GET  /api/v1/character-cards/schema    200     JSON Schema 对象本身（draft 2020-12）
+GET  /api/v1/character-cards           200     ``{cards, total}``（?query=&limit=&offset=）
+GET  /api/v1/character-cards/{id}      200     ``{card}``
+POST /api/v1/character-cards/import    201     multipart 上传 JSON（≤64KB，必带幂等键）
+POST /api/v1/character-cards/validate  200     ``{valid, errors}``（只读无副作用）
+POST /api/v1/character-cards/generate  200     ``{draft, validation, generated_by}``（草稿不保存）
+POST /api/v1/character-cards           201     ``{card_id, card}``（保存已校验卡片，必带幂等键）
+DELETE /api/v1/character-cards/{id}    204     软删除（必带幂等键）
+=====================================  ======  ==========================================
 
 失败统一为 4xx/5xx + ``{ok:false, error_code, message, violations?}``（第 6 章 §6.7）；
-文件过大走 ``INVALID_INPUT`` + HTTP 413 特例；``CardService`` 的异常由本模块翻译为信封。
+文件过大走 ``INVALID_INPUT`` + HTTP 413 特例；生成限流走 ``OUT_OF_RANGE`` + HTTP 429 +
+``Retry-After``；``CardService`` 的异常由本模块翻译为信封。
 """
 
 from __future__ import annotations
@@ -25,9 +27,11 @@ from email.parser import BytesParser
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from textgame.api.deps import require_idempotency_key
-from textgame.api.errors import ApiError
+from textgame.api.errors import ApiError, error_body
 from textgame.api.schemas import (
     CharacterCardDetailResponse,
     CharacterCardImportResponse,
@@ -35,7 +39,10 @@ from textgame.api.schemas import (
     CharacterCardListResponse,
     CharacterCardSaveResponse,
     CharacterCardValidateResponse,
+    CharacterCardValidationErrorResponse,
+    CharacterCardWarningResponse,
 )
+from textgame.domain.character_card import MAX_BRIEF_CHARS, CharacterCard
 from textgame.domain.results import ErrorCode
 from textgame.services.card_service import (
     LIST_DEFAULT_LIMIT,
@@ -47,6 +54,39 @@ from textgame.services.card_service import (
 )
 
 router = APIRouter(prefix="/api/v1/character-cards", tags=["character-cards"])
+
+
+class CardGenerateBody(BaseModel):
+    """``POST /api/v1/character-cards/generate`` 请求体（第 23 章 §23.6）。
+
+    ``brief`` 为待理解的数据（≤1000 字符）；``options`` 仅参与生成/幂等，不执行其中的指令。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief: str = Field(min_length=1, max_length=MAX_BRIEF_CHARS)
+    schema_version: str = "1.0"
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class CardGenerateValidation(BaseModel):
+    """生成草稿的服务端校验结果（与 import 同一校验管线；``warnings`` 含 ``TEMPLATE_FALLBACK``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    errors: list[CharacterCardValidationErrorResponse] = Field(default_factory=list)
+    warnings: list[CharacterCardWarningResponse] = Field(default_factory=list)
+
+
+class CardGenerateResponse(BaseModel):
+    """``POST /api/v1/character-cards/generate`` 200 响应 ``{draft, validation, generated_by}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft: CharacterCard
+    validation: CardGenerateValidation
+    generated_by: str | None = None
 
 
 def get_card_service(request: Request) -> CardService:
@@ -69,6 +109,17 @@ def _api_error(exc: CardServiceError) -> ApiError:
         violations=exc.violations,
         status_override=exc.http_status,
     )
+
+
+#: 生成端点限流的会话标识头（单机无账号：IP + 可选 session，第 23 章 §23.6）。
+_SESSION_HEADER = "X-Session-Id"
+
+
+def _client_key(request: Request) -> str:
+    """限流主体：客户端 IP + 可选 ``X-Session-Id``（缺省仅按 IP 计）。"""
+    host = request.client.host if request.client is not None else "unknown"
+    session = request.headers.get(_SESSION_HEADER, "")[:64]
+    return f"{host}|{session}"
 
 
 async def _read_limited_body(request: Request) -> bytes:
@@ -272,6 +323,39 @@ async def validate_character_card(
     except CardServiceError as exc:
         raise _api_error(exc) from exc
     return CharacterCardValidateResponse(**payload)
+
+
+@router.post("/generate", response_model=CardGenerateResponse)
+def generate_character_card(
+    request: Request,
+    body: CardGenerateBody,
+    card_service: CardServiceDep,
+    idempotency_key: IdempotencyKeyDep,
+) -> CardGenerateResponse | JSONResponse:
+    """按 ``brief`` 生成人物卡草稿（200 ``{draft, validation, generated_by}``，不保存/不建局）。
+
+    LLM 可用时经 ``LLMClient``（``task="character_card_generate"``、STRONG、``max_repair=1``）；
+    默认离线/LLM 不可用 → 确定性模板兜底（``warnings`` 含 ``TEMPLATE_FALLBACK``、
+    ``source="manual"``、``generated_by=null``）。限流 5 次/分钟（IP+session 进程内滑窗）→
+    HTTP 429 ``OUT_OF_RANGE`` + ``Retry-After`` 头；同键同参复用首结果、同键异参 409。
+    """
+    try:
+        payload = card_service.generate_card(
+            brief=body.brief,
+            schema_version=body.schema_version,
+            options=body.options,
+            idempotency_key=idempotency_key,
+            client_key=_client_key(request),
+        )
+    except CardServiceError as exc:
+        if exc.http_status == 429:
+            return JSONResponse(
+                status_code=429,
+                content=error_body(exc.error_code, exc.message),
+                headers={"Retry-After": str(exc.retry_after or 1)},
+            )
+        raise _api_error(exc) from exc
+    return CardGenerateResponse(**payload)
 
 
 @router.post(

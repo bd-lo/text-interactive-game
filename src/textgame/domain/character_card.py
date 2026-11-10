@@ -270,9 +270,83 @@ def instantiate_item(template_id: str, instance_id: str) -> Item:
     )
 
 
+# ---------------------------------------------------------------------------
+# M6-028 后端前置：确定性模板兜底草稿（第 12 章 §12.6、第 23 章 §23.6）
+# ---------------------------------------------------------------------------
+#: ``POST /character-cards/generate`` 的 ``brief`` 长度上限（第 23 章 §23.6）。
+MAX_BRIEF_CHARS: Final[int] = 1000
+#: 模板兜底草稿的固定属性键集合（7 键齐全；``max_hp >= 1``、``hp = max_hp``）。
+_TEMPLATE_DRAFT_ATTRIBUTES: Final[dict[AttributeKey, int]] = {
+    "str": 10,
+    "dex": 10,
+    "con": 10,
+    "int": 10,
+    "wis": 10,
+    "cha": 10,
+    "max_hp": 20,
+}
+#: 模板兜底草稿的初始物品（确定性固定；模板存在性由 ``ITEM_TEMPLATES`` 保证）。
+_TEMPLATE_DRAFT_STARTING_ITEMS: Final[tuple[str, ...]] = ("item.torch",)
+#: brief 摘要里剔除的字符：HTML/脚本/URL/实体等注入向标记的起始字符。
+_BRIEF_UNSAFE_CHARS: Final[frozenset[str]] = frozenset("<>{}[]\"'`\\&:=;")
+_TEMPLATE_FALLBACK_NAME: Final[str] = "灰烬旅人"
+_TEMPLATE_FALLBACK_BACKGROUND: Final[str] = (
+    "模板兜底草稿：LLM 不可用或输出不合法时由确定性模板生成，可编辑后保存。"
+)
+
+
+def _plain_brief_summary(brief: str, *, limit: int) -> str:
+    """``brief`` → 只含安全字符的确定性摘要（去注入字符/控制符、压缩空白、截断）。
+
+    模板兜底必须**永远**产出合法且过内容安全的草稿：``brief`` 只是待理解的数据，其中的
+    HTML/脚本/URL/实体标记在摘要阶段直接剔除，而不是让兜底草稿被内容安全拒绝。
+    纯函数、无随机：同一 ``brief`` 必得同一摘要。
+    """
+    kept: list[str] = []
+    for char in brief:
+        if char in _BRIEF_UNSAFE_CHARS:
+            continue
+        if ord(char) < 32 and char not in "\n\t":
+            continue
+        kept.append(char)
+    collapsed = " ".join("".join(kept).split())
+    return collapsed[:limit]
+
+
+def build_template_card_draft(
+    *, brief: str, options: Mapping[str, Any] | None = None
+) -> CharacterCard:
+    """确定性模板兜底草稿（第 12 章 §12.6、第 23 章 §23.6）。
+
+    LLM 不可用或修复后仍不合法时由服务层调用：用 ``brief`` 摘要作名称/背景 + 固定属性
+    模板生成 9 字段草稿（``source="manual"``、``generated_by=None``）。**纯函数**：同一
+    ``brief`` 必得同一草稿（便于测试与前端幂等展示），不读库、不联网、不使用 ``options``。
+    """
+    del options  # 兜底不消费生成选项（确定性优先；options 仅参与幂等请求哈希）
+    summary = _plain_brief_summary(brief, limit=60)
+    name = _plain_brief_summary(brief, limit=12) or _TEMPLATE_FALLBACK_NAME
+    background = (
+        f"{summary}（{_TEMPLATE_FALLBACK_BACKGROUND}）"
+        if summary
+        else (_TEMPLATE_FALLBACK_BACKGROUND)
+    )
+    return CharacterCard(
+        schema_version="1.0",
+        name=name,
+        attributes=dict(_TEMPLATE_DRAFT_ATTRIBUTES),
+        hp=_TEMPLATE_DRAFT_ATTRIBUTES["max_hp"],
+        starting_items=list(_TEMPLATE_DRAFT_STARTING_ITEMS),
+        background=background,
+        appearance=None,
+        source="manual",
+        generated_by=None,
+    )
+
+
 __all__ = [
     "CHARACTER_CARD_SCHEMA",
     "ITEM_TEMPLATES",
+    "MAX_BRIEF_CHARS",
     "AttributeKey",
     "CardId",
     "CardSource",
@@ -280,6 +354,7 @@ __all__ = [
     "ItemTemplate",
     "ItemTemplateId",
     "build_character_card_schema",
+    "build_template_card_draft",
     "canonical_item_template_id",
     "instantiate_item",
     "resolve_item_template",
