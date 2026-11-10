@@ -22,9 +22,9 @@
   **零新增前端运行时依赖**；首屏 gzip 51.7KB（增量 ≈+8.9KB）；375px/对比度/`security-scan` 保持。**剧情失败结局（L1）**——
   新 EventType `ENVIRONMENT_DAMAGE` + reducer；story 枯井「寒气」每次进入 -6 HP，两次进井 HP→0 可达「倒下」结局，
   药水/烈酒仍可救回；旧场景不产生该事件（旧 golden 零影响）。**其它**——`TurnResult.narrative_source`（llm/template/null）
-  加法（L3）；`scripts/e2e-web.mjs` 扩到 22 步/111 断言/19 截图并接入 CI web-build job（临时 uvicorn:8794 + headless Chrome，L6）。
+  加法（L3）；`scripts/e2e-web.mjs` 扩到 22 步/112 断言/19 截图并接入 CI web-build job（临时 uvicorn:8794 + headless Chrome，L6）。
   验证：全量 pytest **2007 passed**（0 failed）、replay **68 passed**（旧 golden 61 零改动 + provenance 7）、web vitest
-  **41 files / 241 tests**、frontend_contract **19 passed**、世界书/伤害/激活 QA **47 例**、e2e **22 步/111 断言**；
+  **41 files / 241 tests**、frontend_contract **19 passed**、世界书/伤害/激活 QA **47 例**、e2e **22 步/112 断言**；
   `demo --check` 7/7 与 `console --check` 4/4 逐字不变。详见 [H4 进度文档](docs/progress/H4-2026-11-11-worldbook-visual.md) 与
   [ADR D-H4-1..6](docs/decisions/2026-11-11-h4-worldbook-and-visual.md)、[视觉参考](docs/design/frontend-visual-refs.md)、
   [世界书格式兼容](docs/design/world-book-format-compat.md)。
@@ -65,6 +65,8 @@
   不再依赖事件推断。
 - L6 e2e 未进 CI（H4 修复）：真实浏览器 e2e（Node 零依赖 CDP）接入 CI `web-build` job（临时 uvicorn:8794），
   失败上传服务器日志/e2e 产物。
+- WB-03b 卡库导入引导（H4 修复）：卡库导入页常驻提示 + `describeCardError` 422 命中 `character_book`/`spec_version`（角色卡 V2 包装）时明确提示「请到世界书 → 导入世界书」，不再只报「人物卡不合法」。
+- e2e CI 启动鲁棒性（H4 修复）：Linux runner 的 Chrome 加 `--no-sandbox`、CDP 就绪等待可配（CI 90s）、`DBUS_SESSION_BUS_ADDRESS` 指向不存在 socket 避免探测重试、世界书详情页等待条件改为「标题+条目表可见」以消除 CI 慢环境竞态；run #50 全绿。
 - D-M4-14：`Resolver.resolve` 用快照 `rng_state.save_seed` 构造 `ToolContext`/规则前置，修复非默认 seed 存档制造种子与实例 ID 派生不一致。
 - D-M4-15（P2 已知限制）：并发同 `Idempotency-Key` 瞬时响应不一致——待 022-concurrency-idempotency 关闭。
 

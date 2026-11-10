@@ -1,7 +1,7 @@
 # H4 · 世界书（酒馆格式）+ 前端炫酷化 + 失败结局内容批次
 
 > 编号：`H4`（范围外玩家体验批次，不占 001–028；按 `docs/progress/README.md` 例外条款登记）
-> 日期：2026-11-11（Asia/Shanghai）｜基线：`a5ddb17`（=origin/main）｜交付 commit：`9869169`（世界书/后端/L1/L3/测试）+ `51ce23e`（前端炫酷化/世界书 UI/dist/截图），文档随其后
+> 日期：2026-11-11（Asia/Shanghai）｜基线：`a5ddb17`（=origin/main）｜交付 commit：`9869169`（世界书/后端/L1/L3/测试）+ `51ce23e`（前端炫酷化/世界书 UI/dist/截图）+ 热修 `546a577`/`5443b59`（卡库导入 V2 引导接线、e2e CI 启动加固），文档随其后
 > 角色：Lead + 8 角色团队（player-rep、game-designer、backend-dev、frontend-dev、algorithm-dev、agent-dev、oss-user-rep、qa-tester）；决策见 [ADR D-H4-1..6](../decisions/2026-11-11-h4-worldbook-and-visual.md)。
 
 ## 1. 目标与判定口径
@@ -24,7 +24,7 @@
 | L1 失败结局内容 | 新 `EventType.ENVIRONMENT_DAMAGE` + reducer（hp_delta clamp，旧场景零事件）+ story 枯井 -6/次；两次进井 HP→0 触发 `ending_fallen`；narrator S1/S2/S3 三档寒气文案（不拼移动模板）；药水可救回 | `domain/{events,reducers,scenario_story}.py`、`orchestration/{turn_orchestrator,narrator}.py`、`docs/design/story-hazard-copy.md` |
 | L3 来源修正 | `TurnResult.narrative_source`（llm/template/null）：零事件只读回合为 null（徽章「来源未知」）、有事件回合 template/llm；前端徽章改读该字段 | `services/dto.py`、`orchestration/turn_orchestrator.py`、`web/src/stores/game.ts` |
 | 开源调研/许可证 | `docs/design/frontend-visual-refs.md`（13 条来源，MIT/AGPL 甄别；结论零新增运行时依赖）、`world-book-format-compat.md`（257 行兼容矩阵/语义差异/示例 payload） | `docs/design/`、ADR |
-| 验收工具 | `scripts/e2e-web.mjs` 扩到 **22 步/111 断言/19 截图**（世界书 4 步 + 全页面/375px/来源徽章）；新增世界书/激活/L1 QA 测试 **47 例**；`.github/workflows/ci.yml` web-build 增加浏览器 e2e（临时 uvicorn + headless Chrome + 失败上传 artifacts） | `scripts/e2e-web.mjs`、`tests/**`、`ci.yml` |
+| 验收工具 | `scripts/e2e-web.mjs` 扩到 **22 步/112 断言/19 截图**（世界书 4 步 + 全页面/375px/来源徽章）；新增世界书/激活/L1 QA 测试 **47 例**；`.github/workflows/ci.yml` web-build 增加浏览器 e2e（临时 uvicorn + headless Chrome + 失败上传 artifacts） | `scripts/e2e-web.mjs`、`tests/**`、`ci.yml` |
 
 ## 3. 验证结果（Lead/QA/玩家实跑）
 
@@ -39,8 +39,9 @@
 | 世界书链路 | 导入 `examples/world-books/story-lorebook.json`（tavern，29 条）→ 201 → story 建局绑定 → `/view.world_book` 摘要 + `lore.active_entries` 8 条 → 环顾 142 字（完整句 + 设定句，无句中截断）→ `GET /games/{id}` 200；旧 m2 存档两字段 null、环顾 114 字无设定句 |
 | L1 | story 进枯井 12→6→0 → `status=ended` + 倒下结局文本；旧 m2 永不产生 `ENVIRONMENT_DAMAGE`；药水可救回 6→14 |
 | L3 | 只读回合 `events=[]`、`narrative_source=None`（徽章来源未知）；写回合 `template` |
-| 浏览器 e2e | **22/22 步、111/111 断言、19 截图 PASS**（含世界书导入/绑定/375px/删除、全页面、来源徽章、结局总结） |
-| 玩家独立验收 | 待 FINAL 后 clean 树执行（P0 全绿才 PASS） |
+| 浏览器 e2e | **22/22 步、112/112 断言、19 截图 PASS**（含世界书导入/绑定/375px/删除、全页面、来源徽章、结局总结） |
+| 玩家独立验收 | **PASS（P0 43/43；HEAD `5443b59` clean 树）**：炫酷 13/13、世界书 15/16→16/16（WB-03b 热修后）、L1 7/7、回归 7/7；首屏 gzip 增量 +6.2KB、对比度 12.72:1、0 JS 错误 |
+| 远端 CI | run **#50 @`5443b59` 全绿**（quality 3.10/3.12 + web-build（含浏览器 e2e 步骤）+ deps 四 job success） |
 
 ## 4. 决策/文档
 
