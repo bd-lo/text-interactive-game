@@ -109,6 +109,8 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 
 休眠（Dormancy）：状态机 `DORMANT → ARMED → ACTIVE → DORMANT`；唤醒仅三种：被玩家触发、进入同场景、计划触发点到达；活跃窗口 = 本回合 + 2 回合，其余零调用。`agent_invocation_log` 断言「无唤醒即无调用」。
 
+**023 已落地（2026-11-10，D-M5-12）**：`orchestration/batch_sleep.py` 实现 `DormancyScheduler`（三态状态机，唤醒三种、ACTIVE 窗口=唤醒回合+2，超出窗口自动回 DORMANT 且零调用只写 `SKIPPED` 审计）与 `BatchSleepScheduler`（仅对组合根声明的公共群演批量：按房间分组 ≤4、`build_public_perception` 只含公共实体与已盖章公共事件、私有记忆角色与批量互斥、单 NPC 失败只丢该 NPC（`DROPPED`）、整批异常降级逐 NPC 串行）；调用审计改为**进程内可注入 `InvocationLog` 端口 + 结构化日志 `agent_invocation {...}`**（不新增 `agent_invocation_log` 表/迁移，Alembic 0003 让位 M6 卡库，D-M5-12）；`turn_orchestrator` 新增可选 `agent_scheduler`（默认 `None`=原路径零改变）。**生产组合根未注入调度器（默认零调用）**，真实 LLM 角色接线时再配置。验收 `tests/integration/test_batch_sleep.py` 20 例。
+
 ### 12.8 成本与延迟预算（全队权威口径）
 预算口径（同第 9 章）：单回合关键路径默认 **2 次**调用（解析+叙事），最多 **3 次**（含裁判）；P95 首版 ≤8 s，M2 缓存命中目标 ≤3 s。
 

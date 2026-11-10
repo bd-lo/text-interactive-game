@@ -76,6 +76,8 @@ class EventService:
 
 **自由制造的 M4 边界（D-M4-3 / D-M4-13）**：M4 制造（含自由路径）作为普通 `DESTRUCTIVE` 工具复用既有 M3 编排链路——玩家 `craft_item` 仍是 Proposal → `ProposalQueue` → 确定性 `Resolver` → `ToolGate` → `CraftService` → `GameEngine`，`scenario="m4"` 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖；失败提案照常写 `audit_events`。D-M4-3 的「不接 Resolver」仅指自由制造草案本身不经裁决、`CraftProposal` 不进入 `ProposalQueue`（仅作为 M5 契约保留）。M5 接真实 LLM 前必须把草案生成迁到 pre-queue（入队前完成），否则「同一输入必得同一 `Resolution`」的纯函数约束被破坏。
 
+**M5-023 批量/休眠的调用审计口径（2026-11-10，D-M5-12）**：角色 Agent 的批量合并与休眠调度在编排层 `orchestration/batch_sleep.py` 实现，**不改变**本章的唯一写入者/事件提交路径（提案仍经 `ProposalQueue`/`Resolver`/`GameEngine`）。口径：① 休眠状态机 `DORMANT→ARMED→ACTIVE→DORMANT`，唤醒仅三种（玩家动作指向 NPC / 进入同场景 / 计划触发回合），ACTIVE 窗口=唤醒回合+2，其余回合零调用、只写 `SKIPPED` 审计；② 批量合并只对组合根声明的「同场景公共群演」开放（每批 ≤4，输入只含公共感知、无私有记忆）；角色 Agent 的私有记忆与批量互斥（有私有记忆一律串行）；单 NPC 失败只丢该 NPC（`DROPPED`），整批异常降级逐 NPC 串行；③ 调用审计用**进程内可注入 `InvocationLog` 端口 + 结构化日志**（不新增 `agent_invocation_log` 表/迁移，D-M5-12），`turn_orchestrator` 通过可选 `agent_scheduler` 注入、默认 `None` 保持原逐 Agent 循环；④ 生产组合根当前未注入调度器（默认零调用）。验收 `tests/integration/test_batch_sleep.py` 20 例。
+
 ### 11.3 CAS 乐观锁与冲突重试
 
 持久化用 SQLAlchemy 的版本计数器（version counter）实现 CAS，行为已在 SQLAlchemy 2.0 文档《Configuring a Version Counter》确认：UPDATE 会附带 `WHERE game_id=? AND version=?`（实现列名 `version`；文档概念称 `row_version`），匹配 0 行时抛 `StaleDataError`；版本列建议 `NOT NULL`。

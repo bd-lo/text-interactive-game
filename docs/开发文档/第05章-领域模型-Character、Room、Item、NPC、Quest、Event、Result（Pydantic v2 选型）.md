@@ -497,6 +497,8 @@ class RandomSource(Protocol):
 
 `CharacterCard` 是 v0.2 前端（Vue 3 SPA，第 23 章）与后端共享的**人物卡 JSON 契约**（character card DTO），不是领域实体：它只在 API 边界存在，先由服务端校验，再在开局时映射为本章 `Character` 并写入新存档。字段在本节定稿，与第 23 章前端契约完全一致；第 6 章 6.7 的接口、第 21 章示例、第 23 章前端 Ajv 校验都引用本节，**不得增删字段**。
 
+**已落地（2026-11-10，M6B-3）**：`src/textgame/domain/character_card.py` 按本节实现 `CharacterCard`（9 字段、`extra=forbid`、属性边界/`hp<=max_hp`/物品模板校验）与 `build_character_card_schema()`（**draft 2020-12** JSON Schema，`GET /api/v1/character-cards/schema` 原样返回、前端 Ajv2020 复用）；内置 `ITEM_TEMPLATES` 支持 `item.<name>`/`item_<name>` 模板，`starting_items` 在建局时实例化为 `Item`（实例 ID 确定性生成、`tags[0]`=模板键）。人物卡库持久化在独立 `character_cards` 表（Alembic 0003），**不进入 `GameState`/事件溯源**，只有 `POST /games` 才把卡映射为新存档初始 `Character`。
+
 ```python
 from typing import Any, Callable
 
