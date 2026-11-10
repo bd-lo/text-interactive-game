@@ -11,6 +11,7 @@ const route = useRoute()
 const store = useReplayStore()
 
 const gameId = computed<string>(() => String(route.params.id ?? ''))
+const selectedTurn = computed<number>(() => store.selectedEvent?.turn_id ?? 0)
 const showRetry = computed<boolean>(() => store.error !== '')
 const busy = computed<boolean>(() => store.loading)
 
@@ -77,6 +78,7 @@ watch(gameId, () => {
       :selected-index="store.selectedIndex"
       :selected-seq="store.selectedSeq"
       :last-seq="store.lastSeq"
+      :selected-turn="selectedTurn"
       :busy="busy"
       @select="onSelect"
     />

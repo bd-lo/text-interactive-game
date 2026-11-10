@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import type { ReplayEvent } from '@/api/types'
+import { formatEventRef, labelActor, labelEventType, labelMethod } from '@/utils/labels'
 import { narrativeOf } from '@/utils/replay'
 
 const props = defineProps<{
@@ -9,6 +10,9 @@ const props = defineProps<{
 }>()
 
 const narrative = computed<string>(() => narrativeOf(props.event))
+const eventRef = computed<string>(() =>
+  props.event === null ? '' : formatEventRef(props.event.seq, props.event.turn_id),
+)
 
 function formatTs(value: string): string {
   return value.replace('T', ' ').replace('Z', ' UTC').replace(/\.\d+/, '')
@@ -16,23 +20,20 @@ function formatTs(value: string): string {
 </script>
 
 <template>
-  <!-- 只展示 narrative 与关键元数据；params/result 原始内容不渲染（协议敏感字段定界）。 -->
+  <!-- 只展示 narrative 与本地化元数据；params/result 原始内容不渲染（协议敏感字段定界）。 -->
   <section class="panel replay-event" aria-label="当前事件">
     <h3 class="panel-title">当前事件</h3>
     <template v-if="event !== null">
+      <p class="event-ref">{{ eventRef }}</p>
       <pre class="turn-text-body">{{ narrative }}</pre>
       <dl class="status-grid event-meta">
-        <dt>seq</dt>
-        <dd>{{ event.seq }}</dd>
-        <dt>turn_id</dt>
-        <dd>{{ event.turn_id }}</dd>
-        <dt>event_type</dt>
-        <dd>{{ event.event_type === null ? '（无）' : event.event_type }}</dd>
-        <dt>actor</dt>
-        <dd>{{ event.actor_id }}</dd>
-        <dt>method</dt>
-        <dd>{{ event.method }}</dd>
-        <dt>ts</dt>
+        <dt>类型</dt>
+        <dd>{{ labelEventType(event.event_type) }}</dd>
+        <dt>动作</dt>
+        <dd>{{ labelMethod(event.method) }}</dd>
+        <dt>角色</dt>
+        <dd>{{ labelActor(event.actor_id) }}</dd>
+        <dt>时间</dt>
         <dd>{{ formatTs(event.ts) }}</dd>
       </dl>
     </template>

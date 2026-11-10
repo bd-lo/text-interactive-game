@@ -26,6 +26,9 @@ interface GameState {
   snapshotVersion: number
   status: GameStatus
   lastText: string
+  /** 失败回合的结构化提示（`effects[].hint`）与建议动作；只读展示，不改 text。 */
+  lastEffects: Array<Record<string, unknown>>
+  lastSuggestedActions: string[]
   view: GamePlayerViewResponse | null
   busy: boolean
   error: string
@@ -43,6 +46,8 @@ function initialState(): GameState {
     snapshotVersion: 0,
     status: 'active',
     lastText: '',
+    lastEffects: [],
+    lastSuggestedActions: [],
     view: null,
     busy: false,
     error: '',
@@ -80,6 +85,8 @@ export const useGameStore = defineStore('game', {
       this.snapshotVersion = created.snapshot_version
       this.status = 'active'
       this.lastText = ''
+      this.lastEffects = []
+      this.lastSuggestedActions = []
       this.view = null
     },
     applySnapshot(snapshot: GameViewResponse): void {
@@ -89,6 +96,8 @@ export const useGameStore = defineStore('game', {
       this.snapshotVersion = snapshot.snapshot_version
       this.status = snapshot.status
       this.lastText = snapshot.last_text ?? ''
+      this.lastEffects = []
+      this.lastSuggestedActions = []
     },
     /** 刷新 `GET /games/{id}` + `GET /view`：服务端权威版本链（不重置 busy/error）。 */
     async refreshAll(): Promise<void> {
@@ -155,6 +164,8 @@ export const useGameStore = defineStore('game', {
       this.busy = true
       this.error = ''
       this.errorCode = ''
+      this.lastEffects = []
+      this.lastSuggestedActions = []
       this.lastInput = text
       // 同一逻辑动作：手动重试复用 pendingKey；新动作由 version 派生新键。
       const actionKey = this.pendingKey ?? getOrCreate(`turn:${this.gameId}:${this.version}`)
@@ -169,6 +180,8 @@ export const useGameStore = defineStore('game', {
           this.pendingKey = null
           this.canRetry = false
           this.lastText = result.text
+          this.lastEffects = result.effects
+          this.lastSuggestedActions = result.suggested_actions
           this.version = result.version
           await this.refreshView()
           return
@@ -177,6 +190,8 @@ export const useGameStore = defineStore('game', {
         clearIdempotencyKey(actionKey)
         this.pendingKey = null
         this.canRetry = false
+        this.lastEffects = result.effects
+        this.lastSuggestedActions = result.suggested_actions
         this.error = `${result.error_code ?? 'INVALID_INPUT'}：${result.text === '' ? '动作没有生效' : result.text}`
         this.errorCode = result.error_code ?? 'INVALID_INPUT'
       } catch (error) {

@@ -204,4 +204,32 @@ describe('game store（服务端权威版本链 + 禁自动重试）', () => {
     expect(expectedVersions[1]).toBe(2) // 用刷新后的服务端 version
     expect(store.version).toBe(3)
   })
+
+  it('失败回合：effects hint / suggested_actions 进 store（供分组展示），不覆盖 text 原文流', async () => {
+    const failed = {
+      ...TURN_OK,
+      ok: false,
+      turn_id: null,
+      text: '这个动作没有生效',
+      events: [],
+      error_code: 'INVALID_INPUT',
+      effects: [{ hint: '这个动作没有被理解或当前无法执行，可以换个说法再试。' }],
+      suggested_actions: ['环顾四周', '查看背包'],
+    }
+    mockFetch((url) => {
+      if (url === '/api/v1/games') return jsonResponse(201, CREATED)
+      if (url === '/api/v1/games/g1/view') return jsonResponse(200, PLAYER_VIEW_1)
+      if (url === '/api/v1/turns') return jsonResponse(200, failed)
+      return unexpected(url)
+    })
+    const store = useGameStore()
+
+    await store.createGame({ seed: 42, scenario: 'm2' })
+    await store.submitTurn('乱按')
+
+    expect(store.lastEffects).toEqual(failed.effects)
+    expect(store.lastSuggestedActions).toEqual(failed.suggested_actions)
+    expect(store.errorCode).toBe('INVALID_INPUT')
+    expect(store.lastText).toBe('') // 失败不覆盖文本流原文（TurnTextStream 只展示 text）
+  })
 })

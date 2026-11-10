@@ -287,6 +287,34 @@ a {
   padding-top: 8px;
 }
 
+/* M6 前端打磨：失败提示分组 / 状态面板状态 / 回放定位行 */
+.turn-feedback {
+  border-color: var(--warn);
+}
+
+.feedback-group + .feedback-group {
+  margin-top: 8px;
+}
+
+.feedback-actions li {
+  color: var(--accent);
+}
+
+.status-state {
+  margin: 0;
+}
+
+.status-source {
+  margin: 4px 0 8px;
+  font-size: 0.8rem;
+}
+
+.event-ref {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

@@ -64,13 +64,15 @@ describe('ReplayTimeline（首/末/上一步/下一步 + 拖动 clamp）', () =>
   })
 })
 
-describe('ReplayEventPanel（narrative 渲染 + 敏感 params 不展示）', () => {
-  it('展示 result.narrative 与 turn_id/event_type，不泄露 params 内容', () => {
+describe('ReplayEventPanel（narrative 渲染 + 元数据中文化 + 敏感 params 不展示）', () => {
+  it('展示 result.narrative、中文化 turn/type/method，不泄露 params 内容', () => {
     const wrapper = mount(ReplayEventPanel, { props: { event: makeEvent() } })
 
     expect(wrapper.text()).toContain('你拿起火把。')
-    expect(wrapper.text()).toContain('ITEM_TAKEN')
-    expect(wrapper.text()).toContain('turn_id')
+    expect(wrapper.text()).toContain('第 2 回合 · 事件 #2')
+    expect(wrapper.text()).toContain('拾取物品') // event_type: ITEM_TAKEN
+    expect(wrapper.text()).toContain('拾取') // method: take_item
+    expect(wrapper.text()).toContain('玩家') // actor_id: player
     expect(wrapper.text()).not.toContain('sk-secret-value')
   })
 

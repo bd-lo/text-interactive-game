@@ -5,6 +5,7 @@ import { RouterLink, useRoute } from 'vue-router'
 import CommandInput from '@/components/CommandInput.vue'
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import StatusPanel from '@/components/StatusPanel.vue'
+import TurnFeedback from '@/components/TurnFeedback.vue'
 import TurnTextStream from '@/components/TurnTextStream.vue'
 import { useGameStore } from '@/stores/game'
 
@@ -68,6 +69,13 @@ watch(gameId, () => {
 
     <ErrorBanner :message="store.error" :retryable="showRetry" @retry="onRetry" />
 
+    <p v-if="busy && store.version === 0" class="muted" role="status">
+      加载对局数据…（GET /games/{id} + GET /view）
+    </p>
+    <p v-else-if="!busy && store.version === 0 && store.error === ''" class="muted" role="status">
+      尚未加载对局：请从首页创建/进入一个 game_id。
+    </p>
+
     <div class="game-tools">
       <button class="btn btn-small" type="button" :disabled="busy" @click="onRefresh">
         刷新版本链
@@ -84,9 +92,10 @@ watch(gameId, () => {
     </div>
 
     <TurnTextStream :text="store.lastText" />
+    <TurnFeedback :effects="store.lastEffects" :suggested-actions="store.lastSuggestedActions" />
 
     <div class="game-columns">
-      <StatusPanel :view="store.view" />
+      <StatusPanel :view="store.view" :loading="busy" :error="store.error" />
       <CommandInput :disabled="!canSubmit" @submit="onSubmit" />
     </div>
   </section>

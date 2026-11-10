@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import { clampIndex, stepIndex } from '@/utils/replay'
+import { formatEventSeq, formatTurn } from '@/utils/labels'
 
 const props = defineProps<{
   /** 已加载事件数。 */
@@ -10,6 +11,8 @@ const props = defineProps<{
   selectedSeq: number
   /** 已加载事件的最大 seq（用于展示进度；页面可再「加载更多」）。 */
   lastSeq: number
+  /** 当前事件的回合号（服务端 replay 的 turn_id；0/未传时不在时间轴展示）。 */
+  selectedTurn?: number
   busy?: boolean
 }>()
 
@@ -76,8 +79,12 @@ function onRangeInput(event: Event): void {
       @input="onRangeInput"
     />
     <p class="timeline-meta">
-      <span>seq {{ selectedSeq }} / 已加载末 seq {{ lastSeq }}</span>
-      <span>第 {{ hasEvents ? current + 1 : 0 }} / {{ count }} 条（已加载）</span>
+      <span>
+        {{ selectedTurn !== undefined && selectedTurn > 0 ? formatTurn(selectedTurn) + ' · ' : ''
+        }}{{ formatEventSeq(selectedSeq) }}
+      </span>
+      <span>已加载末事件 #{{ lastSeq }}（共 {{ count }} 条）</span>
+      <span>第 {{ hasEvents ? current + 1 : 0 }} / {{ count }} 条</span>
     </p>
     <p v-if="count === 0" class="muted">暂无已加载事件。</p>
   </section>
