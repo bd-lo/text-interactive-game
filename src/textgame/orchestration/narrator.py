@@ -69,6 +69,65 @@ def _fit_text(text: str) -> str:
     return stripped[:_MAX_TEXT_CHARS]
 
 
+#: 句末标点（句级去重/取末句用；省略号是单字符 ``…``）。
+_SENTENCE_ENDS = "。！？；…"
+
+
+def _split_sentences(text: str) -> list[str]:
+    """按中文句末标点切句（保留标点；不跨句重组）；确定性、零 IO。"""
+    sentences: list[str] = []
+    start = 0
+    for index, char in enumerate(text):
+        if char in _SENTENCE_ENDS:
+            sentences.append(text[start : index + 1])
+            start = index + 1
+    if start < len(text):
+        sentences.append(text[start:])
+    return sentences
+
+
+def _last_sentence(text: str) -> str:
+    """取文本最后一句（空文本返回空串）；供补句去重判断。"""
+    sentences = _split_sentences(text)
+    return sentences[-1] if sentences else ""
+
+
+def _dedupe_adjacent_sentences(text: str) -> str:
+    """合并**相邻完全相同**的句子（inspect/对话文案去重专用，不改非该路径输出）。
+
+    只合并紧邻的相同句，不做跨句去重：既修「空气里浮着灰尘与旧木头的气味。」连续
+    两遍的问题，又不会误删场景里正常重复的意象句。
+    """
+    merged: list[str] = []
+    for sentence in _split_sentences(text):
+        if not merged or merged[-1] != sentence:
+            merged.append(sentence)
+    return "".join(merged)
+
+
+def _pad_text_no_repeat(text: str) -> str:
+    """把不足 80 字的文本补钩子句到 80 字，**跳过与上一句相同的钩子**（确定性轮转）。
+
+    背景（AC-35）：``_fit_text`` 的补句用 ``_HOOKS[len % 3]``，三个钩子中两个长 15 字
+    （≡0 mod 3），当 ``len % 3 == 2`` 时会连续追加同一句（inspect 短描述尤甚）。
+    本函数只用于 inspect/对话 reply 等**无 golden 钉死**的路径；补完仍由 ``_fit_text``
+    统一收口（此时长度已 ≥80，不会再加钩子，只做 150 字截断）。
+    """
+    padded = text
+    index = 0
+    while len(padded) < _MIN_TEXT_CHARS:
+        last = _last_sentence(padded)
+        for offset in range(len(_HOOKS)):
+            candidate = _HOOKS[(index + offset) % len(_HOOKS)]
+            if candidate != last:
+                padded += candidate
+                index = (index + offset + 1) % len(_HOOKS)
+                break
+        else:  # pragma: no cover - _HOOKS 三句互不相同，循环必有候选
+            break
+    return padded
+
+
 def _direction_name(direction: Any) -> str:
     """Direction 英文值 → 中文方向词; 非字符串回退为「前方」。"""
     if not isinstance(direction, str):
@@ -133,12 +192,31 @@ def _topic_excerpt(event: Event) -> str:
 
 
 def _moved_text(event: Event, state: GameState) -> str:
-    """``CHARACTER_MOVED``: 方向 + 目标房间名 (契约 §3.3 的 params/result)。"""
-    direction = _direction_name(event.params.get("direction", ""))
+    """``CHARACTER_MOVED``: 方向 + 目标房间名 (契约 §3.3 的 params/result)。
+
+    P2-5（R3 玩家体验）：``up``/``down`` 走「爬梯/下梯」专项文案，避免「你沿着上边的
+    通道动身」这类生硬方向词；其余四个方向（north/south/east/west）**逐字保持原模板**
+    （m2/m3/m4 golden 只涉及这四个方向，text_len 钉死，不得改动）。
+    """
+    raw_direction = event.params.get("direction", "")
     to_room = event.result.get("to", event.params.get("to_room"))
+    room_name = _room_name(state, to_room)
+    if raw_direction == "up":
+        return (
+            "你顺着窄梯往上走，木档在脚下吱呀发响，越往上风越紧。"
+            f"走了不多时，{room_name}的气息扑面而来，光线也跟着亮了一截。"
+            "你放慢脚步站定，打量着这里的环境。"
+        )
+    if raw_direction == "down":
+        return (
+            "你沿着窄梯往下走，石壁上的霜被衣袖蹭落，脚下每一级都踩得很实。"
+            f"走了不多时，{room_name}的气息扑面而来，光线也跟着暗了一截。"
+            "你放慢脚步站定，打量着这里的环境。"
+        )
+    direction = _direction_name(raw_direction)
     return (
         f"你沿着{direction}边的通道动身，脚底的石板缝隙里积着陈年的灰，石阶上浮着一层薄薄的潮气。"
-        f"走了不多时，{_room_name(state, to_room)}的气息扑面而来，光线也跟着暗了一截。"
+        f"走了不多时，{room_name}的气息扑面而来，光线也跟着暗了一截。"
         "你放慢脚步站定，打量着这里的环境。"
     )
 
@@ -219,17 +297,18 @@ def _talked_text(event: Event, state: GameState) -> str:
     """``DIALOGUE_EXCHANGED``: NPC 名 + 对话摘录 + 等待回应。
 
     D8：story 的 NPC 事件带 ``result.reply`` 时渲染 NPC 真回话（旧场景无 reply → 旧文案逐字不变）。
+    AC-35（R3）：reply 分支删除固定框架句「{npc}沉默片刻，抬眼看你。」——story 回话自身
+    常以「老兵抬起眼：」起头，叠加后出现重复叙述；旧场景 else 分支保持逐字不变（m2 golden
+    的 ``对老哨兵问好`` text_len=83 不受影响）。
     """
     npc_name = _npc_name(state, event.params.get("npc_id"))
     reply = event.result.get("reply")
     if isinstance(reply, str) and reply.strip():
         # 玩家最需要读到的是 NPC 回话本身：不再重复玩家原文，也不在回话外再包一层「」，
-        # 避免与场景文案自带的引号嵌套（reply 本身可能包含『』）。
-        return (
-            f"你转向{npc_name}，把心里的话说了出去。"
-            f"{npc_name}沉默片刻，抬眼看你。{reply.strip()}"
-            "你把这些话记在心里，等着对方还有什么要交代。"
-        )
+        # 避免与场景文案自带的引号嵌套（reply 本身可能包含『』）。回话较长时优先保留
+        # 回话正文（尾句用短句），首尾由 _dedupe/_pad 保证 80–150 字与无相邻重复句。
+        base = f"你转向{npc_name}，把心里的话说了出去。{reply.strip()}你把这些话记在心里。"
+        return _pad_text_no_repeat(_dedupe_adjacent_sentences(base))
     return (
         f"你转向{npc_name}，把心里的话说了出去：「{_topic_excerpt(event)}」。"
         f"{npc_name}沉默片刻，抬眼打量你，随后缓缓点了点头，似乎在斟酌该如何回应。"
@@ -280,7 +359,12 @@ def _inventory_text(result_data: dict[str, Any]) -> str:
 
 
 def _inspect_text(result_data: dict[str, Any]) -> str | None:
-    """``inspect_item`` 只读结果 → 一屏「细看」文本；缺字段返回 ``None`` 走兜底。"""
+    """``inspect_item`` 只读结果 → 一屏「细看」文本；缺字段返回 ``None`` 走兜底。
+
+    AC-35（R3）：短描述经外层 ``_fit_text`` 补钩子句时会出现相邻重复句（「空气里浮着
+    灰尘与旧木头的气味。」连两遍，铜线甚至连三遍）。这里做**句级去重 + 补句去重**；
+    只影响 inspect 路径，``_fit_text`` 本体与其他模板零改动（m2/m3/m4 golden 零漂移）。
+    """
     name = result_data.get("name")
     description = result_data.get("description")
     if not isinstance(name, str) or not name:
@@ -289,7 +373,8 @@ def _inspect_text(result_data: dict[str, Any]) -> str | None:
         return None
     kind = result_data.get("kind")
     subject = "这个人" if kind == "npc" else "这件东西"
-    return f"你凑近细看{name}。{description}你把{subject}的细节记在心里，才慢慢移开视线。"
+    base = f"你凑近细看{name}。{description}你把{subject}的细节记在心里，才慢慢移开视线。"
+    return _pad_text_no_repeat(_dedupe_adjacent_sentences(base))
 
 
 class TemplateNarrator:

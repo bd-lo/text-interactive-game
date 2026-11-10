@@ -15,6 +15,10 @@
   ``suggested_actions``；``status=ended`` 时打印 ``ending_text`` 结局屏并停止接收行动输入）；
   ``--list`` 列出同库最近存档；``--db`` 支持 ``sqlite:///`` DSN 与中文报错；``ensure_utf8_stdio``
   同时修复管道输入中文的编码崩溃；显式 ``--scenario`` 与旧存档不一致时提示 ``--new``/``--continue``。
+- **R3 打磨（M6 卡库配套）**：``--card-id <卡ID>``（别名 ``--card``）按人物卡开局——进程内
+  ``POST /api/v1/games {card_id}``，总是新开一局（与 ``--scenario``/``--continue`` 互斥并有
+  中文提示）；``--list-cards`` 只读列出卡库最近人物卡（``GET /api/v1/character-cards``，
+  失败时玩家可读降级）。**无卡参数时旧 CLI 行为逐字不变**（含 ``--check``）。
 
 模块结构：``GameSession`` 封装回合推进（内部维护版本链与幂等键，不对外暴露）；
 ``run_check``/``run_interactive`` 分别承载自动验收与交互循环；``build_app`` 负责进程内装配；
@@ -77,6 +81,13 @@ SCENARIO_LABELS: dict[str, str] = {
 
 #: 结局屏提示（status=ended 后不再接收行动输入，只允许退出/查看）。
 ENDING_HINT = "故事结束，输入 :quit 退出。"
+
+#: 人物卡来源 → 玩家可读标签（``--list-cards`` 展示用；未知来源给中性文案）。
+_CARD_SOURCE_LABELS: dict[str, str] = {
+    "upload": "导入",
+    "llm": "LLM 生成",
+    "manual": "手填/模板",
+}
 
 #: SQLite DSN 前缀；``:memory:`` / ``file:`` 等 URI 形式不做存档发现（降级为新开）。
 _SQLITE_URL_PREFIX = "sqlite:///"
@@ -456,12 +467,25 @@ def render_turn(result: dict[str, Any], view: dict[str, Any] | None) -> str:
 
 
 class GameSession:
-    """一次终端对局的回合封装：内部维护游戏标识、版本链与幂等键，不对外打印。"""
+    """一次终端对局的回合封装：内部维护游戏标识、版本链与幂等键，不对外打印。
 
-    def __init__(self, client: TestClient, *, seed: int = 42, scenario: str = "m2") -> None:
+    ``card_id`` 非空时按人物卡开局（``POST /api/v1/games {card_id}``，D-M6-2）：不再发送
+    ``seed``/``scenario``（与后端互斥约束一致），其余回合逻辑与普通对局完全一致。
+    """
+
+    def __init__(
+        self,
+        client: TestClient,
+        *,
+        seed: int = 42,
+        scenario: str = "m2",
+        card_id: str | None = None,
+    ) -> None:
+        """记录客户端与开局参数；``card_id`` 非空表示按人物卡开局。"""
         self._client = client
         self._seed = seed
         self._scenario = scenario
+        self._card_id = card_id
         self._game_id = ""
         self._expected_version = 0
         self._turns = 0
@@ -472,22 +496,37 @@ class GameSession:
         return self._turns
 
     def create(self) -> None:
-        """新建存档（显式携带场景；默认 m2 与 OSS-1 行为一致）。"""
+        """新建存档（显式携带场景/人物卡；默认 m2 与 OSS-1 行为一致）。"""
+        payload: dict[str, Any]
+        if self._card_id is not None:
+            payload = {"card_id": self._card_id}
+        else:
+            payload = {"seed": self._seed, "scenario": self._scenario}
         response = self._client.post(
             "/api/v1/games",
             headers={"Idempotency-Key": _new_key("create")},
-            json={"seed": self._seed, "scenario": self._scenario},
+            json=payload,
         )
         if response.status_code != 201:
-            raise ConsoleError("无法创建存档：游戏引擎没有正常启动")
-        payload: dict[str, Any] = response.json()
-        game_id = payload.get("game_id")
-        version = payload.get("version")
+            raise ConsoleError(self._create_failure_message(response.status_code))
+        payload_data: dict[str, Any] = response.json()
+        game_id = payload_data.get("game_id")
+        version = payload_data.get("version")
         if not isinstance(game_id, str) or not isinstance(version, int):
             raise ConsoleError("无法创建存档：游戏引擎返回了无法识别的开局信息")
         self._game_id = game_id
         self._expected_version = version
         self._turns = 0
+
+    def _create_failure_message(self, status_code: int) -> str:
+        """开局失败 → 玩家可读中文（按卡开局与普通开局分别给原因，不泄漏协议字段）。"""
+        if self._card_id is not None:
+            if status_code == 404:
+                return "无法按人物卡开局：卡库里找不到这张人物卡（可能已被删除）。"
+            if status_code == 422:
+                return "无法按人物卡开局：这张人物卡的数据不完整，暂时不能用来开始新的一局。"
+            return "无法按人物卡开局：游戏引擎没有正常启动。"
+        return "无法创建存档：游戏引擎没有正常启动"
 
     def resume(self, game_id: str) -> dict[str, Any]:
         """恢复已有存档：用 ``GET /api/v1/games/{id}`` 取回版本链，后续回合直接续写。"""
@@ -571,6 +610,7 @@ def prepare_session(
     continue_save: bool = False,
     new_game: bool = False,
     requested_scenario: str | None = None,
+    card_id: str | None = None,
 ) -> str:
     """决定「继续同库最近存档」还是「新开一局」，返回首屏提示（不打印协议字段）。
 
@@ -580,7 +620,12 @@ def prepare_session(
     - ``requested_scenario``：**显式** ``--scenario`` 值（未显式给时为 ``None``）。与同库旧
       存档场景不一致时不再静默继续：``--continue`` 下继续旧档并提示换 ``--new``，否则按显式
       场景新开一局并说明旧存档保留（R2：避免「选了 m3 却在玩 m2」的困惑）。
+    - ``card_id``：按人物卡开局（D-M6-2），**不自动继续旧档**；与显式场景/``--continue``
+      的互斥校验在 CLI 入口完成（这里只负责建局）。
     """
+    if card_id is not None:
+        session.create()
+        return "【存档】已按人物卡开局。"
     if new_game:
         session.create()
         return "【存档】已按 --new 新开一局。"
@@ -644,6 +689,7 @@ _HELP_LINES: tuple[str, ...] = (
     "直接输入自然语言行动，例如：环顾四周 / 拿起火把 / 向北走进地窖",
     "命令：:help 帮助 ｜ :look 环顾四周 ｜ :inv 查看行囊 ｜ :status 状态行 ｜ :quit 退出",
     "场景：--scenario m2|m3|m4|story（story「余烬哨站」剧情，推荐首玩）",
+    "人物卡：--card-id <卡ID> 按人物卡开局；--list-cards 列出卡库（卡先在网页卡库生成/导入）",
     "存档：默认自动继续同库最近存档；--new 新开，--continue 强制继续，--list 列出最近存档",
     "当前为默认离线确定性叙事（不联网、无需 API Key）",
 )
@@ -837,6 +883,52 @@ def _run_list_app(db_target: Path | str | None = None) -> int:
         dispose_app_engine(app)
 
 
+def _run_list_cards_app(db_target: Path | str | None = None) -> int:
+    """``--list-cards``：只读列出卡库最近人物卡（``GET /api/v1/character-cards``）后退出。
+
+    只读：不建局、不写库；``--db`` 与交互/``--list`` 同口径。旧后端缺该端点时给出
+    玩家可读提示（不阻塞其它入口）。卡 ID 完整打印，供 ``--card-id`` 直接复制使用。
+    """
+    if isinstance(db_target, str):
+        db_url = db_target
+    elif db_target is not None:
+        db_url = f"sqlite:///{db_target.resolve().as_posix()}"
+    else:
+        db_url = _configured_db_url()
+    app = build_app(db_url if db_target is not None else None)
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/character-cards", params={"limit": 20})
+            if response.status_code != 200:
+                raise ConsoleError(
+                    "人物卡列表暂不可用（后端未提供 /api/v1/character-cards）；"
+                    "可以先用网页版卡库查看人物卡。"
+                )
+            payload = response.json()
+        cards = payload.get("cards") if isinstance(payload, dict) else None
+        rows = [row for row in cards if isinstance(row, dict)] if isinstance(cards, list) else []
+        total = payload.get("total") if isinstance(payload, dict) else None
+        if not rows:
+            print("还没有人物卡：先在网页版卡库生成或导入一张，再用 --card-id 开局。")
+            return 0
+        shown_total = total if isinstance(total, int) and total > 0 else len(rows)
+        print(f"最近人物卡（共 {shown_total} 张，按最近更新排序；最多显示 20 张）：")
+        for index, row in enumerate(rows, start=1):
+            raw_name = row.get("name")
+            name = raw_name if isinstance(raw_name, str) and raw_name else "未命名人物卡"
+            source = row.get("source")
+            label = _CARD_SOURCE_LABELS.get(str(source), "人物卡")
+            raw_card_id = row.get("card_id")
+            card_id = raw_card_id if isinstance(raw_card_id, str) and raw_card_id else "未知"
+            print(f"{index}. [{label}] {name} · 卡 {card_id}")
+        print("")
+        print("按人物卡开局：python -m textgame.console --card-id <卡ID>")
+        print("（人物卡的生成/导入请在网页版卡库操作）")
+        return 0
+    finally:
+        dispose_app_engine(app)
+
+
 def _run_interactive_app(
     db_target: Path | str | None,
     seed: int,
@@ -845,11 +937,12 @@ def _run_interactive_app(
     requested_scenario: str | None = None,
     continue_save: bool = False,
     new_game: bool = False,
+    card_id: str | None = None,
 ) -> int:
-    """交互入口：装配组合根 → 决定继续/新开 → 进入回合循环。
+    """交互入口：装配组合根 → 决定继续/新开/按卡开局 → 进入回合循环。
 
     ``db_target``：``None``=用配置默认库；``Path``=本地 SQLite 文件；``str``=``sqlite:///`` DSN
-    （``--db`` 的 DSN 自动转换结果）。
+    （``--db`` 的 DSN 自动转换结果）。``card_id`` 非空时按人物卡新开一局（不自动继续旧档）。
     """
     if isinstance(db_target, str):
         db_url = db_target
@@ -865,13 +958,14 @@ def _run_interactive_app(
         ) from exc
     try:
         with TestClient(app) as client:
-            session = GameSession(client, seed=seed, scenario=scenario)
+            session = GameSession(client, seed=seed, scenario=scenario, card_id=card_id)
             notice = prepare_session(
                 session,
                 db_url=db_url,
                 continue_save=continue_save,
                 new_game=new_game,
                 requested_scenario=requested_scenario,
+                card_id=card_id,
             )
             run_interactive(session, start_notice=notice)
     finally:
@@ -899,6 +993,20 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="list_games",
         action="store_true",
         help="列出同库最近存档（按最近更新排序）后退出",
+    )
+    parser.add_argument(
+        "--list-cards",
+        dest="list_cards",
+        action="store_true",
+        help="列出人物卡库最近人物卡（按最近更新排序）后退出",
+    )
+    parser.add_argument(
+        "--card-id",
+        "--card",
+        dest="card_id",
+        type=str,
+        default=None,
+        help="按人物卡开局：传卡库中的卡 ID（--list-cards 可查；总是新开一局）",
     )
     parser.add_argument("--seed", type=int, default=42, help="新存档随机种子（默认 42）")
     parser.add_argument(
@@ -942,8 +1050,8 @@ def _explicit_scenario(argv: Sequence[str]) -> str | None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """终端入口：``python -m textgame.console [--check|--list] [--db PATH|DSN] [--seed N]
-    [--scenario m2|m3|m4|story] [--continue|--resume] [--new]``。"""
+    """终端入口：``python -m textgame.console [--check|--list|--list-cards] [--db PATH|DSN]
+    [--seed N] [--scenario m2|m3|m4|story] [--continue|--resume] [--new] [--card-id ID]``。"""
     raw_args = list(argv) if argv is not None else sys.argv[1:]
     args = _build_parser().parse_args(raw_args)
     ensure_utf8_stdio()
@@ -952,6 +1060,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_check_app()
         if args.list_games:
             return _run_list_app(_parse_db_target(args.db))
+        if args.list_cards:
+            return _run_list_cards_app(_parse_db_target(args.db))
+        if args.card_id is not None:
+            # 按卡开局总是新建存档：与显式场景/强制继续互斥（--new 冗余但容忍）。
+            if _explicit_scenario(raw_args) is not None or bool(args.continue_save):
+                raise ConsoleError(
+                    "--card-id 不能与 --scenario/--continue 同时使用："
+                    "按人物卡开局总是新开一局，请去掉其中一个参数。"
+                )
+            return _run_interactive_app(
+                _parse_db_target(args.db),
+                int(args.seed),
+                card_id=str(args.card_id),
+            )
         return _run_interactive_app(
             _parse_db_target(args.db),
             int(args.seed),

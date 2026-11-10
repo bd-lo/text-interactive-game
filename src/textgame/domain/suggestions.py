@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from typing import cast
 
 from textgame.domain.models import NPC, Character, GameState, Item, Room
 from textgame.domain.results import ErrorCode
@@ -28,6 +29,7 @@ from textgame.domain.scenario_story import (
     story_ending,
     story_goal,
 )
+from textgame.domain.types import Direction
 
 __all__ = ["failure_feedback", "suggest_actions"]
 
@@ -254,6 +256,173 @@ def _dedupe_truncate(actions: list[str], limit: int) -> list[str]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# 失败回合的「聚焦建议」（R3 P2-4：缺材料/缺工具/工位不符时优先指向可执行一步）
+# ---------------------------------------------------------------------------
+
+#: 命中方向字的导航短语会被确定性解析器误判为「朝该方向走」，此时退回纯方向指令。
+_DIRECTION_CHARS = frozenset("北南东西上下")
+#: 聚焦建议上限（总建议仍受 D7 的 4 条上限约束）。
+_MAX_FOCUS_ACTIONS = 2
+#: craft 失败原因（与 ``services/craft_service.py::_check_recipe_preconditions`` 的稳定
+#: 中文文案一一对应；解析失败时静默退回现状，不影响其他失败分支）。
+_MISSING_MATERIAL_RE = re.compile(r"^缺少材料：([^（(。]+)")
+_MISSING_TOOL_RE = re.compile(r"^缺少工具：([^。]+)")
+_INSUFFICIENT_MATERIAL_RE = re.compile(r"^材料不够：([^还]+)还差")
+_WRONG_STATION_RE = re.compile(r"^这里不是合适的制作地点（需要([^）]+)）")
+#: 工位展示名 → 场景 ambient tag（当前只有锻造台一条；未知工位名不做聚焦）。
+_STATION_TAGS: dict[str, str] = {"铁匠炉": "station.forge"}
+
+
+def _rooms_holding_name(state: GameState, name: str) -> list[str]:
+    """房间地面上有名为 ``name`` 的物品实例的房间 id（按房间字典顺序，确定性）。"""
+    item_ids = {item.id for item in state.items.values() if item.name == name}
+    if not item_ids:
+        return []
+    return [
+        room_id
+        for room_id, room in state.rooms.items()
+        if any(item_id in item_ids for item_id in room.item_ids)
+    ]
+
+
+def _room_with_tag(state: GameState, tag: str) -> str | None:
+    """带指定 ambient tag 的房间 id（按房间字典顺序取首个）。"""
+    for room_id, room in state.rooms.items():
+        if tag in room.ambient_tags:
+            return room_id
+    return None
+
+
+def _navigation_phrase_safe(*parts: str) -> bool:
+    """「去{房间}拿{物品}」类短语的可解析性守卫（见 :func:`_navigate_focus`）。
+
+    确定性解析器先匹配方向词再匹配房间名导航（R2 D6），因此短语里出现「北/南/东/西/上/下」
+    会被误判成朝该方向走；出现即放弃该短语，退回纯方向指令。长度也做保守上限。
+    """
+    phrase = "".join(parts)
+    return bool(phrase) and len(phrase) <= 24 and not any(ch in phrase for ch in _DIRECTION_CHARS)
+
+
+def _navigate_focus(
+    state: GameState,
+    character: Character,
+    room: Room,
+    target_room_id: str,
+    phrase: str,
+    note: str,
+) -> tuple[list[str], list[str]]:
+    """朝 ``target_room_id`` 的聚焦建议与位置提示（同房间/相邻/更远三档）。
+
+    - 目标就是当前房间：只给 ``note``（调用方另行给「拿起X」类动作）；
+    - 相邻房间：``phrase``（如「去废弃哨站·入口拿火把」）——可被 D6 房间名导航解析为
+      ``move_to``，即"一条可提交的导航指令"；
+    - 更远：``向{方向}走``（BFS 首步，保证可执行）+ ``note`` 给出目标房间名。
+    """
+    target = state.rooms.get(target_room_id)
+    if target is None or target_room_id == character.location:
+        return [], []
+    direction = _first_direction(state, character.location, target_room_id)
+    if direction is None:
+        return [], []
+    direction_name = _direction_cn(direction)
+    # ``_first_direction`` 返回的是出口方向键的字符串（Direction 字面量集合内），
+    # ``room.exits`` 是 ``dict[Direction, RoomId]``，这里显式收敛类型。
+    if room.exits.get(cast(Direction, direction)) != target_room_id:
+        return [f"向{direction_name}走"], [f"{note}（往{direction_name}走）。"]
+    if not _navigation_phrase_safe(phrase):
+        return [f"向{direction_name}走"], [f"{note}（往{direction_name}走）。"]
+    return [phrase], [f"{note}。"]
+
+
+def _focus_material_or_tool(
+    state: GameState,
+    character: Character,
+    room: Room,
+    name: str,
+) -> tuple[list[str], list[str]]:
+    """缺材料/缺工具：当前房间 →「拿起X」；相邻房间 →「去{房间}拿X」；否则 →「向{方向}走」。"""
+    rooms = _rooms_holding_name(state, name)
+    if room.id in rooms:
+        return [f"拿起{name}"], [f"{name}就在这间屋里。"]
+    for target_room_id in rooms:
+        actions, notes = _navigate_focus(
+            state,
+            character,
+            room,
+            target_room_id,
+            f"去{state.rooms[target_room_id].name}拿{name}",
+            f"{name}在{state.rooms[target_room_id].name}",
+        )
+        if actions:
+            return actions, notes
+    return [], []
+
+
+def _focus_wrong_station(
+    state: GameState,
+    character: Character,
+    room: Room,
+    station_name: str,
+) -> tuple[list[str], list[str]]:
+    """工位不符：指向带对应 ambient tag 的房间（相邻 →「去{房间}」可执行导航）。"""
+    tag = _STATION_TAGS.get(station_name)
+    if tag is None:
+        return [], []
+    target_room_id = _room_with_tag(state, tag)
+    if target_room_id is None or target_room_id == character.location:
+        return [], []
+    target = state.rooms[target_room_id]
+    actions, notes = _navigate_focus(
+        state, character, room, target_room_id, f"去{target.name}", f"打造需要到{target.name}"
+    )
+    return actions, notes
+
+
+def _craft_failure_focus(
+    state: GameState,
+    character: Character | None,
+    room: Room | None,
+    code: ErrorCode | None,
+    reason: str | None,
+) -> tuple[list[str], list[str]]:
+    """解析 craft 失败原因 → 聚焦建议 ``(actions, notes)``；无匹配返回空列表（静默退化）。
+
+    只消费 ``CraftService`` 的稳定中文失败文案（同仓版本内耦合）；命中后建议只指向
+    「当前可提交的一步」：同房间「拿起X」、相邻房间「去{房间}拿X」、更远「向{方向}走」。
+    """
+    if character is None or room is None or not isinstance(reason, str) or not reason:
+        return [], []
+    # 生产多角色链路里世界内失败统一落 INVALID_INPUT（编排层映射），单角色/服务层可能是
+    # NOT_FOUND/OUT_OF_RANGE/NOT_ALLOWED；四种错误码都要允许聚焦解析（匹配失败即退化）。
+    if code not in {
+        ErrorCode.INVALID_INPUT,
+        ErrorCode.NOT_FOUND,
+        ErrorCode.OUT_OF_RANGE,
+        ErrorCode.NOT_ALLOWED,
+    }:
+        return [], []
+    text = reason.strip()
+    match = _MISSING_MATERIAL_RE.match(text) or _MISSING_TOOL_RE.match(text)
+    if match is not None:
+        actions, notes = _focus_material_or_tool(state, character, room, match.group(1).strip())
+    else:
+        match = _INSUFFICIENT_MATERIAL_RE.match(text)
+        if match is not None:
+            actions, notes = _focus_material_or_tool(state, character, room, match.group(1).strip())
+        else:
+            match = _WRONG_STATION_RE.match(text)
+            if match is None:
+                return [], []
+            actions, notes = _focus_wrong_station(state, character, room, match.group(1).strip())
+    return actions[:_MAX_FOCUS_ACTIONS], notes[:_MAX_FOCUS_ACTIONS]
+
+
+def _merge_focus_suggestions(focus: list[str], general: list[str]) -> list[str]:
+    """聚焦建议前置 + 通用建议补足，去重后仍受 D7 的 4 条上限（不改变成功回合建议）。"""
+    return _dedupe_truncate([*focus, *general], _MAX_SUGGESTIONS)
+
+
 def suggest_actions(state: GameState, *, limit: int = 4) -> list[str]:
     """生成当前状态可直接提交的中文建议指令（确定性、去重、≤``limit``、无内部 ID）。
 
@@ -361,28 +530,43 @@ def failure_feedback(
     退回按错误码分级的通用提示）；协议级错误（CONFLICT/INTERNAL）不使用 reason。
     """
     character = state.characters.get(PLAYER_ID)
-    suggestions = suggest_actions(state, limit=_MAX_SUGGESTIONS)
     if character is not None and is_story_state(state) and story_ending(state) is not None:
         return ("这一局的故事已经结束，不再接受新的行动；可以重新开始一局。", [])
     room = _room_of(state, character) if character is not None else None
+    suggestions = suggest_actions(state, limit=_MAX_SUGGESTIONS)
     summary = _room_summary(state, room)
     inventory = _inventory_summary(state, character)
     safe_reason = _safe_reason(reason)
     if safe_reason is not None:
         safe_reason = _as_sentence(safe_reason)
+    # R3 P2-4：craft 失败（缺材料/缺工具/工位不符）优先给「当前可执行的一步」，并点名
+    # 材料所在房间；解析不中（其他失败）时 focus 为空，行为与 R2 完全一致。
+    focus_actions, focus_notes = _craft_failure_focus(
+        state, character, room, error_code, safe_reason
+    )
+    if focus_actions:
+        suggestions = _merge_focus_suggestions(focus_actions, suggestions)
+    focus_note = "".join(focus_notes)
     if error_code == ErrorCode.NOT_FOUND:
-        hint = (safe_reason or "你要找的东西或方向不在这里。") + summary
+        hint = (safe_reason or "你要找的东西或方向不在这里。") + focus_note + summary
     elif error_code == ErrorCode.OUT_OF_RANGE:
-        hint = (safe_reason or "这一步的条件还差一点（东西不够或拿不动）。") + inventory + summary
+        hint = (
+            (safe_reason or "这一步的条件还差一点（东西不够或拿不动）。")
+            + inventory
+            + focus_note
+            + summary
+        )
     elif error_code == ErrorCode.NOT_ALLOWED:
-        hint = (safe_reason or "现在不能这么做：先完成手上这一步，或换个对象。") + summary
+        hint = (
+            (safe_reason or "现在不能这么做：先完成手上这一步，或换个对象。") + focus_note + summary
+        )
     elif error_code == ErrorCode.CONFLICT:
         hint = _HINT_CONFLICT
     elif error_code == ErrorCode.INTERNAL:
         hint = _HINT_INTERNAL
     elif error_code == ErrorCode.INVALID_INPUT:
         if safe_reason is not None:
-            hint = safe_reason + "可以从下面的建议里挑一个现在能做的。" + summary
+            hint = safe_reason + focus_note + "可以从下面的建议里挑一个现在能做的。" + summary
         else:
             hint = _HINT_INVALID + summary
     else:
