@@ -1281,6 +1281,8 @@ async function runFlow() {
         summary.includes(`生命值 ${view.hp}/${view.max_hp}`),
         summary,
       )
+      // 冒险记录由 replay 异步重建：等「结局」派生行真正渲染后再断言（避免 loading 竞态）。
+      await waitVisible('.history-ending', '结局历史行')
       const endingRowCount = await evaluate(`document.querySelectorAll('.history-ending').length`)
       check('冒险记录恰有 1 条「结局」行（不重复渲染）', endingRowCount === 1, String(endingRowCount))
       const endingRowText = String(await textOf('.history-ending'))
