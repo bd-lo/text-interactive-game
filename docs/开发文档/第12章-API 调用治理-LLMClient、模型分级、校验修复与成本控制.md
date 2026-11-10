@@ -94,6 +94,8 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 
 红线：未校验输出不写 Event/GameState，只记录 `SCHEMA_VIOLATION`。
 
+**M5 出口接线已落地（2026-11-10，M5E-1，D-M5-13）**：`agents/narrator_agent.py::LLMNarratorAgent`（`prompt_version="narrate@v1"`，`task="narrate"`、ECONOMY）与 `agents/llm_character_agent.py::LLMCharacterAgent`（`prompt_version="character@v1"`，`task="character_act"`，≤2 提案）经 `LLMClient.complete_json` + `validation.complete_json_with_repair`（恰好一次修复，D-M5-2 终局）接入编排层；失败/离线/修复耗尽/任何异常一律回退模板/确定性 Agent，**未校验输出绝不写入状态**；`main.py` 按 `settings.llm_enabled` 装配（默认 false 时 `TemplateNarrator`+确定性角色，逐字等价，M2–M4 golden 零回归）。**cassette 回放口径**：6 个手工合成 JSON（`tests/fixtures/cassettes/`，vcrpy `interactions` 兼容结构）+ `tests/cassette_transport.py` 零网络回放，**不用 vcrpy YAML**（PyYAML 非声明依赖，D-M5-13）；真实 API 只允许手动 `python -m textgame.llm.smoke`，不进 CI。**裁判 Agent 尚未接线**（需用户授权改 Resolver）。
+
 ### 12.7 缓存、批量合并与休眠唤醒
 | 缓存层 | 内容 | 实现 | 失效 |
 | --- | --- | --- | --- |
