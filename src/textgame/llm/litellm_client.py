@@ -430,7 +430,7 @@ class LiteLLMClient:
         error_code: ErrorCode | None,
         cache_hit: bool = False,
     ) -> LLMCallRecord:
-        """组装一次调用的 ``LLMCallRecord``（``cost_usd`` 019/020 恒 0，022 填真实成本）。
+        """组装一次调用的 ``LLMCallRecord``（``cost_usd`` 恒 0：成本按 D-M5-10 出范围）。
 
         ``provider/model`` 按请求的 ``model_tier`` 取自 JSON 分层配置；``model`` 参数为
         供应商响应回报的模型名（空串时回退到配置值，保持记录与配置可比）。

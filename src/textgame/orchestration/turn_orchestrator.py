@@ -14,6 +14,8 @@ CAS 提交 → 审计」的多角色链路（第 11 章 §11.1–§11.3、契约
 
 from __future__ import annotations
 
+import threading
+import zlib
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Protocol
 
@@ -53,6 +55,9 @@ _MAX_TEXT_CHARS = 150
 _CONFIDENCE_FLOOR = 0.6
 _DEFAULT_SAVE_SEED = "save-42"
 _MAX_SUBMIT_ATTEMPTS = 3
+# 幂等键分段锁条数（D-M4-15/G-1）：同键请求串行、不同键基本并行；固定条数避免
+# 锁字典随请求键增长（不回收、无泄漏），哈希碰撞只造成无关键偶发串行。
+_IDEMPOTENCY_LOCK_STRIPES = 64
 
 _UNKNOWN_ACTION_TEXT = (
     "你试着比划了一下，却没弄明白自己想做什么。"
@@ -342,6 +347,48 @@ def _turn_params_hash(request: TurnRequest) -> str:
     )
 
 
+def _idempotency_lock_index(store_key: str) -> int:
+    """幂等存储键 → 分段锁下标（crc32 稳定哈希；同键必同下标，跨进程不影响正确性）。"""
+    return zlib.crc32(store_key.encode("utf-8")) % _IDEMPOTENCY_LOCK_STRIPES
+
+
+#: 失败回合的结构化提示（M6 加法字段 effects/suggested_actions；**不改 ``text`` 原文**）。
+_FAILURE_HINTS: dict[ErrorCode, tuple[str, tuple[str, ...]]] = {
+    ErrorCode.INVALID_INPUT: (
+        "这个动作没有被理解或当前无法执行，可以换个说法再试。",
+        ("环顾四周", "查看背包", "拿起火把", "对老哨兵问好"),
+    ),
+    ErrorCode.CONFLICT: (
+        "对局状态已经变化（版本过期或同一幂等键参数不同），请刷新对局视图后重试。",
+        ("环顾四周", "查看背包", "刷新对局视图"),
+    ),
+    ErrorCode.NOT_FOUND: ("存档不存在，请先创建新的游戏。", ("环顾四周", "拿起火把", "查看背包")),
+    ErrorCode.NOT_ALLOWED: ("当前角色无权执行这个动作。", ("环顾四周", "查看背包", "对老哨兵问好")),
+    ErrorCode.OUT_OF_RANGE: ("目标不在可达范围内。", ("环顾四周", "查看背包", "向北走进地窖")),
+}
+_DEFAULT_FAILURE_HINT: tuple[str, tuple[str, ...]] = (
+    "本回合没有生效，可以换一种说法或先观察四周。",
+    ("环顾四周", "查看背包", "对老哨兵问好"),
+)
+
+
+def _with_failure_hints(result: TurnResult) -> TurnResult:
+    """给失败 ``TurnResult`` 填 ``effects``/``suggested_actions``（纯加法）。
+
+    只读取已有 ``error_code`` 映射固定中文提示，不拼接内部错误消息、不改 ``text``、
+    不产生事件，因此对 golden/回放零影响（字段原本恒空、回放不比对）。
+    """
+    code = result.error_code
+    hint, actions = (
+        _FAILURE_HINTS.get(code, _DEFAULT_FAILURE_HINT)
+        if code is not None
+        else _DEFAULT_FAILURE_HINT
+    )
+    return result.model_copy(
+        update={"effects": [{"hint": hint}], "suggested_actions": list(actions)}
+    )
+
+
 class TurnOrchestrator:
     """单回合编排器；依赖全部构造注入，M2 依赖与 M3 依赖可分别装配。"""
 
@@ -382,6 +429,9 @@ class TurnOrchestrator:
         self._actors = actors
         self._character_agents: dict[str, CharacterAgentLike] = dict(character_agents or {})
         self._audit = audit
+        # D-M4-15/G-1：同 Idempotency-Key 的回合在进程内串行，避免两个线程同时未命中
+        # 幂等缓存、后到者拿到 CONFLICT/INVALID_INPUT 而非首结果；固定分段避免锁增长。
+        self._idempotency_locks = tuple(threading.Lock() for _ in range(_IDEMPOTENCY_LOCK_STRIPES))
 
     @property
     def multi_actor_enabled(self) -> bool:
@@ -439,9 +489,32 @@ class TurnOrchestrator:
     # 回合
     # ------------------------------------------------------------------
     def run(self, request: TurnRequest) -> TurnResult:
-        """执行一个回合；业务失败返回 ``TurnResult(ok=False)``（HTTP 仍 200，契约 §5.4）。"""
+        """执行一个回合；业务失败返回 ``TurnResult(ok=False)``（HTTP 仍 200，契约 §5.4）。
+
+        D-M4-15/G-1：同 ``Idempotency-Key`` 的请求在进程内按存储键串行（固定分段锁），
+        后到者进入时能读到首请求写入的幂等记录并原样重放；失败路径再由
+        ``_replay_idempotent`` 重查一次幂等表，覆盖「另一进程在本次检查后写入首结果」
+        的窗口（单进程部署 Q6=A 下由分段锁保证；多进程时退化为显式失败 + 零状态写入）。
+        最终失败结果由 ``_with_failure_hints`` 追加 ``effects``/``suggested_actions``
+        （M6 加法字段，不改 ``text``）。
+        """
         store_key = _turn_store_key(request)
         request_hash = _turn_params_hash(request)
+        lock = self._idempotency_locks[_idempotency_lock_index(store_key)]
+        lock.acquire()
+        try:
+            result = self._run_once(request, store_key, request_hash)
+            if result.ok:
+                return result
+            replayed = self._replay_idempotent(store_key, request_hash, result)
+            if replayed.ok:
+                return replayed
+            return _with_failure_hints(result)
+        finally:
+            lock.release()
+
+    def _run_once(self, request: TurnRequest, store_key: str, request_hash: str) -> TurnResult:
+        """单次回合处理（原有逻辑）；同键串行化与失败后重查由 ``run`` 负责。"""
         cached = self._repo.get_idempotent(store_key)
         if cached is not None:
             if cached.params_hash == request_hash:
@@ -961,6 +1034,22 @@ class TurnOrchestrator:
                 action=action, events=events, state=state, result_data=result_data
             )
         return _fallback_text(action=action, events=events, state=state, result_data=result_data)
+
+    def _replay_idempotent(
+        self, store_key: str, request_hash: str, failure: TurnResult
+    ) -> TurnResult:
+        """失败后重查幂等表：若首请求已写入同参成功结果则原样重放（竞态兜底）。
+
+        无记录、参数不同或读取异常都保留本次失败结果（不掩盖真实业务失败）。成功结果
+        按 D-M5-7 语义复用，避免并发同键请求把首结果覆盖成瞬时 CONFLICT/INVALID_INPUT。
+        """
+        try:
+            cached = self._repo.get_idempotent(store_key)
+            if cached is None or cached.params_hash != request_hash:
+                return failure
+            return TurnResult.model_validate(cached.payload)
+        except Exception:
+            return failure
 
     def _save_idempotent(
         self,

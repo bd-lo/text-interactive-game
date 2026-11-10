@@ -1,14 +1,16 @@
 """LLM 调用记录与调用日志端口（第 12 章 12.2 ``LLMCallRecord``、12.7 幂等缓存）。
 
-职责边界（D-M5-3，2026-11-10 定案）：
+职责边界（D-M5-3，2026-11-10 定案；D-M5-10 成本出范围）：
 - **019**：本模块只定义 `LLMCallRecord` / `LLMCallEntry` / `LLMCallLog` 端口 +
   `InMemoryLLMCallLog` 内存实现 + 结构化日志；单进程内幂等复用与「在飞」判定。
-- **022**：`llm_call_log` 表 + Alembic 0003 + SQL 实现（`persistence/` 实现同一端口），
-  由组合根注入；本模块与 client 不改（`llm/` 不得 import `persistence/`）。
+- **022（缩范围，D-M5-10）**：仅保留并发同键幂等治理（D-M4-15/G-1，见
+  `orchestration/turn_orchestrator.py`）；`llm_call_log` 表、SQL 实现与 Alembic 迁移
+  **不做**——成本/预算按用户决定整体出范围（2026-11-10）。本模块保持内存实现，
+  `llm/` 不得 import `persistence/`。
 
 成功复用语义（第 12 章 12.7）：同键成功记录直接复用，不重复扣费；同键「在飞」返回
-`LLM_UNAVAILABLE`（019 单进程立即失败，不阻塞等待；022 再评估等待/占位）。
-失败记录（含 Schema 失败）只落 `append_failure` 供成本归集与审计，不进入成功复用表。
+`LLM_UNAVAILABLE`（单进程立即失败，不阻塞等待）。
+失败记录（含 Schema 失败）只落 `append_failure` 供审计/排障，不进入成功复用表。
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ class LLMCallRecord(BaseModel):
     """一次 LLM 调用（含重试/修复）的治理元数据（第 12 章 12.2 字段）。
 
     ``request_id`` 由 ``客户端 + 幂等键`` 派生，只用于关联日志，不含私密内容；
-    ``cost_usd`` 在 019 恒为 0（价格表归 022），M5 出口前由 022 填真实成本；
+    ``cost_usd`` 恒为 0（价格表/成本归集按 D-M5-10 出范围，字段保留仅为不破坏记录契约）；
     ``latency_ms`` 是整次调用（含重试与修复请求）的墙钟耗时。
     """
 
@@ -67,10 +69,11 @@ class LLMCallEntry(BaseModel):
 
 
 class LLMCallLog(Protocol):
-    """调用日志端口：019 由内存实现，022 由 `persistence` 的 SQL 实现同一接口。
+    """调用日志端口：本批（D-M5-10 后）只保留进程内实现。
 
-    ``try_begin``/``end`` 用于「在飞」判定（防同键并发重复扣费）；``find_success``/
+    ``try_begin``/``end`` 用于「在飞」判定（防同键并发重复调用）；``find_success``/
     ``save_success`` 用于幂等复用；``append_failure`` 只记失败、不参与复用。
+    持久化 SQL 实现（``llm_call_log`` 表）按 D-M5-10 不做。
     """
 
     def try_begin(self, idempotency_key: str) -> bool:
@@ -90,12 +93,12 @@ class LLMCallLog(Protocol):
         ...
 
     def append_failure(self, record: LLMCallRecord) -> None:
-        """记录一次失败调用（含 Schema 失败），只供成本/审计，不参与复用。"""
+        """记录一次失败调用（含 Schema 失败），只供审计/排障，不参与复用。"""
         ...
 
 
 class InMemoryLLMCallLog:
-    """`LLMCallLog` 的进程内线程安全实现（019；022 换 SQL 实现，接口不变）。"""
+    """`LLMCallLog` 的进程内线程安全实现（D-M5-10 后为唯一实现）。"""
 
     def __init__(self) -> None:
         """创建空日志：成功表、失败表与在飞集合均为空。"""
@@ -148,7 +151,8 @@ class InMemoryLLMCallLog:
 def usage_to_tokens(usage: dict[str, Any]) -> tuple[int, int]:
     """从供应商 usage 字典提取 ``(prompt_tokens, completion_tokens)``。
 
-    缺失/类型不符按 0 处理（第 12 章 12.2：优先供应商 usage，缺失由 022 估算并标注）。
+    缺失/类型不符按 0 处理（第 12 章 12.2：优先供应商 usage；token 估算属成本口径，
+    按 D-M5-10 出范围，缺失一律记 0、不做估算）。
     """
     prompt = usage.get("prompt_tokens", 0)
     completion = usage.get("completion_tokens", 0)
