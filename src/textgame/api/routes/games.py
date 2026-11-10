@@ -21,7 +21,10 @@ from textgame.api.schemas import (
     CreateGameBody,
     GamePlayerViewResponse,
     GameViewResponse,
+    ReplayEventResponse,
+    ReplayResponse,
 )
+from textgame.domain.events import Event
 from textgame.domain.results import ErrorCode
 from textgame.orchestration.turn_orchestrator import (
     CreateGameError,
@@ -32,6 +35,28 @@ from textgame.services.audit_service import AuditService
 from textgame.services.query_service import GameNotFoundError, QueryService
 
 router = APIRouter(prefix="/api/v1", tags=["games"])
+
+#: M6 回放契约 D-M6-3：``limit`` 默认 200、上限 500。
+_REPLAY_DEFAULT_LIMIT = 200
+_REPLAY_MAX_LIMIT = 500
+
+
+def _replay_event(event: Event) -> ReplayEventResponse:
+    """已盖章 ``Event`` → 回放响应项；未完全盖章属存储层内部错误（映射 500 信封）。"""
+    if event.id is None or event.seq is None or event.ts is None:
+        raise ApiError(ErrorCode.INTERNAL, "回放事件未完全盖章")
+    return ReplayEventResponse(
+        id=event.id,
+        seq=event.seq,
+        turn_id=event.turn_id,
+        actor_id=event.actor_id,
+        method=event.method,
+        event_type=event.event_type.value if event.event_type is not None else None,
+        params=dict(event.params),
+        result=dict(event.result),
+        rng_seed=event.rng_seed if event.rng_seed is not None else 0,
+        ts=event.ts,
+    )
 
 
 @router.post("/games", status_code=201, response_model=CreatedGameResponse)
@@ -90,6 +115,38 @@ def get_game_player_view(
     except GameNotFoundError as exc:
         raise ApiError(ErrorCode.NOT_FOUND, f"存档不存在: {game_id}") from exc
     return GamePlayerViewResponse(**view)
+
+
+@router.get("/games/{game_id}/replay", response_model=ReplayResponse)
+def get_game_replay(
+    game_id: str,
+    query_service: Annotated[QueryService, Depends(get_query_service)],
+    from_seq: Annotated[int, Query(ge=1)] = 1,
+    limit: Annotated[int, Query(ge=1, le=_REPLAY_MAX_LIMIT)] = _REPLAY_DEFAULT_LIMIT,
+) -> ReplayResponse:
+    """按全局 ``seq`` 升序返回事件切片（M6 回放契约 D-M6-3，只读零写入）。
+
+    ``from_seq`` 缺省 1（存档起点）、``limit`` 缺省 200（上限 500）；``result.narrative``
+    原样保留供文本回放。未知存档 404 信封；``from_seq`` 非正整数或越过「末事件后一位」
+    （``> last_seq + 1``）→ 422 ``INVALID_INPUT``；``from_seq == last_seq + 1`` 返回空窗口。
+    """
+    try:
+        events = query_service.read_events(game_id)
+    except GameNotFoundError as exc:
+        raise ApiError(ErrorCode.NOT_FOUND, f"存档不存在: {game_id}") from exc
+    last_seq = events[-1].seq or 0 if events else 0
+    if from_seq > last_seq + 1:
+        raise ApiError(
+            ErrorCode.INVALID_INPUT,
+            f"from_seq 越界: 存档最后事件序号为 {last_seq}",
+        )
+    window = [event for event in events if (event.seq or 0) >= from_seq][:limit]
+    items = [_replay_event(event) for event in window]
+    return ReplayResponse(
+        events=items,
+        from_seq=from_seq,
+        to_seq=items[-1].seq if items else from_seq - 1,
+    )
 
 
 @router.get("/games/{game_id}/audit", response_model=AuditListResponse)

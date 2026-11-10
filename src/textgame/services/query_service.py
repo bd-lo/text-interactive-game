@@ -63,14 +63,26 @@ class QueryService:
         }
 
     def get_inventory(self, state: GameState, actor_id: str) -> dict[str, Any]:
-        """返回 ``{"items": [{"item_id", "name"}]}``；未知物品引用直接跳过。"""
+        """返回 ``{"items": [{"item_id", "name", "qty"}]}``；同模板实例聚合计数（加法字段）。
+
+        模板键与 ``CraftService`` 背包聚合口径一致（D-M4-1）：有 tags 时取 ``item.tags[0]``，
+        无 tags 时用物品自身 id。``item_id``/``name`` 取该模板首个实例；``qty`` 为该模板
+        实例数。M2 场景物品 tags 为语义标签（light/consumable…）互不相同，故 qty 恒 1；
+        制造产物同模板实例会正确合并。未知物品引用直接跳过。
+        """
         character = self._require_character(state, actor_id)
-        items = [
-            {"item_id": item_id, "name": state.items[item_id].name}
-            for item_id in character.inventory
-            if item_id in state.items
-        ]
-        return {"items": items}
+        grouped: dict[str, dict[str, Any]] = {}
+        for item_id in character.inventory:
+            item = state.items.get(item_id)
+            if item is None:
+                continue
+            template_key = item.tags[0] if item.tags else item.id
+            entry = grouped.get(template_key)
+            if entry is None:
+                grouped[template_key] = {"item_id": item.id, "name": item.name, "qty": 1}
+            else:
+                entry["qty"] += 1
+        return {"items": list(grouped.values())}
 
     def build_perception_slice(
         self,
@@ -219,6 +231,17 @@ class QueryService:
             "inventory": self.get_inventory(state, PLAYER_ID)["items"],
             "room": self.get_room_view(state, PLAYER_ID),
         }
+
+    def read_events(self, game_id: str) -> list[Event]:
+        """按 ``seq`` 升序返回存档全部已盖章事件（只读、零写入；M6 回放端点用）。
+
+        未知存档抛 :class:`GameNotFoundError`（接入层映射 404 ``NOT_FOUND`` 信封）。
+        ``GameRepository.read_events`` 本身只读，本方法不产生事件/快照/幂等写入。
+        """
+        record = self._repo.load(game_id)
+        if record is None:
+            raise GameNotFoundError(game_id)
+        return self._repo.read_events(game_id)
 
     @staticmethod
     def _require_character(state: GameState, actor_id: str) -> Character:

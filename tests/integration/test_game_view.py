@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from textgame.domain.models import Item
 from textgame.domain.scenario import (
     ITEM_POTION,
     ITEM_POTION_NAME,
@@ -138,7 +139,7 @@ def test_view_reflects_committed_turn_state(game_harness) -> None:
     assert view["version"] == 2
     assert view["turn"] == 2
     assert view["hp"] == 20
-    assert view["inventory"] == [{"item_id": ITEM_TORCH, "name": ITEM_TORCH_NAME}]
+    assert view["inventory"] == [{"item_id": ITEM_TORCH, "name": ITEM_TORCH_NAME, "qty": 1}]
     assert view["room"]["items"] == [{"item_id": ITEM_POTION, "name": ITEM_POTION_NAME}]
 
     record = game_harness.repo.load(game_id)
@@ -175,6 +176,41 @@ def test_view_is_read_only_zero_events_and_version_stable(game_harness) -> None:
         first["version"],
         first["snapshot_version"],
     )
+
+
+def test_inventory_qty_aggregates_same_template(game_harness) -> None:
+    """背包 qty 按模板聚合：同 ``tags[0]`` 的两个实例合并为一项 qty=2（D-M4-1 口径）。"""
+    client = game_harness.client
+    game_id = _create_game(client)["game_id"]
+    record = game_harness.repo.load(game_id)
+    assert record is not None
+    state = record.state
+    first = Item(
+        id="item_01J9Z3K4Q7X8Y9Z0ABCDEFGHK8",
+        name="橡木柄",
+        description="一根削好的橡木柄。",
+        tags=["item.oak_handle"],
+    )
+    second = Item(
+        id="item_01J9Z3K4Q7X8Y9Z0ABCDEFGHK9",
+        name="橡木柄",
+        description="一根削好的橡木柄。",
+        tags=["item.oak_handle"],
+    )
+    player = state.characters[PLAYER_ID]
+    crafted_state = state.model_copy(
+        update={
+            "items": {**state.items, first.id: first, second.id: second},
+            "characters": {
+                **state.characters,
+                PLAYER_ID: player.model_copy(update={"inventory": [first.id, second.id]}),
+            },
+        }
+    )
+
+    inventory = game_harness.query.get_inventory(crafted_state, PLAYER_ID)["items"]
+
+    assert inventory == [{"item_id": first.id, "name": "橡木柄", "qty": 2}]
 
 
 def test_view_unknown_game_returns_404_envelope(game_harness) -> None:

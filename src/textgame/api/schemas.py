@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -91,6 +92,21 @@ class RoomViewResponse(BaseModel):
     npcs: list[NpcRefResponse]
 
 
+class InventoryItemResponse(BaseModel):
+    """``/view`` 玩家背包物品（M6 加法字段 ``qty``：同模板实例聚合计数）。
+
+    与 ``ItemRefResponse``（房间可见物品）分开建模，避免改房间物品既有契约；``item_id``/
+    ``name`` 取该模板首个实例，``qty`` 为 ``item.tags[0]``（无 tags 时用自身 id）去重后的
+    数量，与 ``CraftService`` 的背包聚合口径一致（D-M4-1）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    name: str
+    qty: int = Field(default=1, ge=1)
+
+
 class GamePlayerViewResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/view`` 200 响应（M6 状态面板/终端客户端契约）。
 
@@ -106,8 +122,42 @@ class GamePlayerViewResponse(BaseModel):
     status: Literal["active", "ended"]
     hp: int
     max_hp: int
-    inventory: list[ItemRefResponse]
+    inventory: list[InventoryItemResponse]
     room: RoomViewResponse
+
+
+class ReplayEventResponse(BaseModel):
+    """``GET /api/v1/games/{game_id}/replay`` 的事件项（D-M6-3，与事件表字段一一对应）。
+
+    ``result.narrative`` 原样保留（文本回放的数据源）；``ts`` 为 UTC 时间戳。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    seq: int
+    turn_id: int
+    actor_id: str
+    method: str
+    event_type: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    rng_seed: int
+    ts: datetime
+
+
+class ReplayResponse(BaseModel):
+    """``GET /api/v1/games/{game_id}/replay`` 200 响应；``events`` 按全局 ``seq`` 升序。
+
+    ``to_seq`` 为本次返回末条事件的 ``seq``；空窗口（``from_seq == last_seq + 1``）时
+    为 ``from_seq - 1``（即 ``to_seq < from_seq`` 表示无事件）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[ReplayEventResponse]
+    from_seq: int
+    to_seq: int
 
 
 class AuditRecordResponse(BaseModel):
@@ -145,8 +195,11 @@ __all__ = [
     "CreatedGameResponse",
     "GamePlayerViewResponse",
     "GameViewResponse",
+    "InventoryItemResponse",
     "ItemRefResponse",
     "NpcRefResponse",
+    "ReplayEventResponse",
+    "ReplayResponse",
     "RoomViewResponse",
     "TurnRequestBody",
 ]
