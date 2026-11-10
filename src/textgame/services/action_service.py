@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from textgame.domain.events import Event, EventType
@@ -20,6 +21,21 @@ from textgame.services.tool_context import ToolContext
 
 #: 背包上限与 ``Character.inventory`` 的模型约束保持一致（第 5 章 5.4）。
 _INVENTORY_LIMIT = 64
+
+#: 剧情/任务类物品标签前缀（R1 玩家实测 P0-3 安全子集）：带这些标签的物品不可被
+#: 「使用」消耗，否则任务物品会被永久销毁。场景数据里「古物」的 tags 为 ``["quest"]``
+#: （``domain/scenario.py``）；``quest_item``/``quest.*``/``story.*`` 等同前缀均视为剧情类。
+#: 普通消耗品（如 ``consumable``）与一般物品标签（``light``/``weapon``/``item.*``）不受影响。
+_STORY_TAG_PREFIXES: tuple[str, ...] = ("quest", "story")
+
+
+def _is_story_item(tags: Sequence[str]) -> bool:
+    """物品是否带剧情/任务标签（前缀匹配；仅供 ``use_item`` 的前置保护使用）。"""
+    for tag in tags:
+        for prefix in _STORY_TAG_PREFIXES:
+            if tag == prefix or tag.startswith(f"{prefix}_") or tag.startswith(f"{prefix}."):
+                return True
+    return False
 
 
 def _direction_name(direction: str) -> str:
@@ -108,13 +124,19 @@ class ActionService:
         )
 
     def use_item(self, ctx: ToolContext, state: GameState, *, item_id: ItemId) -> Result:
-        """使用背包内物品；不在背包 → ``NOT_FOUND``。"""
+        """使用背包内物品；不在背包 → ``NOT_FOUND``，剧情/任务物品 → ``INVALID_INPUT``。
+
+        剧情/任务物品禁止被「使用」销毁（R1 实测：古物曾可被 use 永久消耗）：
+        前置拒绝且零事件、背包不变；普通消耗品的既有行为与事件结构完全不变。
+        """
         character = state.characters.get(ctx.actor_id)
         if character is None:
             return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
         item = state.items.get(item_id)
         if item is None or item_id not in character.inventory:
             return Result.fail(ErrorCode.NOT_FOUND, "背包里没有这件物品")
+        if _is_story_item(item.tags):
+            return Result.fail(ErrorCode.INVALID_INPUT, "这件东西不能这样用")
         draft = Event(
             turn_id=ctx.turn_id,
             actor_id=ctx.actor_id,

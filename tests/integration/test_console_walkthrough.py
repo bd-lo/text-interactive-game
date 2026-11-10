@@ -117,3 +117,102 @@ def test_status_line_renders_view() -> None:
     assert "废弃哨站·入口" in line
     assert "行囊：火把" in line
     console.assert_clean_output(line)
+
+
+def test_render_turn_renders_failure_hints() -> None:
+    """失败回合在 16 字文案后追加 suggested_actions/effects 提示（不改原文案）。"""
+    view: dict[str, Any] = {
+        "hp": 20,
+        "max_hp": 20,
+        "inventory": [],
+        "room": {"room_id": "room_a", "title": "废弃哨站·入口"},
+    }
+    result: dict[str, Any] = {
+        "ok": False,
+        "text": "这个动作没有生效，你停下了脚步。",
+        "suggested_actions": ["环顾四周", "查看背包"],
+        "effects": [{"hint": "背包里没有这件物品"}, {"reason": "internal english only"}],
+    }
+    rendered = console.render_turn(result, view)
+    assert rendered.startswith("这个动作没有生效，你停下了脚步。")
+    assert console.FAILED_HINT in rendered
+    assert "可以试试：环顾四周 / 查看背包" in rendered
+    assert "提示：背包里没有这件物品" in rendered
+    assert "internal english only" not in rendered
+    console.assert_clean_output(rendered)
+
+
+def test_render_turn_without_hints_keeps_oss1_output() -> None:
+    """A4 提示字段为空时，失败回合输出与 OSS-1 逐字一致（不含多余行）。"""
+    view: dict[str, Any] = {
+        "hp": 20,
+        "max_hp": 20,
+        "inventory": [],
+        "room": {"room_id": "room_a", "title": "废弃哨站·入口"},
+    }
+    result: dict[str, Any] = {
+        "ok": False,
+        "text": "这个动作没有生效，你停下了脚步。",
+        "suggested_actions": [],
+        "effects": [],
+    }
+    expected = "\n".join(
+        [
+            "这个动作没有生效，你停下了脚步。",
+            console.FAILED_HINT,
+            console.status_line(view),
+        ]
+    )
+    assert console.render_turn(result, view) == expected
+
+
+def test_failure_detail_lines_tolerates_object_without_fields() -> None:
+    """编排层结果若为对象且字段缺失，失败提示容错为空（不抛错、不伪造）。"""
+    from types import SimpleNamespace
+
+    assert console._failure_detail_lines(SimpleNamespace()) == []
+    details = console._failure_detail_lines(
+        SimpleNamespace(suggested_actions=["拿起火把"], effects=[{"hint": "先翻翻行囊"}])
+    )
+    assert details == ["可以试试：拿起火把", "提示：先翻翻行囊"]
+    # 含协议内部字段的提示一律不显示（玩家视角不泄漏 json/version 等词）
+    filtered = console._failure_detail_lines(
+        SimpleNamespace(suggested_actions=["查看 version 字段"], effects=[])
+    )
+    assert filtered == []
+
+
+def test_scene_guidance_uses_real_view_data() -> None:
+    """首屏引导只列只读视图里真实存在的动作（不编造剧情/目标）。"""
+    view: dict[str, Any] = {
+        "room": {
+            "exits": {"north": "room_b"},
+            "items": [{"item_id": "item_a", "name": "火把"}],
+            "npcs": [{"npc_id": "npc_a", "name": "老哨兵"}],
+        }
+    }
+    lines = console.scene_guidance(view)
+    joined = "\n".join(lines)
+    assert "往北走" in joined
+    assert "拿起火把" in joined
+    assert "对老哨兵问好" in joined
+    assert "查看背包" in joined
+    assert "剧情" not in joined
+    console.assert_clean_output(joined)
+
+
+def test_status_line_aggregates_view_qty() -> None:
+    """A4 加法字段 qty：同模板多件按「名字×N」展示，qty=1/缺省保持原样。"""
+    view: dict[str, Any] = {
+        "hp": 20,
+        "max_hp": 20,
+        "inventory": [
+            {"item_id": "item_a", "name": "铁锭", "qty": 2},
+            {"item_id": "item_b", "name": "橡木柄", "qty": 1},
+            {"item_id": "item_c", "name": "铜线", "qty": 2},
+        ],
+        "room": {"room_id": "room_a", "title": "废弃铁匠铺"},
+    }
+    line = console.status_line(view)
+    assert "行囊：铁锭×2、橡木柄、铜线×2" in line
+    console.assert_clean_output(line)
