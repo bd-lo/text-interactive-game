@@ -1,7 +1,7 @@
 # 总体进展总览（PROGRESS）
 
 > 本文件与 `docs/progress/` 下的单次进度文档配合使用；每次新建进度文档必须在同一提交或 PR 内更新本文件。
-> 统计基准日：2026-11-10 ｜ 当前里程碑：**M5 API 调用治理（进行中 2/6，019-llmclient、020-model-tier-cache 已交付）** ｜ 下一个可用编号：**021**（M5 019–024；M6 前端体验 025–028 已预留；M6 后端前置为出口附加项、不占编号）
+> 统计基准日：2026-11-10 ｜ 当前里程碑：**M5 API 调用治理（进行中 3/6，019/020/022 已交付）＋ M6 前端体验（进行中 1/4，025 骨架已交付）** ｜ 下一个可用编号：**021**（M5 019–024；M6 下一个 026；M6 后端前置 M6B-* 与入口轨 OSS-2 为出口附加项、不占编号）
 
 ## 1. 里程碑状态
 
@@ -11,8 +11,8 @@
 | M2 | 单场景 MVP | 005–009 | 已完成 | 5/5 | 100.0% | [009](progress/009-2026-11-08-golden-replay.md) | 无 |
 | M3 | 多角色 | 010–014 | 已完成 | 5/5 | 100.0% | [014](progress/014-2026-11-09-conflict-audit.md) | 无 |
 | M4 | 制造 | 015–018 | 已完成 | 4/4 | 100.0% | [018](progress/018-2026-11-09-craft-replay.md) | 无 |
-| M5 | API 调用治理 | 019–024 | 进行中 | 2/6 | 33.3% | [020](progress/020-2026-11-10-model-tier-cache.md) | 无 |
-| M6 | 前端体验 | 025–028 | 未开始 | 0/4 | 0.0% | - | M6 后端前置未交付（`replay` 端点 / `character-cards` 8 端点 + `card_service` / 静态托管与 SPA fallback / `web-build` CI，D-M6-1..6，属 M6 出口附加项）；前端 025–028 未开始 |
+| M5 | API 调用治理 | 019–024 | 进行中 | 3/6 | 50.0% | [022](progress/022-2026-11-10-concurrency-idempotency.md) | 无 |
+| M6 | 前端体验 | 025–028 | 进行中 | 1/4 | 25.0% | [025](progress/025-2026-11-10-web-skeleton.md) | M6 后端前置剩余：character-cards 8 端点 + Alembic 0003、web-build 远端验证未跑；027/026/028 未开始 |
 
 ## 2. 完成度计算规则
 
@@ -46,6 +46,11 @@
 | 020 | 2026-11-10 | M5 | model-tier-cache | `llm/config/` 分层 JSON 配置（包内默认 + `TEXTGAME_LLM_CONFIG` 覆盖、非法 fail-fast）+ `model_tier→(provider, model, api_base)` 分级 + 进程内 `TTLCache`（allowlist 默认空=不缓存、命中 `cache_hit=true`）；23 例单测；全量 1177 passed、replay 61 零回归、四门全绿、覆盖率 88% | [020](progress/020-2026-11-10-model-tier-cache.md) |
 | OSS-1 | 2026-11-10 | 入口轨（不占编号） | playable-entry | 一条命令开玩终端入口（`python -m textgame.console` / `demo --check` / quickstart / examples / README 5 分钟上手）+ 只读 `GET /games/{id}/view` 与背包意图安全子集；demo/console `--check` exit 0、全量 1177 passed、replay 61 零回归、玩家独立验收 PASS | [OSS-1](progress/OSS-1-2026-11-10-playable-entry.md) |
 | CI-1 | 2026-11-10 | 基础设施（不占编号） | actions-offline-fix | 定位并修复公开仓库 CI 的 pytest-only 失败（`import litellm` 期远端成本表下载被 Q9 禁网守卫拦截）：`LITELLM_LOCAL_MODEL_COST_MAP` 测试/生产双端离线化 + 2 例回归 + CI 失败注解诊断；本地 1179 passed、replay 61、四门绿，远端 CI 全绿（run 见 §7） | [CI-1](progress/CI-1-2026-11-10-actions-offline-fix.md) |
+| 022 | 2026-11-10 | M5 | concurrency-idempotency | D-M4-15/G-1 关闭：并发同 `Idempotency-Key` 回合进程内分段锁串行 + 失败重查幂等表；6 例并发测试；全量 1249 passed、replay 61 零回归 | [022](progress/022-2026-11-10-concurrency-idempotency.md) |
+| 025 | 2026-11-10 | M6 | web-skeleton | Vue 3 + Vite + TS + Pinia + Router SPA 骨架（26 tracked files）+ API client/幂等键工具/对局回路 + `web-build` CI job；vitest 5 files/17 tests、契约测试 6 例、build OK | [025](progress/025-2026-11-10-web-skeleton.md) |
+| M6B-1 | 2026-11-10 | M6 后端前置（不占编号） | replay-endpoint | `GET /games/{id}/replay`（D-M6-3）：`from_seq`/`limit` 校验、seq 升序、404/422 信封、只读零写入；9 例 | [M6B-1](progress/M6B-1-2026-11-10-replay-endpoint.md) |
+| M6B-2 | 2026-11-10 | M6 后端前置（不占编号） | static-spa | `create_app(static_dir)` 静态托管 + SPA fallback（缺失跳过/API 优先/安全头/路径遍历防护）+ `/view` inventory `qty`；10 例 + 合成夹具 | [M6B-2](progress/M6B-2-2026-11-10-static-spa.md) |
+| OSS-2 | 2026-11-10 | 入口轨（不占编号） | console-safe-pack | console `--scenario/--new/--continue`、首屏引导、失败提示渲染；剧情/任务物品 `use_item` 保护；walkthrough 11 + scenario 10 + item_use_guard 16 + turn_hints 6 例；demo --check 7 屏字数不变 | [OSS-2](progress/OSS-2-2026-11-10-console-safe-pack.md) |
 
 ## 4. 编号分配与变更记录
 
@@ -55,10 +60,10 @@
 | M2 | 005–009 | 005–009 | - | M2 五切片全部交付并通过出口独立验收（PASS，无 P0/P1）；`010` 起进入 M3 多角色 |
 | M3 | 010–014 | 010–014 | - | M3 五切片全部交付：两 NPC 冲突提案被裁决 + 审计、越权/冲突/CAS 安全用例全绿、10 回合多角色 golden 一致；`015` 起进入 M4 制造 |
 | M4 | 015–018 | 015–018 | 019 | M4 制造已完成（4/4，全量 1096 passed、replay 61）；制造契约 D-M4-1–D-M4-15 已定案/回填（见 §5 与 `docs/decisions/2026-11-09-m4-craft-contract.md`）；`019` 起进入 M5 API 调用治理 |
-| M5 | 019–024 | 019–020 | 021 | 019/020 已交付（全量 1177 passed、replay 61）；M5 决策 D-M5-1..9 见 `docs/decisions/2026-11-10-m5-api-governance.md`；顺序 020→022→021→024→023（D-TEAM-2）；出口附加项（LLM Agent 接线，不新增编号）见第 17 章 §17.2 |
-| M6 | 025–028 | - | 025 | 编号已预留（M1–M5 完成后启动）；**M6 后端前置**（replay/卡库 8 端点/静态托管/SPA fallback，D-M6-1..6）登记为出口附加项、不占编号；04:50 轮次已交付其中 `GET /games/{id}/view` 只读端点 |
+| M5 | 019–024 | 019–020、022 | 021 | 019/020/022 已交付（022 按 D-M5-10 缩范围为并发幂等；全量 1249 passed、replay 61）；M5 决策 D-M5-1..10 见 `docs/decisions/`；顺序 020→022→021→024→023（D-TEAM-2）；出口附加项（LLM Agent 接线，不新增编号）见第 17 章 §17.2 |
+| M6 | 025–028 | 025 | 026 | 025 已交付（1/4，全量 1249 passed、前端 build/vitest 绿）；执行顺序按 D-TEAM-3：027-lite → 027 完整（接入 replay）→ 026（卡导入，依赖 cards 端点）→ 028（LLM 生成卡，依赖 M5 接线）；**M6 后端前置**（D-M6-1..6，不占编号）已交付 view（前批）/replay（M6B-1）/静态托管与 SPA（M6B-2），剩余 character-cards 8 端点 + `card_service` + Alembic 0003、web-build 远端验证 |
 
-> 范围外入口轨（OSS-1 终端可玩入口）不占 001–028 编号，进度文档以 `OSS-1-*` 单独命名并登记于 §3。
+> 范围外入口轨（OSS-1/OSS-2 终端入口）与 M6 后端前置（M6B-1/M6B-2）不占 001–028 编号，进度文档以 `OSS-*`/`M6B-*` 单独命名并登记于 §3。
 
 ## 5. 接口偏离登记（对照开发文档第 6、7 章）
 
@@ -68,7 +73,7 @@
 | D-005-2 | `EventType` | 第 14 章 §14.7 核心表未列 `DIALOGUE_EXCHANGED` | 新增 `DIALOGUE_EXCHANGED`（`talk_to` 写事件） | 第 6 章 §6.4 动作表需对话事件 | 已登记 |
 | D-005-3 | `game_created` 载荷 | 第 14 章 §14.7：`card_id`/`card_snapshot`/`starting_room_id`/`initial_character_id`/`snapshot_version`/`save_seed` | result 增 `initial_state` 整状态快照（M2 无人物卡库，回放据此重建） | M2 简化，基线字段不变；M6 人物卡库接入后评估回退 | 已登记 |
 | D-005-4 | `GameState.apply` | 第 5 章：占位 `NotImplementedError`，投影由 persistence/replay 提供 | `domain/reducers.py` 纯投影 + `apply` 委托；persistence/回放复用同一实现 | 第 14 章 §14.7 reducer 落地；`domain` 零框架依赖不变 | 已登记 |
-| D-005-5 | `POST /api/v1/games` | 第 6 章 §6.7 v0.2：body `{card_id}`，响应 `{game_id, turn, version, snapshot_version, scenario}` | M2–M4 body `{seed?, scenario?}`、响应含 `save_seed`（无人物卡库） | **2026-11-10 定案（D-M6-2，`docs/decisions/2026-11-10-m6-backend-contract.md`）**：M6 后端前置实现时按加法兼容 —— body `{card_id?, seed?, scenario?}`（同给 `card_id` 与 `seed/scenario` → 422），无 `card_id` 保持现行为；响应以实际 5 字段（`game_id`/`turn`/`version`/`snapshot_version`/`save_seed`）为前端类型源，第 6 章已按实际写法回写 | 已定案 |
+| D-005-5 | `POST /api/v1/games` | 第 6 章 §6.7 v0.2：body `{card_id}`，响应 `{game_id, turn, version, snapshot_version, scenario}` | M2–M4 body `{seed?, scenario?}`、响应含 `save_seed`（无人物卡库） | **2026-11-10 定案（D-M6-2，`docs/decisions/2026-11-10-m6-backend-contract.md`）**：M6 后端前置实现时按加法兼容 —— body `{card_id?, seed?, scenario?}`（同给 `card_id` 与 `seed/scenario` → 422），无 `card_id` 保持现行为；响应以实际 5 字段（`game_id`/`turn`/`version`/`snapshot_version`/`save_seed`）为前端类型源，第 6 章已按实际写法回写（原「6 字段」表述为笔误，本批按实测 5 字段固化） | 已定案 |
 | D-M2-1 | 写操作路由 | 第 7 章 §7.4 DESTRUCTIVE → ProposalQueue/Resolver | M2 单角色直接 gate → 服务层 → GameEngine（仍过白名单/scope/Schema/规则前置/唯一写入者），ProposalQueue/Resolver 留 M3 | 第 17 章 M2 范围不含多角色 | 已登记 |
 | D-006-1 | 工具矩阵 | 第 7 章 §7.3 可见性矩阵未列 `use_item` | 新增 `use_item`（DESTRUCTIVE，`ITEM_CONSUMED` 事件）满足 M2「用」动作 | M2 五类动作需求；M2 结束回写第 7 章 | 已登记 |
 | D-006-2 | 工具执行 | 第 7 章工具函数直接执行 | builtin 仅承载 `ToolSpec`/Schema/白名单，执行统一经 `ToolGate` 路由服务层 | 工具函数无法持有 `GameState`（分层与不变量约束） | 已登记 |
@@ -105,13 +110,14 @@
 | D-M4-12 | 治理项（Q2/Q3/Q4/Q8） | 第 20 章 §20.3：Q2/Q3/Q4/Q8 未定案 | Q4=B（M4 落地）；Q2=C、Q3=B、Q8=B 关闭 | 见第 20 章 §20.3/§20.4（D-M4-12，裁决 A-05） | 已回写 |
 | D-M4-13 | 生产装配口径 | 第 13 章 §13.4/§13.6、D-M4-3：M4 制造「不接 ProposalQueue/Resolver」 | 生产装配复用 M3 编排链路：Player Proposal→ProposalQueue→确定性 Resolver→ToolGate→CraftService→GameEngine 单事务；m4 无 NPC Agent→无跨角色冲突、无 Judge 覆盖；失败提案照常写 `audit_events`（committed/aborted/conflicted，逐提案 verdict=applied/rejected） | D-M4-3 仅指「草案不入队」；018 golden 用生产同构 harness（`m4_prod_harness`）生成，9 章文档已回写 | 已回写 |
 | D-M4-14 | 制造种子绑定（缺陷修复） | 第 13 章 §13.2 / D-M4-4：`ctx.save_seed` 来源未显式绑定存档 | `Resolver.resolve` 改用 `snapshot.rng_state.save_seed` 构造 `ToolContext`/规则前置（不再用组合根默认 save-42）；修复显式非 42 seed 的 m4 存档 `event.rng_seed == result.craft.rng_seed` 与实例 ID 派生 | 生产装配修复（2026-11-10，大规模模拟数据测试发现；新增 `tests/integration/test_craft_seed_binding.py` 3 例） | 已修复 |
-| D-M4-15 | 并发幂等占位（P2 已知限制） | 第 6 章 §6.7 幂等键语义：同键并发首次请求未定义 | 同 `Idempotency-Key` 并发提交时，未命中缓存的竞争请求可能瞬时返回 CONFLICT/INVALID_INPUT 而非首结果；串行重试可重放成功响应，只提交一次（大规模模拟测试 P2，非 D-M4-14 引入） | M5 治理项 **G-1**，owner=**022-concurrency-idempotency**（D-M5-10 缩范围后唯一目标；成本/持久化治理不再同批）；019 不实现（D-M5-7） | 已知限制（M5-022 关闭） |
+| D-M4-15 | 并发幂等占位（P2 已知限制） | 第 6 章 §6.7 幂等键语义：同键并发首次请求未定义 | 同 `Idempotency-Key` 并发提交时，未命中缓存的竞争请求可能瞬时返回 CONFLICT/INVALID_INPUT 而非首结果；串行重试可重放成功响应，只提交一次（大规模模拟测试 P2，非 D-M4-14 引入） | M5 治理项 **G-1**，owner=**022-concurrency-idempotency**（D-M5-10 缩范围后唯一目标；成本/持久化治理不再同批）；019 不实现（D-M5-7） | 已关闭（M5-022 交付，2026-11-10；进程内分段锁口径见 022 进度文档 §4） |
 | D-M5-1 | `LLMClient` 签名 | 第 12 章 §12.2、第 21 章 §21.2.4：`async def complete_json/complete_text` | M5 权威签名改为**同步** `def complete_json/complete_text`（全链路同步、路由在线程池执行）；异步化复评门=M6 流式/SSE | D-M5-1（ADR 2026-11-10；第 12/21 章已回写） | 已回写 |
 | D-M5-2 | Schema 修复链归属 | 第 12 章 12.3/12.6：修复由 instructor 在 LLMClient 内做 1 次 | 019 修复链仍由 `validation.complete_json_with_repair` 承担、`LLMClient` 只返回原始文本；`instructor` 未启用运行路径，021 复核迁移 | D-M5-2（ADR 2026-11-10；第 12 章已回写） | 已回写 |
 | D-M5-3 | `LLMRequest.output_schema` 类型 | 第 12 章 §12.2 / 第 21 章：`type[BaseModel] 或 None = Field(alias="schema")` | 字段改为 `type[BaseModel] 或 None`（Pydantic 模型类）；不使用 `schema` alias（Pydantic v2 保留属性名），新增 `safe_dump()` 供日志/哈希 | D-M5-3（ADR 2026-11-10；第 12/21 章已回写） | 已回写 |
-| D-M5-4 | LLM 配置文件格式 | 第 12 章 12.4：配置写 `config/llm.yaml` | 改 **JSON-only**：`src/textgame/llm/config/llm.default.json`（包内默认）+ `TEXTGAME_LLM_CONFIG` 覆盖；不引入 PyYAML（非声明依赖），020 起落地分级/回退/价格 | D-M5-4（ADR 2026-11-10；第 12/16/19 章已回写） | 已回写 |
+| D-M5-4 | LLM 配置文件格式 | 第 12 章 12.4：配置写 `config/llm.yaml` | 改 **JSON-only**：`src/textgame/llm/config/llm.default.json`（包内默认）+ `TEXTGAME_LLM_CONFIG` 覆盖；不引入 PyYAML（非声明依赖），020 起落地分级/缓存，价格字段仅预留（D-M5-10 不实现） | D-M5-4（ADR 2026-11-10；第 12/16/19 章已回写） | 已回写 |
 | D-M5-6 | LLM 默认装配 | 第 3 章 §3.6 方案 A / 第 17 章：M5 出口附加项才接线 | `Settings.llm_enabled` 默认 false → `DisabledLLMClient`（零联网）；`llm/factory.build_llm_client` 在 true 时构造真实客户端且缺 key 构造期失败；`main.py` 经工厂注入同一实例；真实 Agent 接线留 M5 出口附加项 | D-M5-6（ADR 2026-11-10；第 12/16 章已回写） | 已回写 |
 | D-M5-10 | 022 缩范围（成本记录不做） | 第 12 章 §12.4/§12.7/§12.8、第 17 章 §17.2：022-cost-budget = 成本归集/预算断言 + `llm_call_log` + Alembic 0003 + D-M4-15 关闭 | 用户 2026-11-10 拍板：022 缩范围为 **022-concurrency-idempotency**（仅 D-M4-15/G-1 并发同键幂等）；成本/预算/价格表/`llm_call_log` 表/Alembic 0003 不做（连成本记录也不做），0003 顺延 M6 卡库；第 12.8 成本 SLO 登记为「用户决定不实现」；M5 出口判据去掉成本报表 | 用户拍板（ADR 2026-11-10，`docs/decisions/2026-11-10-022-scope-and-cost-out.md`）；第 12/17/20 章已回写 | 已定案 |
+| D-M6-7 | `/view` 与 `TurnResult` 加法字段 | 第 6/9 章：`/view` inventory `{item_id,name}`；`TurnResult` 为既定 9 字段 | `/view` inventory 增 `qty`（同模板实例聚合计数；房间物品 `ItemRefResponse` 不变）；`TurnResult.effects`/`suggested_actions`（005 起恒空字段）在失败回合按 `ErrorCode` 固定映射填充（纯加法：不改 `text`/事件/version，不破 golden） | 第 6/9/23 章已回写；前端类型按加法扩展（D-M6-3/4、A4；M6B-2/OSS-2 进度文档） | 已登记 |
 
 ## 6. 风险与阻塞摘要（与开发文档第 20 章同一编号）
 
@@ -133,23 +139,27 @@
 
 ## 7. 当前状态与下一步
 
-- 当前状态：**M1–M4 已完成（4/4、5/5、5/5、4/4 = 100.0%，出口独立验收 PASS）；M5 API 调用治理进行中（2/6，019-llmclient、020-model-tier-cache 已交付）**；M5 决策 D-M5-1..9、04:50 四角色团队方向决策 D-TEAM-1..7、M6 后端契约冻结 D-M6-1..6 均已定案并落档 `docs/decisions/`；M6 前端体验 0/4（后端前置已立项，04:50 轮次交付 `GET /games/{id}/view` 只读端点与终端可玩入口 OSS-1）。**当前 HEAD `cb7863b`（=origin/main）实测全量 1179 passed、replay 61 passed（M2/M3/M4 = 4/5/24，零回归）、覆盖率 88%，四门质量门全绿（ruff check/format 144 files、mypy 84 files、lint-imports 2 kept）**；01:50 交接时点 HEAD `1f74de2` 为历史 1129 passed，04:50 轮次交付后 1177 passed（新增 48 例，零回归），CI 修复轮新增 2 例回归后 1179 passed（HEAD `cb7863b`）。M3 出口证据（合并提交 `a5f2be3` 时点复算，**全量 960 passed**）：
+- 当前状态：**M1–M4 已完成（4/4、5/5、5/5、4/4 = 100.0%，出口独立验收 PASS）；M5 API 调用治理进行中（3/6，019/020/022 已交付）；M6 前端体验进行中（1/4，025 骨架已交付）**；M5 决策 D-M5-1..10、04:50 四角色团队方向决策 D-TEAM-1..7、M6 后端契约冻结 D-M6-1..6 均已定案并落档 `docs/decisions/`；M6 后端前置已交付 view（前批）/replay（M6B-1）/静态托管与 SPA（M6B-2），剩余 character-cards 8 端点 + Alembic 0003、web-build 远端验证未跑。**当前 HEAD `df97e9f`（=origin/main，工作树 clean）实测全量 1249 passed in 18.51s、replay 61 passed（M2/M3/M4 = 4/5/24，零回归）、四门质量门全绿（ruff check/format 154 files、mypy 84 files、lint-imports 2 kept）**；基线 1179 passed（HEAD `cb7863b`）→ 本批新增 **70** 例（含 022 并发、replay、静态/SPA、A4 提示字段、025 契约与 OSS-2 console 等切片；各切片明细见本节证据与 §3 索引，合计以全量实测 1249 为准）。M3 出口证据（合并提交 `a5f2be3` 时点复算，**全量 960 passed**）：
   - 冲突 Demo：两名拾荒者同回合提交冲突提案（turn 2 抢同一瓶药水），Resolver 只让 actor_id 升序靠前者 `applied`、后者 `rejected` 且理由可审计，事件全局 `seq` 连续、`version` 每次提交恰好 +1；
   - 10 回合多角色 golden 回放（`tests/replay/test_m3_golden_replay.py`）：final `state_hash=df58e51d…`、13 条事件、16 行审计；逐回合事件 id/seq/rng_seed/state_hash 精确一致，禁止 snapshot-update；
   - 越权/冲突/CAS 安全用例全绿：124 actor_scope 安全用例（30 格矩阵 + 伪造 scope 零写入）、20 Resolver 安全用例、CAS 过期版本零写入、并发冲突最多 3 次「只重裁决不重解析」；
   - 审计只增表 + `GET /api/v1/games/{id}/audit` 查询；快照 `version` 持久化 + Alembic baseline；M2 638 基线零回归（M2 golden 未复算）。
 - M4 出口证据（4/4，2026-11-09）：配方契约/确定性制造/自由制造校验/5 个制造 golden 全绿；`tests/replay/test_m4_golden_replay.py` 24 例在生产同构装配（D-M4-13）上逐字段断言事件/种子/审计/state_hash；失败回合 version/last_seq/state_hash 三不变且审计 rejected/aborted；M4 replay 24 passed、M2/M3 golden 4/5 passed 零回归；全量 1093 passed。
 - M5 出口证据（019–020/6 切片，2026-11-10）：019 交付 LLMClient 同步契约 + LiteLLMClient（整链 deadline、tenacity≤3 仅超时/429/5xx、RPM 令牌桶、幂等复用与在飞、结构化日志脱敏、token 计量、`LLMCallRecord`）+ `build_llm_client` 默认离线/启用缺 key fail-fast（D-M5-6），37 例单测；020 交付 `llm/config/` 分层 JSON 配置（包内默认 + `TEXTGAME_LLM_CONFIG` 覆盖、非法 fail-fast）+ `model_tier → (provider, model, api_base)` 分级 + 进程内 `TTLCache`（allowlist 默认空=不缓存、命中 `cache_hit=true`），23 例单测；全量 **1177 passed**、replay 61 零回归、四门全绿、覆盖率 88%。
+- 022 证据（M5 3/6，2026-11-10）：并发同 `Idempotency-Key` 回合进程内分段锁串行（64 段、`zlib.crc32` 稳定哈希）+ 失败重查幂等表复用首结果；`tests/integration/test_idempotency_concurrency.py` **6 例**（真实双线程 + 「首次 parse 阻塞 + Event 放行」放大竞态窗口）；D-M4-15/G-1 关闭；成本/预算/`llm_call_log`/Alembic 0003 按 D-M5-10 不做。
 - OSS-1 入口轨证据（2026-11-10，不占 001–028 编号）：`python -m textgame.demo --check` 7/7 回合 exit 0（屏字数 114/83/81/85/82/84/81，两次运行逐字一致）、`python -m textgame.console --check` exit 0（4 回合，状态行 `HP 20/20 ｜ 位置 ｜ 行囊`）；只读 `GET /api/v1/games/{id}/view`（hp/max_hp/inventory/room，零事件、version 不变）+ 意图背包关键词（背包/行囊/物品栏/身上/带了/装备 → `get_inventory`）；`tests/integration/test_console_walkthrough.py` 5 例进 CI 长期烟测；README「5 分钟上手」、`scripts/quickstart.{ps1,sh}`、`examples/m2-demo.md`（实跑生成）；零新增依赖。
+- OSS-2 入口轨证据（2026-11-10，不占 001–028 编号）：console `--scenario m2|m3|m4`、默认自动继续同库最近存档（`--new`/`--continue` 覆盖）、首屏引导只用只读视图真实数据、失败回合渲染 `effects/suggested_actions`（16 字失败文案与叙事原文不变）；剧情/任务物品 `use_item` 保护（`quest`/`story` 前缀 → `INVALID_INPUT`、零事件、背包不变）；`test_console_walkthrough` 11 + `test_console_scenario` 10 + `test_item_use_guard` 16 + `test_turn_hints` 6 例；`demo --check` 7 屏字数 114/83/81/85/82/84/81 不变、`console --check` exit 0（失败回合新增两行提示属预期）。
+- M6 后端前置证据（2026-11-10，不占 025–028 编号）：**M6B-1** `GET /games/{id}/replay`（D-M6-3）：`from_seq`/`limit`（缺省 200/上限 500）、`seq` 升序、`result.narrative` 原样、404/422 统一信封、只读零写入，9 例；**M6B-2** `create_app(static_dir)` 静态托管 + SPA fallback（`web/dist` 缺失跳过、API 优先、同源 CSP/nosniff、路径遍历防护、目录不列表），10 例 + 合成夹具 `tests/fixtures/web_dist/`；同一提交 `/view` inventory 增 `qty` 加法字段。
+- M6-025 证据（2026-11-10）：`web/` Vue 3 + Vite + TS + Pinia + Router 骨架（26 tracked files，运行期零 Node）；`pnpm install --frozen-lockfile` OK（pnpm 12.6.0 / Node 26.10.0）、`pnpm typecheck` OK、`pnpm build` OK（html 0.46kB / css 2.99kB / js 111.11kB）、`pnpm test` 5 files / 17 tests passed；`tests/integration/test_frontend_contract.py` 6 例（质量 job 不装 Node 可跑）；`.github/workflows/ci.yml` 新增 `web-build` job（**仅本地验证，远端未跑**）。
 - 出口审计要点：M3 五切片验收命令全部执行并通过；M2 默认路径（`scenario="m2"`）行为/事件/幂等与 M2 契约一致；审计状态词与 verdict 分离、审计只 INSERT；旧库升级与复合主键已在 M4 前定案落地（D-008-3/R5 关闭）。
 - 环境追加项（不计入切片完成度）：DeepSeek API（`deepseek-flash`）凭据与连通性自检已配置——密钥仅存 `.env`（gitignored，不入库）；自检命令 `uv run python -m textgame.llm.smoke`。M5-019 起默认装配仍不联网（`build_llm_client` 返回 `DisabledLLMClient`，`TEXTGAME_LLM_ENABLED=false`）；真实 Agent 接线属 M5 出口附加项。
-- CI：M1–M4 与 M5-019 已 push 到 `origin/main`（M4 收口和 D-M4-14 修复后 HEAD `9d0d8aa`；最新提交见 `git log`）；push 触发 Actions（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM），远端运行结果需 GitHub 页面复核（本机无 gh/凭据）。
+- CI：M1–M4、M5 与本批（022/M6B-1/M6B-2/025/OSS-2/D1 文档）均已提交（当前 HEAD `df97e9f`）；push 触发 Actions（quality 3.10/3.12 矩阵 + deps 许可证/pip-audit/SBOM + 本批新增 `web-build`）。**`web-build` job 仅本地验证、远端 Actions 未跑**（本机无 runner；GH runner 若 Node 26 不可用按 `.github/workflows/ci.yml` 注释降 24，vite 8/vitest 5 engines 接受 24/26）。
 - 当前阻塞：无。
 - M4 前定案（2026-11-09，用户拍板，**已全部定案**）：① **R2 关闭**——项目采纳 **MIT**（`pyproject.toml` `license = "MIT"` + LICENSE + 构建元数据 License-Expression/License-File；`check_licenses.py` 默认不再豁免自身）；② **D-008-3 已关闭**——`events` 主键 `(game_id, seq)`、`event_uid` 唯一 `(game_id, event_uid)`，同库多存档；Alembic 0002 + `textgame.persistence.legacy_upgrade` 旧库升级脚本（备份/失败恢复/幂等，12 用例）；③ **Q9 取 B-lite / Q10 取 B**——CI `timeout-minutes`、quality job 无密钥、测试 socket 禁网 guard、`.aiignore` + secret-scan，第 20 章已回写关闭；④ **M5 LLM Agent 接线**定为「M5 出口附加项，不新增编号」（第 17 章已回写）；⑤ **Alembic 不新增 CI 专属 job**（pytest 已覆盖升级/回滚/schema 一致性）；⑥ **Q1 编排层追认自建 loop**（第 8/4/20 章已回写，D-M3-1 升级为正式决策；LangGraph 仅保留可选封装）；⑦ **M4 制造契约定案**——D-M4-1–D-M4-12（材料模板/实例分离、技能后移、自由制造不接 Resolver、`CraftStateSlice.next_seq`、CRAFT_* 事件语义、JSON 配方、017 校验最小集、工位标签、不加 `craft_id`/`turns` 表、`scenario="m4"` 加法新增、Q2/Q3/Q4/Q8 定案），见 `docs/PROGRESS.md` §5 与 `docs/decisions/2026-11-09-m4-craft-contract.md`（D-M4-1–D-M4-15），相关章节与 PROGRESS 已完成回写；⑧ **M5 API 调用治理决策**——D-M5-1..9（同步契约、修复链归属、`output_schema` 模型类、JSON-only 配置、测试/回放策略、默认离线工厂、已知问题归属、ADR 落档、到期承诺处置），见 `docs/decisions/2026-11-10-m5-api-governance.md`。
 - 04:50 四角色团队决策（2026-11-10）：**D-TEAM-1..7**（定向双轨 B″、M5 顺序 020→022→021→024→023→出口接线、可玩/采用入口轨、玩家体验修复分级、020 配置裁决、本轮交付与不做项）见 `docs/decisions/2026-11-10-0450-team-direction.md`；**D-M6-1..6**（M6 后端前置立项、`POST /games` 加法兼容、replay/view DTO、静态托管/SPA 与分发、Q6=A+C、Q7=A、错误/幂等契约）见 `docs/decisions/2026-11-10-m6-backend-contract.md`。
 - CI 修复（2026-11-10，仓库公开后首个 CI 轮次）：`ci` workflow 的 `quality (3.10/3.12)` 只在 `uv run pytest -q` 失败，根因是 `import litellm` 期从 `raw.githubusercontent.com` 拉取模型成本表，CI（ubuntu、无代理）真连接被 Q9 禁网守卫拦截后 `RuntimeError` 逃逸（本地被 `NO_PROXY=[::1]` 的 httpx `InvalidURL` 掩盖）。修复：`tests/conftest.py` 强制 + `llm/providers.py` 默认 `LITELLM_LOCAL_MODEL_COST_MAP=True`（离线优先、尊重用户显式 False）+ 2 例回归；`ci.yml` 保留 pytest 失败摘要写入 Check 注解（公开仓库无需 token 即可定位失败用例）；远端复核 **run `42819330386`（sha `efe1471`）与 `42819577507`（sha `fa70b9c`，当时 HEAD）均 conclusion=success**，3 个 job（deps 3.12 / quality 3.10 / quality 3.12）全 success 且 quality 无 failure 注解（badge `ci - passing` 一致）；本地全量 **1179 passed**、replay 61、四门绿。CI-only 失败纪律已回写第 18 章 §18.6、第 12 章 §12.4，证据见 `docs/progress/CI-1-2026-11-10-actions-offline-fix.md`。
 - M4 出口后修复（2026-11-10，大规模模拟数据测试发现）：**D-M4-14** `Resolver.resolve` 改为用 `snapshot.rng_state.save_seed` 构造 `ToolContext`/规则前置，修复非默认 seed 存档 craft `rng_seed`/实例 ID 与 `EventLog.stamp` 不一致；新增 `tests/integration/test_craft_seed_binding.py` 3 例（全量 1096 passed）。
 - 大规模模拟数据测试（2026-11-10，mock 脚本/数据全部在 `.work/`，**不入库**）：Lead 批次 360 存档/2880 回合、**20,138 断言全绿**（版本链/失败零写入/幂等/回放哈希/审计只增/对抗输入/并发/制造确定性）；独立验收员另批 180 存档/1560 回合 **14,112/14,113**（唯一失败为并发同键瞬态，P2→D-M4-15）。测试发现并修复 **D-M4-14**（Resolver 种子绑定存档），修复后复测 P1 关闭、全量 1096 passed。
-- 下一步：**M5 022-concurrency-idempotency**（仅 D-M4-15/G-1 并发同键幂等；成本/预算/价格表/`llm_call_log`/Alembic 0003 经用户拍板不做，D-M5-10，0003 顺延 M6 卡库；C-1/C-2 到期承诺保持 M5 出口前）→ 021-schema-repair（修复链归属复核，D-M5-2）→ 024-provider-fallback → 023-batch-sleep → M5 出口附加项（解析白名单派生 P2-4(a) → 叙事 → 角色 → 裁判；裁判需 Lead 授权改 Resolver）；**M6 轨道**：M6 后端前置（replay → 卡库 8 端点 + `card_service` + Alembic 0003 → 静态托管/SPA → `web-build` CI）→ 前端 025 骨架 → 027-lite → 027 完整 → 026 → 028；顺序与门控见 `docs/decisions/2026-11-10-0450-team-direction.md`（D-TEAM-2/3）与 `docs/decisions/2026-11-10-m6-backend-contract.md`（D-M6-1..6）。
+- 下一步：**M5 021-schema-repair**（修复链归属复核，D-M5-2；C-1/C-2 到期承诺由 Lead 安排到 021/024/023 批次，D-M5-10）→ 024-provider-fallback → 023-batch-sleep → M5 出口附加项（解析白名单派生 P2-4(a) → 叙事 → 角色 → 裁判；裁判需 Lead 授权改 Resolver）；**M6 轨道**：027-lite（现有端点对局回路）→ 027 完整（接入 replay 端点）→ 026（卡导入，依赖 cards 8 端点）→ 028（LLM 生成卡，依赖 M5 接线）；M6 后端剩余 character-cards 8 端点 + `card_service` + Alembic 0003；顺序与门控见 `docs/decisions/2026-11-10-0450-team-direction.md`（D-TEAM-2/3）与 `docs/decisions/2026-11-10-m6-backend-contract.md`（D-M6-1..6）。
 - M5 接线注意（M4 验收 P2）：生产 HTTP 解析器目前只产出 recipe 制造意图（`DeterministicIntentParser(recipe_names=...)`），自由制造的自由句解析仅测试注入 `FreeCraftIntentParser`；M5 打开自由制造开关前需补生产解析器 free 意图并在第 13/17 章回写。
-- 需要 lead 决策：① M6 前端是否提供「存档列表/继续游戏」UI（默认在 027 回合界面内做，D-M6-5）；② 发布形态与分发渠道（D-TEAM-3 已定：先 tag/CHANGELOG 后评估 PyPI，Docker 等 `web/dist` 与 `web-build` CI 就绪后再做；MIT 署名/NOTICE 实践随之落地，非阻塞）。
+- 需要 lead 决策：① M6 前端是否提供「存档列表/继续游戏」UI（默认在 027 回合界面内做，D-M6-5）；② 发布形态与分发渠道（D-TEAM-3 已定：先版本记录/CHANGELOG 后评估 PyPI，Docker 等 `web/dist` 与 `web-build` CI 就绪后再做；MIT 署名/NOTICE 实践随之落地，非阻塞）。
