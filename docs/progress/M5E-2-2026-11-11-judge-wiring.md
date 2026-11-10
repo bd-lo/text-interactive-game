@@ -36,5 +36,5 @@
 ## 4. 下一步与风险
 
 - 下一步：**S4 收尾**——全量门禁终检、真实 LLM smoke（可选，默认装配仍离线）、最终独立玩家验收、文档回填（本进度文档 + PROGRESS/CHANGELOG/章节）、push 与远端 CI 复核。
-- 已知限制（D-M5-14 §5）：生产 `needs_judge` 无消费者（机制就绪）；`deterministic_fallback` 恒保守拒绝、`modify` 保守拒绝（无工具专用规则，未来按 Ruleset 扩展）；裁判调用审计仍为进程内口径；cassette 手工合成、真实 API 仅 S4 手动 smoke。
+- 已知限制（D-M5-14 §5）：生产 `needs_judge` 无消费者（机制就绪）；`deterministic_fallback` 恒保守拒绝、`modify` 保守拒绝（无工具专用规则，未来按 Ruleset 扩展）；裁判调用审计仍为进程内口径；cassette 手工合成。**S4 真实 LLM smoke（2026-11-11，可选、不改变默认装配）**：`python -m textgame.llm.smoke` OK（deepseek-flash、4.73s），story 3 回合真实 LLM 手跑全 ok（事件 `result.narrative_source="llm"`、87–141 字）；默认 `TEXTGAME_LLM_ENABLED=false` 仍零联网。
 - 需要人工决策：无（本批）；后续若要「真实启用裁判」，需选定 `agent_assisted` 工具并评估对其 golden/契约的影响（单独 ADR）。
