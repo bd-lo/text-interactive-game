@@ -48,7 +48,31 @@ jobs:
       - name: 分层依赖契约（import-linter）
         run: uv run lint-imports
       - name: 单元与集成测试（pytest）
-        run: uv run pytest -q
+        run: |
+          set -o pipefail
+          uv run pytest -q 2>&1 | tee pytest.log
+      - name: 失败摘要（写入 Check 注解，便于公开仓库定位失败用例）
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          log = Path("pytest.log")
+          if not log.exists():
+              print("::error title=pytest::pytest.log missing (pytest did not start)")
+              raise SystemExit(0)
+
+          lines = [ln for ln in log.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+          head = [ln for ln in lines if ln.startswith(("FAILED", "ERROR"))][:20]
+          tail = lines[-30:]
+          seen = set()
+          for ln in head + tail:
+              if ln in seen:
+                  continue
+              seen.add(ln)
+              msg = ln.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title=pytest::{msg}")
+          PY
 
   # 依赖门：许可证白名单 + 漏洞审计 + SBOM，产物存 artifact（第 18 章 §18.6、第 19 章 §19.5）
   deps:
