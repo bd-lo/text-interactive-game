@@ -39,13 +39,13 @@
 | 四门 | ruff check / ruff format（144 files）/ mypy strict（84 files）/ lint-imports（2 kept）全绿 |
 | 复现脚本 | 未设 env → RuntimeError（CI 路径）；设 env → import ok / 4255 条（修复路径） |
 | CI 同构模拟（全量） | 修复前 2 failed / 1175 passed；修复后 1179 passed |
-| 远端 CI | 修复 push 后 `ci` run 4 job 全绿（`deps (3.12)`、`quality (3.10)`、`quality (3.12)` 及 setup/收尾步骤），见 §5 |
+| 远端 CI | **run `42819330386`（sha `efe1471`）conclusion=success**：`deps (Python 3.12)`、`quality (Python 3.10)`、`quality (Python 3.12)` 3 个 job 全 success；quality 两个 check-run 无 failure 注解（公开 API，2026-11-10 20:5x 复核） |
 
 ## 5. 远端验收（push 后复核）
 
-- 修复提交：`fix: CI 离线化 litellm 模型成本表（LITELLM_LOCAL_MODEL_COST_MAP）+ 回归测试`（sha 见 `git log`）。
-- 验收方法（公开 API）：`/actions/runs?per_page=3` → 最新 run `conclusion=success` 且 `head_sha` = 本地 HEAD；`/actions/runs/{id}/jobs` → 4 job 全 success；`/check-runs/{job_id}/annotations` → quality(3.10)/(3.12) 无 failure 注解。
-- 本轮复核 run id 与时间：见 `docs/PROGRESS.md` §7「CI 修复」条目（由 Lead 在 run 完成后回填）。
+- 修复提交：`2e0cb8d fix: CI 离线化 LiteLLM 模型成本表（LITELLM_LOCAL_MODEL_COST_MAP）+ 2 例回归测试`；文档/回写提交：`efe1471`。
+- 远端结果（公开 API，无需 token）：run **42819330386**（`head_sha=efe1471`）`conclusion=success`；jobs = `deps (Python 3.12)` success、`quality (Python 3.10)` success、`quality (Python 3.12)` success；`/check-runs/{id}/annotations` 中 quality 两个 job 均无 failure 注解（此前 185.199.* 网络错误注解消失）。
+- 复盘顺序（可复跑）：`/actions/runs?per_page=10` → 取 `head_sha` 命中的 run → `/actions/runs/{id}/jobs` → `/check-runs/{job_id}/annotations`；未认证 API 有 60 次/小时限制，限流时可直接看 GitHub Actions 页面或等额度恢复。
 
 ## 6. 后续与不做
 
