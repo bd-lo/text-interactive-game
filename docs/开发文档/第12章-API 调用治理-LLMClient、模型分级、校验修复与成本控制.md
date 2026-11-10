@@ -61,15 +61,17 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 | --- | --- | --- | --- | --- |
 | 供应商 HTTP 重试 | LiteLLM Router | 关闭 | `num_retries=0` | 只做回退，不重试 |
 | 网络/超时重试 | tenacity | 开启 | `stop_after_attempt(3)`、`wait_exponential_jitter(initial=1, max=8)`、仅对超时/429/5xx | 唯一的重试计数者 |
-| Schema 修复重试 | `validation.py`（019）/ instructor（021 评估，D-M5-2） | 开启 | `max_repair=1`（共 2 次请求） | 只处理校验失败 |
+| Schema 修复重试 | `validation.py`（019–021 终局，D-M5-2） | 开启 | `max_repair=1`（共 2 次请求） | 只处理校验失败 |
 | 业务降级 | 各 Agent 调用方 | 开启 | 确定性兜底（Deterministic Fallback） | 保证回合（Turn）可结束 |
 
-结论：单次请求最多 3 次网络尝试 + 1 次修复，各层不得私自重试。**M5-019 实施口径（D-M5-2）**：修复链暂留 `validation.py`（Agent 显式调用），`LLMClient` 只做 transport 治理并返回原始文本；021-schema-repair 再评估「迁入客户端 / 启用 instructor」，无论归属，修复次数上限固定 1（共 2 次请求）不得变。
+结论：单次请求最多 3 次网络尝试 + 1 次修复，各层不得私自重试。**M5-019/021 实施口径（D-M5-2 终局）**：修复链固定在 `validation.py`（Agent 显式调用），`LLMClient` 只做 transport 治理并返回原始文本；**021 复核结论：不迁入 `LiteLLMClient`、不启用 `instructor` 运行路径（零新增依赖；迁入需把 FakeLLM 重写为 transport 级替身、回归面大）**；无论归属，修复次数上限固定 1（共 2 次请求）不得变。实证见 `tests/integration/test_repair_fallback.py`（7 例：一次修复→确定性兜底→零写入）。
 
 ### 12.4 模型分级与供应商回退
 按任务分级、不按角色分级（需求四）。场景判定、冲突裁决（Resolution）、自由制造生成用 `STRONG`；意图解析、角色对话、叙事包装用 `ECONOMY`；固定寒暄与环境描述不调用 API，直接读预生成内容库。模型名与版本**待定**：A. 单供应商双档（运维最简，推荐）；B. 双供应商同档互备（需双份 Prompt 回归）；C. LiteLLM Proxy 托管路由（多一层部署）。首版取「A + 第二供应商同档兜底」，配置写 `config/llm.json`（**JSON-only**，D-M5-4：PyYAML 非声明依赖、第 19 章明示不新增；包内默认 `src/textgame/llm/config/llm.default.json` + `TEXTGAME_LLM_CONFIG` 覆盖路径），按 `model_tier` 声明 `primary/fallback` 链。
 
 **020 已落地（2026-11-10，D-M5-4 / D-TEAM-6）**：① 配置包 `src/textgame/llm/config/`（`__init__.py` + `llm.default.json`；`LLMClientConfig` 导入路径不变，原 `llm/config.py` 迁入包）；② 新增 `LLMConfig`（`schema_version`/`providers`/`tiers`/`cache`，`extra=forbid`，两档 `strong|economy` 必须声明且 provider 必须在 `providers` 中）与 `load_llm_config(path=None)`（包内默认 → `TEXTGAME_LLM_CONFIG`；文件缺失/JSON 非法/字段越界一律构造期 fail-fast）；③ `LiteLLMClient` 按 `req.model_tier` 经 `LLMConfig.backend_for()` 选 `(provider, model, api_base)`，**JSON 是模型名/分级/供应商的唯一权威**（价格字段保留为预留，不实现价格表，D-M5-10），`Settings` 只保留密钥/开关/配置路径（历史 `TEXTGAME_LLM_PROVIDER/MODEL/BASE_URL` 仅兼容、不再驱动请求）；④ 回退链/价格字段预留，回退链由 024 消费、价格字段与成本归集不实现（022 缩范围，D-M5-10）；真实调用仍默认关闭（D-M5-6）。
+
+**024 已落地（2026-11-10）**：① `llm/config` 新增 `FallbackSpec` 与 `tiers[].fallbacks`（≤8，声明顺序即回退顺序）与 `CircuitSpec`（`window_s=60` / `error_rate_threshold=0.5` / `consecutive_failures=5` / `open_s=60` / `half_open_probes=1`；错误率规则最小样本 4），`LLMConfig.backends_for(tier)` 返回完整尝试链，非法配置构造期 fail-fast；② `LiteLLMClient` 按尝试链逐供应商执行：超时/429/5xx/网络错误回退，400/422→`INVALID_INPUT`、401 等不可重试错误不回退；每 provider 独立**进程内**熔断（closed→open→half_open，open 期跳过直试下一家，探测成功关闭、失败重新 open）；全链耗尽→`LLM_UNAVAILABLE` 不抛裸异常；记录实际后端，deadline/RPM/幂等/缓存语义不变；③ **默认 JSON 回退链为空 ⇒ 019/020 行为不变**（生产回退能力需接线切片显式配置）；已知限制：熔断进程内、回退链复用单 `api_key`。实证见 `tests/integration/test_fallback.py`（14 例）。
 
 **离线成本表（2026-11-10，CI 修复）**：`import litellm` 默认会从 `raw.githubusercontent.com` 拉取模型成本表（`litellm/__init__.py` 的 `get_model_cost_map`）；本项目**不做成本归集**（D-M5-10：用户拍板连成本记录也不做），同样不依赖 LiteLLM 远端成本表。`llm/providers.py` 与 `tests/conftest.py` 默认设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`（使用包内备份表、零联网；用户显式设 False 时仍尊重用户意图）。原因：CI（ubuntu、无代理）无 DNS 掩盖，`import litellm` 的下载被 Q9 禁网守卫拦截后 `RuntimeError` 逃逸（LiteLLM 只捕获 `httpx.HTTPError`），导致 `tests/unit/test_llm_providers.py` 两个用例只在 CI 失败；本地因 `NO_PROXY=[::1]` 触发 httpx `InvalidURL` 被 LiteLLM 捕获而掩盖。详见 `docs/progress/CI-1-2026-11-10-actions-offline-fix.md`。
 
@@ -79,7 +81,7 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 模板放 `src/textgame/llm/prompts/<agent_id>/<task>@v3.j2`，`manifest.json` 记录 version/sha256/owner/changelog/适用模型。Jinja2 用 `StrictUndefined`，变量必须显式传入，禁止访问环境变量/执行表达式；玩家输入只作数据字段注入，不得拼进指令段（结构性防注入，见第 15 章）。变更须过 Code Review 与固定种子回放（Replay）回归（见第 18 章），`prompt_version` 与模板 hash 写入 `LLMCallRecord` 与 Event，可追溯每回合版本。
 
 ### 12.6 结构化输出：校验 + 一次修复 + 确定性兜底
-步骤：① 原始输出 → `req.output_schema.model_validate_json`（strict、禁额外字段）；② 失败 → 把 pydantic 错误摘要回传，追加一次修正指令（019 由 `validation.complete_json_with_repair` 实现，D-M5-2；021 评估迁入客户端，等价于 instructor `max_retries=1`）；③ 仍失败 → 按 Agent 类型走确定性兜底：
+步骤：① 原始输出 → `req.output_schema.model_validate_json`（strict、禁额外字段）；② 失败 → 把 pydantic 错误摘要回传，追加一次修正指令（019–021 由 `validation.complete_json_with_repair` 实现；**D-M5-2 终局：不迁客户端、不启用 instructor**，语义等价一次修复）；③ 仍失败 → 按 Agent 类型走确定性兜底：
 
 | Agent | 确定性兜底 |
 | --- | --- |
@@ -118,7 +120,7 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 | 单会话成本 | ≤ ¥3 | 关闭自由制造生成路径 |
 | 单日成本 | ≤ ¥200 | 全局只走缓存/确定性路径 |
 
-熔断：单供应商 60 秒错误率 >50% 或连续 5 次失败 → open 60 秒 → half-open 探测 1 次。
+熔断：单供应商 60 秒错误率 >50% 或连续 5 次失败 → open 60 秒 → half-open 探测 1 次（024 已落地为 `CircuitSpec` 默认值：**进程内**状态机、多 worker 各自独立；错误率规则仅在窗口内 ≥4 次调用时评估以避免小样本误开；见 §12.4）。
 
 **2026-11-10 用户拍板（D-M5-10）：本节成本预算/SLO 不实现。** 不建自建价格表、不实现 `estimate_cost`、不按 Agent/回合归集成本、不做预算降级与 80%/100% 阈值告警；`llm_call_log` 表与 Alembic 0003 取消（0003 顺延 M6 卡库）。上表保留为设计口径与后续复评参考，**不得作为任何切片或 M5 出口的验收判据**；实际保留的可观测项 = 单回合调用数上限、timeout、token 计量（019）与错误码。
 
@@ -154,8 +156,8 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 ### 本章结论
 1. 业务代码只允许调用 `LLMClient.complete_json` / `complete_text`，所有 SDK（litellm/openai）只能在 `src/textgame/llm/` 内出现。
 2. 依赖组合固定为 LiteLLM + instructor + tenacity + cachetools + Jinja2（均为运行时依赖，只允许在 `src/textgame/llm/` 内部 import），全部为 MIT/Apache-2.0/BSD-3-Clause，可闭源分发；LiteLLM 的 `enterprise/` 目录不得使用。
-3. 重试必须单一所有权：LiteLLM `num_retries=0`，网络重试只由 tenacity 计数（≤3 次），Schema 修复只做 1 次（019 由 `validation.py`，021 评估 instructor，D-M5-2），避免成本失控。
+3. 重试必须单一所有权：LiteLLM `num_retries=0`，网络重试只由 tenacity 计数（≤3 次），Schema 修复只做 1 次（019–021 由 `validation.py`，D-M5-2 终局），避免成本失控。
 4. 校验失败一律走「一次修复 → 确定性兜底 → 无法处理」，未校验输出绝不写入状态；兜底路由按 Agent 类型固定，写入代码常量表。
 5. 批量合并只对无私有记忆的公共群演 NPC 开放（每批 ≤4 个），角色 Agent 默认串行；休眠策略用 `agent_invocation_log` 做可审计断言。
 6. 第一版预算按「单回合默认 2 次、最多 3 次调用；P95 首版 ≤8 s（M2 缓存命中目标 ≤3 s）」设 SLO；**成本类 SLO（单回合 ≤¥0.20 / 单会话 ≤¥3 / 单日 ≤¥200）经 2026-11-10 用户拍板不实现（D-M5-10）**，仅保留为设计口径与后续复评参考；「模型名/供应商」以配置化「待定」项留给 M5。
-7. M5 实施口径（ADR `docs/decisions/2026-11-10-m5-api-governance.md`）：同步签名（D-M5-1）、修复链 019 留 `validation.py`（D-M5-2）、`output_schema` 用模型类且不用 `schema` alias（D-M5-3）、配置 JSON-only（D-M5-4）、默认离线 `TEXTGAME_LLM_ENABLED=false` 且启用时缺 key 构造期失败（D-M5-6）；**022 缩范围为并发幂等、成本/预算/`llm_call_log`/Alembic 0003 不做（D-M5-10，`docs/decisions/2026-11-10-022-scope-and-cost-out.md`）**。本章与 ADR 冲突时以 ADR 为准。
+7. M5 实施口径（ADR `docs/decisions/2026-11-10-m5-api-governance.md`）：同步签名（D-M5-1）、修复链 019–021 终局留 `validation.py`（D-M5-2，021 定稿不迁客户端/instructor）、`output_schema` 用模型类且不用 `schema` alias（D-M5-3）、配置 JSON-only（D-M5-4）、默认离线 `TEXTGAME_LLM_ENABLED=false` 且启用时缺 key 构造期失败（D-M5-6）、回退链/熔断配置 `fallbacks`/`circuit`（D-M5-11，024 落地）；**022 缩范围为并发幂等、成本/预算/`llm_call_log`/Alembic 0003 不做（D-M5-10，`docs/decisions/2026-11-10-022-scope-and-cost-out.md`）**。本章与 ADR 冲突时以 ADR 为准。
