@@ -94,6 +94,8 @@ def create_game(
     M3 可选 ``scenario``（``m2``/``m3``/``m4``），缺省 ``m2`` 保持 M2 行为与回放不变。
     D-M6-2 加法：body 可带 ``card_id`` 按人物卡建局（先经卡库读取，未知卡 404；与
     ``seed``/``scenario`` 同给 → 422 ``INVALID_INPUT``）；不提供时行为完全不变。
+    H4 加法：body 可带 ``world_book_id`` 绑定世界书（未知/已删除 404；可与 seed/scenario/
+    card_id 共存）；不提供时行为/事件参数逐字不变。
     """
     card_id = body.card_id if body is not None else None
     card: dict[str, Any] | None = None
@@ -113,6 +115,9 @@ def create_game(
         scenario=body.scenario if body is not None else "m2",
         card_id=card_id,
         card=card,
+        # H4 世界书绑定（存在性校验/名称解析由编排层经 WorldBookProvider 完成，未知 404）；
+        # 未提供时字段为 None → 旧请求行为与 game_created.params 逐字不变。
+        world_book_id=body.world_book_id if body is not None else None,
     )
     try:
         view = orchestrator.create_game(request)

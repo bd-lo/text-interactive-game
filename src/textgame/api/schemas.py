@@ -33,6 +33,9 @@ class CreateGameBody(BaseModel):
     （D-M3-3/D-M4-11/D-TEAM-D1）。D-M6-2 加法：``card_id`` 指定人物卡建局（与
     ``seed``/``scenario`` 互斥，同给 → 422 ``INVALID_INPUT``）；不提供时行为与
     M2–M4 完全一致。
+
+    H4 加法（D-H4）：可选 ``world_book_id`` 绑定世界书（未知/已删除 404；可与
+    ``seed``/``scenario``/``card_id`` 共存）；不提供时旧请求行为与事件参数逐字不变。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -40,6 +43,7 @@ class CreateGameBody(BaseModel):
     card_id: str | None = Field(default=None, min_length=1, max_length=64)
     seed: int | None = Field(default=None, ge=0)
     scenario: Literal["m2", "m3", "m4", "story"] = "m2"
+    world_book_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class CreatedGameResponse(BaseModel):
@@ -59,6 +63,8 @@ class GameViewResponse(BaseModel):
 
     加法字段（D9）：``scenario`` 为场景名；``ending_text`` 为故事结局正文（旧场景/未结束
     为 ``None``）；``status=ended`` 由结局读时求值得出（不写状态、不加事件）。
+    H4 加法：``world_book``/``world_book_id``/``lore`` 与 ``/view`` 同源（旧场景全为
+    ``None``；刷新/续玩路径不再因未知响应键 500）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,6 +77,11 @@ class GameViewResponse(BaseModel):
     last_text: str | None = None
     scenario: str = "m2"
     ending_text: str | None = None
+    # H4 加法（与 QueryService.get_game_view 返回一致；旧场景全为 None）：
+    # 本局绑定的世界书摘要/ID 与本回合激活的 lore 条目，供刷新续玩时直接渲染。
+    world_book: WorldBookRefResponse | None = None
+    world_book_id: str | None = None
+    lore: LoreResponse | None = None
 
 
 class ItemRefResponse(BaseModel):
@@ -152,6 +163,9 @@ class GamePlayerViewResponse(BaseModel):
     加法字段（D9）：``scenario`` 场景名、``goal`` 剧情目标（旧场景 ``None``）、
     ``ending_text`` 结局正文（未结束 ``None``）、``suggested_actions`` 当前可执行的下一步
     指令（成功回合也给，供前端「可点建议 / 新手引导」使用）。
+
+    H4 加法（D-H4）：``world_book`` 本局绑定的世界书摘要（未绑定/旧存档 ``None``）、
+    ``lore`` 本回合激活的世界书条目（无世界书 ``None``；确定性只读计算）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -169,6 +183,8 @@ class GamePlayerViewResponse(BaseModel):
     goal: GoalResponse | None = None
     ending_text: str | None = None
     suggested_actions: list[str] = Field(default_factory=list)
+    world_book: WorldBookRefResponse | None = None
+    lore: LoreResponse | None = None
 
 
 class GameListItemResponse(BaseModel):
@@ -306,6 +322,158 @@ class CharacterCardValidateResponse(BaseModel):
     errors: list[CharacterCardValidationErrorResponse]
 
 
+class WorldBookRefResponse(BaseModel):
+    """本局绑定的世界书摘要（``/view.world_book``，H4 加法字段；未绑定为 ``None``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_book_id: str
+    name: str
+    entry_count: int
+
+
+class LoreEntryResponse(BaseModel):
+    """本回合激活的一条世界书条目（``/view.lore.active_entries[]``，只读）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_uid: int
+    content: str
+
+
+class LoreResponse(BaseModel):
+    """``/view.lore``：本回合激活的世界书条目（无世界书为 ``None``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    active_entries: list[LoreEntryResponse] = Field(default_factory=list)
+
+
+class WorldBookWarningResponse(BaseModel):
+    """世界书导入告警项：``[{code, message}]``（不阻塞导入）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+
+
+class WorldBookSummaryResponse(BaseModel):
+    """``GET /api/v1/world-books`` 列表项（按 ``updated_at`` 倒序）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_book_id: str
+    name: str
+    description: str
+    source: str
+    entry_count: int
+    updated_at: datetime
+
+
+class WorldBookListResponse(BaseModel):
+    """``GET /api/v1/world-books`` 200 响应 ``{world_books, total}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_books: list[WorldBookSummaryResponse]
+    total: int
+
+
+class WorldBookEntryResponse(BaseModel):
+    """世界书条目（详情页/导入预览用；触发语义字段与 H4-CONTRACT §2 一致）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_uid: int
+    keys: list[str]
+    secondary_keys: list[str]
+    content: str
+    enabled: bool
+    constant: bool
+    order: int
+    position: int
+    depth: int
+    selective: bool
+    selective_logic: int
+
+
+class WorldBookDetailBodyResponse(BaseModel):
+    """``GET /api/v1/world-books/{id}`` 的 ``world_book`` 摘要。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_book_id: str
+    name: str
+    description: str
+    source: str
+    entry_count: int
+    updated_at: datetime
+
+
+class WorldBookDetailResponse(BaseModel):
+    """``GET /api/v1/world-books/{world_book_id}`` 200 响应 ``{world_book, entries}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_book: WorldBookDetailBodyResponse
+    entries: list[WorldBookEntryResponse]
+
+
+class WorldBookImportResponse(BaseModel):
+    """``POST /api/v1/world-books/import`` 201 响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_book_id: str
+    name: str
+    entry_count: int
+    source: str
+    warnings: list[WorldBookWarningResponse] = Field(default_factory=list)
+
+
+class WorldBookValidationErrorResponse(BaseModel):
+    """世界书校验错误项：``{loc, type, msg}``（与人物卡校验同构）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    loc: list[str]
+    type: str
+    msg: str
+
+
+class WorldBookValidatePreviewResponse(BaseModel):
+    """校验预览：``{name, entry_count, detected_format}``（格式不可识别时占位值）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+    entry_count: int = 0
+    detected_format: str = "unknown"
+
+
+class WorldBookValidateResponse(BaseModel):
+    """``POST /api/v1/world-books/validate`` 200 响应（只读无副作用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    errors: list[WorldBookValidationErrorResponse] = Field(default_factory=list)
+    warnings: list[WorldBookWarningResponse] = Field(default_factory=list)
+    preview: WorldBookValidatePreviewResponse = Field(
+        default_factory=WorldBookValidatePreviewResponse
+    )
+
+
+class WorldBookDeleteResponse(BaseModel):
+    """``DELETE /api/v1/world-books/{world_book_id}`` 200 响应（软删）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    world_book_id: str
+    deleted: bool
+
+
 class AuditRecordResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/audit`` 单条审计记录（读模型）。"""
 
@@ -355,9 +523,23 @@ __all__ = [
     "GoalResponse",
     "InventoryItemResponse",
     "ItemRefResponse",
+    "LoreEntryResponse",
+    "LoreResponse",
     "NpcRefResponse",
     "ReplayEventResponse",
     "ReplayResponse",
     "RoomViewResponse",
     "TurnRequestBody",
+    "WorldBookDeleteResponse",
+    "WorldBookDetailBodyResponse",
+    "WorldBookDetailResponse",
+    "WorldBookEntryResponse",
+    "WorldBookImportResponse",
+    "WorldBookListResponse",
+    "WorldBookRefResponse",
+    "WorldBookSummaryResponse",
+    "WorldBookValidatePreviewResponse",
+    "WorldBookValidateResponse",
+    "WorldBookValidationErrorResponse",
+    "WorldBookWarningResponse",
 ]

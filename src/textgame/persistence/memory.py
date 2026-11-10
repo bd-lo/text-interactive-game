@@ -98,6 +98,11 @@ class InMemoryRepository:
         """按 ``seq`` 升序返回 ``seq > after_seq`` 的事件。"""
         return [event for event in self._events.get(game_id, []) if (event.seq or 0) > after_seq]
 
+    def read_first_event(self, game_id: str) -> Event | None:
+        """返回该存档第一条事件（``seq`` 最小）；无存档返回 ``None``（H4 加法，只读）。"""
+        events = self._events.get(game_id, [])
+        return events[0] if events else None
+
     def latest_snapshot(self, game_id: str) -> SnapshotRecord | None:
         """返回 ``snapshot_version`` 最大的快照；无快照返回 ``None``。"""
         snapshots = self._snapshots.get(game_id, [])

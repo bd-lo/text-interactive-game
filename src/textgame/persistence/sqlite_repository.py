@@ -155,6 +155,21 @@ class SqliteRepository:
         with self._session_factory() as session:
             return self._read_events(session, game_id, after_seq=after_seq)
 
+    def read_first_event(self, game_id: str) -> Event | None:
+        """读该存档第一条事件（``seq`` 最小，即 ``game_created``）；无存档返回 ``None``。
+
+        H4 加法：单行 ``SELECT ... ORDER BY seq ASC LIMIT 1``，只读零写入；供编排层/查询层
+        读取 ``game_created.params`` 的建局绑定信息（如 ``world_book_id``）。
+        """
+        with self._session_factory() as session:
+            row = session.scalars(
+                select(EventRow)
+                .where(EventRow.game_id == game_id)
+                .order_by(EventRow.seq.asc())
+                .limit(1)
+            ).first()
+        return None if row is None else self._event_from_row(row)
+
     def _read_events(self, session: Session, game_id: str, *, after_seq: int) -> list[Event]:
         rows = session.scalars(
             select(EventRow)

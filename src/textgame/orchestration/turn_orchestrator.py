@@ -18,7 +18,7 @@ import re
 import threading
 import zlib
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,8 +39,15 @@ from textgame.domain.models import (
 )
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.scenario import DIRECTION_NAMES, PLAYER_ID
-from textgame.domain.scenario_story import is_story_state, story_ending
+from textgame.domain.scenario_story import is_story_state, story_ending, story_room_damage
 from textgame.domain.suggestions import failure_feedback, suggest_actions
+from textgame.domain.world_book import (
+    WorldBook,
+    WorldBookProvider,
+    activate_entries,
+    build_activation_context,
+    format_lore_entries,
+)
 from textgame.orchestration.direct_gate import ToolGateLike
 from textgame.orchestration.dto import TurnRequest
 from textgame.orchestration.proposal_queue import (
@@ -199,6 +206,9 @@ class CreateGameRequest(BaseModel):
     scenario: Literal["m2", "m3", "m4", "story"] = "m2"
     card_id: str | None = Field(default=None, min_length=1, max_length=64)
     card: dict[str, Any] | None = None
+    #: H4 加法：可选世界书 id（存在性由编排层通过 ``world_book_provider`` 校验，未知 404）。
+    #: 缺省 ``None`` 时请求哈希/创建参数/事件与旧版本逐字一致（旧场景零影响）。
+    world_book_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class GameView(BaseModel):
@@ -557,6 +567,7 @@ class TurnOrchestrator:
         audit: AuditRecorderLike | None = None,
         agent_scheduler: AgentSchedulerLike | None = None,
         judge: JudgeAgentLike | None = None,
+        world_book_provider: WorldBookProvider | None = None,
     ) -> None:
         """装配依赖；``narrator=None`` 时使用内置确定性模板叙事。
 
@@ -564,6 +575,8 @@ class TurnOrchestrator:
         单角色链路（默认装配行为与 M2 完全一致，M2 测试不回归）。``agent_scheduler``
         为 M5-023 可选的批量/休眠 NPC 调度器，默认 ``None`` = 原逐 Agent 循环。
         ``judge`` 为 M5E-2 可选裁判 Agent（默认 ``None``：不构建裁判候选、零模型调用）。
+        ``world_book_provider`` 为 H4 可选世界书提供者（``None`` = 不启用世界书：旧场景
+        回合/建局/查询行为逐字不变）。
         """
         self._repo = repo
         self._engine = engine
@@ -583,6 +596,8 @@ class TurnOrchestrator:
         self._agent_scheduler = agent_scheduler
         # M5E-2：可选裁判 Agent（None = 不构建 judgements、零模型调用；默认离线逐字等价）。
         self._judge = judge
+        # H4：可选世界书提供者（None = 不启用世界书；旧场景零计算、零注入）。
+        self._world_book_provider = world_book_provider
         # D-M4-15/G-1：同 Idempotency-Key 的回合在进程内串行，避免两个线程同时未命中
         # 幂等缓存、后到者拿到 CONFLICT/INVALID_INPUT 而非首结果；固定分段避免锁增长。
         self._idempotency_locks = tuple(threading.Lock() for _ in range(_IDEMPOTENCY_LOCK_STRIPES))
@@ -593,6 +608,129 @@ class TurnOrchestrator:
         return (
             self._registry is not None and self._resolver is not None and self._actors is not None
         )
+
+    # ------------------------------------------------------------------
+    # H4 世界书 / L1 环境伤害（纯加法：无 provider、非 story 或未命中时零影响）
+    # ------------------------------------------------------------------
+    def _first_event(self, game_id: str) -> Event | None:
+        """存档首事件（``game_created``）；仓储未提供 ``read_first_event`` 时回退全量读。"""
+        getter = getattr(self._repo, "read_first_event", None)
+        if callable(getter):
+            return cast(Event | None, getter(game_id))
+        events = self._repo.read_events(game_id)
+        return events[0] if events else None
+
+    def _world_book_id_of(self, game_id: str) -> str | None:
+        """``game_created.params.world_book_id``（旧场景/未绑定 → ``None``）。"""
+        event = self._first_event(game_id)
+        if event is None:
+            return None
+        params = event.params
+        world_book_id = params.get("world_book_id") if isinstance(params, dict) else None
+        return world_book_id if isinstance(world_book_id, str) and world_book_id else None
+
+    def _lookup_world_book(self, world_book_id: str) -> WorldBook | None:
+        """经 provider 查世界书；未装配 provider / provider 异常 → ``None``。
+
+        世界书是可选增强：provider 故障不得中断对局；建局路径由调用方把 ``None`` 映射 404。
+        """
+        if self._world_book_provider is None:
+            return None
+        try:
+            return self._world_book_provider.get(world_book_id)
+        except Exception:
+            return None
+
+    def _world_book_of_game(self, game_id: str) -> WorldBook | None:
+        """该存档绑定的世界书（未绑定/已删除 → ``None``）。"""
+        world_book_id = self._world_book_id_of(game_id)
+        if world_book_id is None:
+            return None
+        return self._lookup_world_book(world_book_id)
+
+    def _lore_entries_for(self, game_id: str, state: GameState, player_input: str) -> list[str]:
+        """本回合激活的世界设定句（``【世界设定】…``）。
+
+        上下文 = 最近叙事 + 玩家输入 + 当前房间名/描述 + 可见物品/NPC 名（
+        ``domain.world_book.build_activation_context`` 统一口径）；旧场景/未绑定世界书 →
+        空列表（调用方不向 narrator 注入任何字段，文本逐字不变）。
+        """
+        book = self._world_book_of_game(game_id)
+        if book is None:
+            return []
+        try:
+            events = self._repo.read_events(game_id)
+        except Exception:
+            events = []
+        narratives: list[str] = []
+        for event in events:
+            narrative = event.result.get("narrative")
+            if isinstance(narrative, str) and narrative:
+                narratives.append(narrative)
+        context = build_activation_context(
+            state, narrative_texts=narratives, player_input=player_input
+        )
+        active = activate_entries(
+            book,
+            context_texts=context,
+            turn_id=state.turn + 1,
+            save_seed=state.rng_state.save_seed,
+        )
+        return format_lore_entries(active)
+
+    @staticmethod
+    def _environment_damage_draft(
+        *, state: GameState, drafts: Sequence[Event], turn_id: int
+    ) -> Event | None:
+        """L1：story 存档进入受伤房间后，生成同回合同批提交的 ``ENVIRONMENT_DAMAGE`` 草稿。
+
+        只在「本回合有 ``CHARACTER_MOVED`` 且目标房间在 ``story_room_damage`` 有定义」时生成；
+        旧三场景 ``is_story_state`` 恒假 → 永不产生该事件（golden 零影响）。
+        """
+        if not is_story_state(state):
+            return None
+        target_room: str | None = None
+        for draft in drafts:
+            if draft.event_type is not EventType.CHARACTER_MOVED:
+                continue
+            to_room = draft.result.get("to")
+            if not isinstance(to_room, str) or not to_room:
+                to_room = draft.params.get("to_room")
+            if isinstance(to_room, str) and to_room:
+                target_room = to_room
+                break
+        if target_room is None:
+            return None
+        hp_delta = story_room_damage(target_room)
+        if hp_delta is None:
+            return None
+        return Event(
+            turn_id=turn_id,
+            actor_id=PLAYER_ID,
+            method="environment_damage",
+            event_type=EventType.ENVIRONMENT_DAMAGE,
+            params={"room_id": target_room},
+            result={"hp_delta": hp_delta},
+        )
+
+    @staticmethod
+    def _environment_payload(state: GameState, draft: Event) -> dict[str, Any]:
+        """H4/L1：给 narrator 的环境伤害结算上下文（``hp_after`` 用于 S1/S2/S3 分档）。
+
+        纯整数运算（clamp ``0..max_hp``），确定性；只进 ``result_data``，不落事件/状态。
+        """
+        character = state.characters.get(PLAYER_ID)
+        hp = character.hp if character is not None else 0
+        raw_max = character.attributes.get("max_hp") if character is not None else None
+        max_hp = int(raw_max) if isinstance(raw_max, int) else hp
+        hp_delta = draft.result.get("hp_delta")
+        delta = hp_delta if isinstance(hp_delta, int) and not isinstance(hp_delta, bool) else 0
+        return {
+            "room_id": draft.params.get("room_id", ""),
+            "hp_delta": delta,
+            "hp_after": max(0, min(max_hp, hp + delta)),
+            "max_hp": max_hp,
+        }
 
     # ------------------------------------------------------------------
     # 开局
@@ -608,6 +746,9 @@ class TurnOrchestrator:
         hash_payload: dict[str, Any] = {"seed": request.seed, "scenario": request.scenario}
         if request.card_id is not None:
             hash_payload["card_id"] = request.card_id
+        if request.world_book_id is not None:
+            # H4 加法：仅在显式绑定世界书时进入请求哈希（旧请求哈希逐字不变）。
+            hash_payload["world_book_id"] = request.world_book_id
         request_hash = params_hash(hash_payload)
         cached = self._repo.get_idempotent(store_key)
         if cached is not None:
@@ -638,13 +779,24 @@ class TurnOrchestrator:
                 )
             except ValueError as exc:
                 raise CreateGameError(ErrorCode.SCHEMA_VIOLATION, f"人物卡数据非法: {exc}") from exc
-        engine_result = self._engine.create_game(
-            save_seed=save_seed,
-            idempotency_key=request.idempotency_key,
-            scenario=request.scenario,
-            initial_state=card_initial_state,
-            card_id=request.card_id,
-        )
+        world_book_name: str | None = None
+        if request.world_book_id is not None:
+            # H4：建局前校验世界书存在（未知/已软删 → 404）；名称随 game_created.params 落库。
+            book = self._lookup_world_book(request.world_book_id)
+            if book is None:
+                raise CreateGameError(ErrorCode.NOT_FOUND, "世界书不存在")
+            world_book_name = book.name
+        engine_kwargs: dict[str, Any] = {
+            "save_seed": save_seed,
+            "idempotency_key": request.idempotency_key,
+            "scenario": request.scenario,
+            "initial_state": card_initial_state,
+            "card_id": request.card_id,
+        }
+        if request.world_book_id is not None:
+            engine_kwargs["world_book_id"] = request.world_book_id
+            engine_kwargs["world_book_name"] = world_book_name
+        engine_result = self._engine.create_game(**engine_kwargs)
         if not engine_result.ok:
             raise CreateGameError(
                 engine_result.error_code or ErrorCode.INTERNAL,
@@ -728,9 +880,11 @@ class TurnOrchestrator:
                 text=_STORY_ENDED_TEXT,
             )
         try:
+            # H4：本回合世界设定句在进入具体链路前统一计算（旧场景/未绑定 → 空列表）。
+            lore_entries = self._lore_entries_for(request.game_id, record.state, request.text)
             if self.multi_actor_enabled:
-                return self._run_multi_actor(request, record, store_key, request_hash)
-            return self._run_single_actor(request, record, store_key, request_hash)
+                return self._run_multi_actor(request, record, store_key, request_hash, lore_entries)
+            return self._run_single_actor(request, record, store_key, request_hash, lore_entries)
         except Exception:
             current = self._repo.load(request.game_id)
             return TurnResult.failed(
@@ -748,6 +902,7 @@ class TurnOrchestrator:
         record: GameRecord,
         store_key: str,
         request_hash: str,
+        lore_entries: Sequence[str] = (),
     ) -> TurnResult:
         """M2 单角色主流程（契约 §4.5 步骤 4–10），保持 M2 行为不回归。"""
         state = record.state
@@ -810,17 +965,28 @@ class TurnOrchestrator:
                     state,
                     _safe_player_reason(preconditions.message) or _context_reason(state, outcome),
                 )
+        # H4/L1：story 存档进入受伤房间（如枯井寒气）→ 同回合追加一条 ENVIRONMENT_DAMAGE 草稿。
+        damage_draft = self._environment_damage_draft(state=state, drafts=drafts, turn_id=turn_id)
+        if damage_draft is not None:
+            drafts.append(damage_draft)
         result_data = dict(gate_result.data or {})
+        if damage_draft is not None:
+            result_data["environment"] = self._environment_payload(state, damage_draft)
+        if lore_entries:
+            result_data["lore_entries"] = list(lore_entries)
         text, narrative_source = self._render_with_source(
             action=outcome, events=drafts, state=state, result_data=result_data
         )
 
         if not drafts:
+            # H4-L3 口径：零事件只读回合没有可展示的叙事来源（前端空 → 「来源未知」），
+            # 只有写事件回合才带 template/llm（事件 result.narrative_source 始终记录实际来源）。
             response = TurnResult.success(
                 turn_id=state.turn,
                 version=record.version,
                 text=text,
                 suggested_actions=_success_suggestions(state),
+                narrative_source=None,
             )
             self._save_idempotent(store_key, request_hash, response.model_dump(mode="json"))
             return response
@@ -871,6 +1037,7 @@ class TurnOrchestrator:
             text=text,
             events=engine_result.events,
             suggested_actions=_success_suggestions(state_after),
+            narrative_source=narrative_source,
         )
         self._save_idempotent(
             store_key,
@@ -945,6 +1112,7 @@ class TurnOrchestrator:
         record: GameRecord,
         store_key: str,
         request_hash: str,
+        lore_entries: Sequence[str] = (),
     ) -> TurnResult:
         """M3 多角色主流程：玩家提案 + 角色 Agent 提案 → 队列 → 裁决 → CAS 提交 → 审计。"""
         assert self._registry is not None  # multi_actor_enabled 已保证
@@ -1027,6 +1195,10 @@ class TurnOrchestrator:
                 reason="玩家明确动作",
                 priority=100,
             )
+        if lore_entries:
+            # H4：世界设定句通过 result_data 传给叙事器（不改 NarratorLike 签名）；
+            # 只读动作由 TemplateNarrator 追加 1 句设定，LLM 叙事器读同一字段做 prompt 注入。
+            read_only_data = {**read_only_data, "lore_entries": list(lore_entries)}
 
         queue = ProposalQueue(turn_id=turn_id)
         player_entry: QueueEntry | None = None
@@ -1144,6 +1316,16 @@ class TurnOrchestrator:
                         player_drafts.append(draft)
                     else:
                         npc_drafts.append(draft)
+            # H4/L1：story 存档进入受伤房间 → 同回合给玩家批次追加一条 ENVIRONMENT_DAMAGE。
+            damage_draft = self._environment_damage_draft(
+                state=state, drafts=player_drafts, turn_id=turn_id
+            )
+            if damage_draft is not None:
+                player_drafts.append(damage_draft)
+                read_only_data = {
+                    **read_only_data,
+                    "environment": self._environment_payload(state, damage_draft),
+                }
             text, narrative_source = self._render_multi_actor(
                 action=outcome,
                 state=state,
@@ -1162,11 +1344,13 @@ class TurnOrchestrator:
                         attempt=audit_base + attempt - 1,
                     )
                 )
+                # H4-L3：多角色链路的零事件（只读/全部零草稿）回合同样不带叙事来源。
                 response = TurnResult.success(
                     turn_id=state.turn,
                     version=current.version,
                     text=text,
                     suggested_actions=_success_suggestions(state),
+                    narrative_source=None,
                 )
                 self._save_idempotent(store_key, request_hash, response.model_dump(mode="json"))
                 return response
@@ -1216,6 +1400,7 @@ class TurnOrchestrator:
                     text=text,
                     events=engine_result.events,
                     suggested_actions=_success_suggestions(state_after),
+                    narrative_source=narrative_source,
                 )
                 self._save_idempotent(
                     store_key,

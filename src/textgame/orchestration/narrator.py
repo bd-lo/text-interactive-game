@@ -16,6 +16,7 @@ M2 判定结果暂不写进事件 (007 Phase 1 已交付 ``RuleEngine``, 编排�
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 from textgame.agents.dto import ParseOutcome
@@ -377,6 +378,156 @@ def _inspect_text(result_data: dict[str, Any]) -> str | None:
     return _pad_text_no_repeat(_dedupe_adjacent_sentences(base))
 
 
+#: 允许追加世界设定句的只读动作（H4-CONTRACT §5；写动作不追加，避免与事件叙事抢语义）。
+_LORE_ACTION_TOOLS: frozenset[str] = frozenset({"get_room_view", "inspect_item"})
+#: 编排层注入的世界设定条目前缀（``domain.world_book.format_lore_entries`` 的口径）。
+_LORE_PREFIX = "【世界设定】"
+
+#: 模板屏追加的世界设定句最大长度（按完整句截取；超长换下一条，避免挤爆 150 上限）。
+_MAX_LORE_CHARS = 60
+#: 句末标点：base 截断与分隔符补全只认这些（保证任何情况下不句中断行）。
+_SENTENCE_END = "。！？；…"
+#: 完整句切分（保留句末标点）。
+_SENTENCE_PATTERN = re.compile(rf"[^{re.escape(_SENTENCE_END)}]+[{re.escape(_SENTENCE_END)}]")
+
+
+def _lore_content_sentence(content: str, limit: int) -> str | None:
+    """从条目正文取「完整句」：≤limit 且以句末标点收尾；过长按句界取前若干完整句。
+
+    无句界且超长时返回 ``None``（由调用方换下一条条目），绝不返回句中截断的半句。
+    """
+    stripped = content.strip()
+    if not stripped:
+        return None
+    if len(stripped) <= limit and stripped[-1] in _SENTENCE_END:
+        return stripped
+    sentences = _SENTENCE_PATTERN.findall(stripped)
+    picked: list[str] = []
+    used = 0
+    for sentence in sentences:
+        if used + len(sentence) > limit:
+            break
+        picked.append(sentence)
+        used += len(sentence)
+    if picked:
+        return "".join(picked)
+    if len(stripped) <= limit:
+        return f"{stripped}。"
+    return None
+
+
+def _lore_sentence(action: ParseOutcome, result_data: dict[str, Any]) -> str:
+    """从 ``result_data["lore_entries"]`` 取 1 条已激活设定 → 玩家可读的完整一句话。
+
+    H4-CONTRACT §5：仅当 ``lore_entries`` 非空且动作为 ``get_room_view``/``inspect_item``
+    时追加；旧场景不传该字段 → 返回空串（模板逐字不变）。只取 **1 条**（最长按句末截到
+    ≤60 字；该条取不出完整句时换下一条），避免多条目挤占屏幕预算。
+    """
+    if action.tool not in _LORE_ACTION_TOOLS:
+        return ""
+    raw_entries = result_data.get("lore_entries")
+    if not isinstance(raw_entries, list):
+        return ""
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, str):
+            continue
+        content = raw_entry.strip()
+        if content.startswith(_LORE_PREFIX):
+            content = content[len(_LORE_PREFIX) :].strip()
+        complete = _lore_content_sentence(content, _MAX_LORE_CHARS)
+        if complete is not None:
+            return f"你隐约想起一段旧事：{complete}"
+    return ""
+
+
+def _trim_base_to_budget(base: str, budget: int) -> str | None:
+    """把正文按句末标点收敛到 ≤``budget``；**只返回完整句**（无可用句界 → ``None``）。"""
+    text = base.rstrip()
+    if not text:
+        return ""
+    if len(text) <= budget:
+        return text
+    if budget <= 0:
+        return None
+    window = text[:budget]
+    for index in range(len(window) - 1, -1, -1):
+        if window[index] in _SENTENCE_END:
+            return window[: index + 1]
+    return None
+
+
+def _join_lore(base: str, lore: str) -> str:
+    """把设定句接在正文后：正文先按句末收敛到设定句预算，再以句号分隔拼接。
+
+    规则（Lead 实测 bug 修复）：
+    1. 预算 ``_MAX_TEXT_CHARS - len(lore) - 1``（为分隔符留 1 字），正文只截在句末标点处；
+    2. 正文末字不是句末标点 → 补「。」再拼（保证「…走。你隐约想起…」而不是「…走你隐约」）；
+    3. 正文里找不到可用的完整句 → 不追加设定（宁可少一句也不句中截断）；
+    4. 最终仍由 ``render`` 末尾的 ``_fit_text`` 兜底（80–150 且以句末标点收尾）。
+
+    无设定句时原样返回 ``base``（旧路径逐字不变）。
+    """
+    if not lore:
+        return base
+    trimmed = _trim_base_to_budget(base, _MAX_TEXT_CHARS - len(lore) - 1)
+    if trimmed is None:
+        return base.rstrip()
+    if not trimmed:
+        return lore
+    separator = "" if trimmed[-1] in _SENTENCE_END else "。"
+    return f"{trimmed}{separator}{lore}"
+
+
+# ---------------------------------------------------------------------------
+# H4/L1：环境伤害（story 枯井寒气）专属叙事屏
+# ---------------------------------------------------------------------------
+#: 轻度伤害（``hp_after >= 8``）：还有余力，只是「这地方不对劲」。
+_HAZARD_TEXT_LIGHT = (
+    "你顺着井沿往下挪，脚踩在冻硬的土壁上，一级一级蹭到井底。"
+    "暖气从四面八方围上来，舒服得让人发懒，可旧伤在肋下抽了一下，提醒你这地方不对劲。"
+    "井口那一小块天，灰白得刺眼。"
+)
+#: 重度伤害（``1 <= hp_after <= 7``）：明确警告「再下去一次就回不来」。
+_HAZARD_TEXT_SEVERE = (
+    "你又翻下井沿。这一次寒气没给你缓的时间，从脚底一路钻到心口，"
+    "手抖得几乎抓不住井壁，呼吸变得又浅又急。"
+    "井壁上的霜被你的袖子蹭落，露出底下湿冷的泥——再下去一次，你多半就上不来了。"
+)
+#: 致命伤害（``hp_after == 0``）：与「倒下」结局屏衔接。
+_HAZARD_TEXT_FATAL = (
+    "你翻下井沿时，指尖已经握不住冻硬的土。寒气漫过胸口之前，"
+    "你看见井口那一小块灰白的天，想起老兵说的那句「别往河边去」。"
+    "井底那个旅人还坐着，你大概明白他为什么不走了。然后，风停了。"
+)
+
+
+def _hazard_text(events: list[Event], result_data: dict[str, Any]) -> str | None:
+    """「移动 + 环境伤害」组合事件 → 专属叙事屏（H4/L1；不拼接移动模板）。
+
+    分档只看结算后 HP（``result_data["environment"]["hp_after"]``，编排层算好）：
+    ``>=8`` → S1 轻度、``1..7`` → S2 重度（含死亡警告）、``0`` → S3 致命。
+    缺 payload 时保守回退：伤害为负 → S1；非本组合（旧场景）→ ``None`` 走原模板。
+    """
+    event_types = {event.event_type for event in events}
+    if EventType.CHARACTER_MOVED not in event_types:
+        return None
+    if EventType.ENVIRONMENT_DAMAGE not in event_types:
+        return None
+    payload = result_data.get("environment")
+    hp_after = payload.get("hp_after") if isinstance(payload, dict) else None
+    if not isinstance(hp_after, int) or isinstance(hp_after, bool):
+        damage = next(event for event in events if event.event_type is EventType.ENVIRONMENT_DAMAGE)
+        hp_delta = damage.result.get("hp_delta")
+        if isinstance(hp_delta, int) and not isinstance(hp_delta, bool) and hp_delta < 0:
+            return _HAZARD_TEXT_LIGHT
+        return None
+    if hp_after >= 8:
+        return _HAZARD_TEXT_LIGHT
+    if hp_after >= 1:
+        return _HAZARD_TEXT_SEVERE
+    return _HAZARD_TEXT_FATAL
+
+
 class TemplateNarrator:
     """确定性模板叙事器: 按事件类型/动作选模板, 无 random/时钟/LLM 依赖。"""
 
@@ -388,10 +539,22 @@ class TemplateNarrator:
         state: GameState,
         result_data: dict[str, Any],
     ) -> str:
-        """渲染一屏中文叙事; 未知动作/事件类型走通用兜底 (长度仍达标)。"""
+        """渲染一屏中文叙事; 未知动作/事件类型走通用兜底 (长度仍达标)。
+
+        H4 加法：
+        - 世界书游戏在 ``result_data["lore_entries"]`` 非空且动作为
+          ``get_room_view``/``inspect_item`` 时追加 1 句设定（总字数仍由 ``_fit_text`` 收敛）；
+        - ``移动+ENVIRONMENT_DAMAGE`` 组合事件走 L1 专属屏（S1/S2/S3，不拼移动模板）；
+        - 旧场景不传这些字段 → 文本与 golden/demo 逐字一致。
+        """
         if events:
-            return _fit_text(self._render_event(events[0], state))
-        return _fit_text(self._render_read_only(action, result_data, state))
+            hazard = _hazard_text(events, result_data)
+            if hazard is not None:
+                return _fit_text(hazard)
+            base = self._render_event(events[0], state)
+        else:
+            base = self._render_read_only(action, result_data, state)
+        return _fit_text(_join_lore(base, _lore_sentence(action, result_data)))
 
     @staticmethod
     def _render_event(event: Event, state: GameState) -> str:

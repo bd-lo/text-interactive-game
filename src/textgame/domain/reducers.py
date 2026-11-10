@@ -293,6 +293,29 @@ def _reduce_craft(state: GameState | None, event: Event) -> GameState:
     return current.model_copy(update={"characters": characters, "items": items})
 
 
+def _reduce_environment_damage(state: GameState | None, event: Event) -> GameState:
+    """``ENVIRONMENT_DAMAGE``（H4/L1）：按 ``event.result["hp_delta"]`` 改 HP，clamp ``0..max_hp``。
+
+    只改 ``event.actor_id`` 角色的 ``hp``：不动物品/背包/位置/其他字段；``hp_delta`` 必须
+    是非零整数（负=扣血，正=回血，便于测试与未来复用），``bool``/非整数/缺失 → ``ValueError``
+    （回放不能静默跳过坏事件）。旧场景不产生该事件 → 旧存档回放/哈希零影响。
+    """
+    current = _require_state(state, event)
+    character = current.characters.get(event.actor_id)
+    if character is None:
+        raise ValueError(f"ENVIRONMENT_DAMAGE actor {event.actor_id} not in state")
+    hp_delta = event.result.get("hp_delta")
+    if not isinstance(hp_delta, int) or isinstance(hp_delta, bool) or hp_delta == 0:
+        raise ValueError("ENVIRONMENT_DAMAGE result.hp_delta must be a non-zero integer")
+    max_hp = character.attributes.get("max_hp", character.hp)
+    new_hp = max(0, min(max_hp, character.hp + hp_delta))
+    if new_hp == character.hp:
+        return current
+    characters = dict(current.characters)
+    characters[event.actor_id] = character.model_copy(update={"hp": new_hp})
+    return current.model_copy(update={"characters": characters})
+
+
 def _reduce_identity(state: GameState | None, event: Event) -> GameState:
     """CRAFT_REJECTED 预留 identity reducer（M4 不产生该事件，只做状态零变化投影）。"""
     return _require_state(state, event)
@@ -307,6 +330,7 @@ DEFAULT_REGISTRY.register(EventType.DIALOGUE_EXCHANGED, _reduce_dialogue_exchang
 DEFAULT_REGISTRY.register(EventType.CRAFT_DETERMINISTIC, _reduce_craft)
 DEFAULT_REGISTRY.register(EventType.CRAFT_GENERATED, _reduce_craft)
 DEFAULT_REGISTRY.register(EventType.CRAFT_REJECTED, _reduce_identity)
+DEFAULT_REGISTRY.register(EventType.ENVIRONMENT_DAMAGE, _reduce_environment_damage)
 
 
 def apply_events(state: GameState | None, events: list[Event]) -> GameState:

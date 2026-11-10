@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "H4 世界书叙事接线用手工合成 cassette（非真实 API 录制；不含密钥/玩家隐私）。第 1 条由带 lore_entries 的请求消费，第 2 条由无 lore 请求消费。",
+  "interactions": [
+    {
+      "request": {"task": "narrate", "agent_id": "narrator", "prompt_version": "narrate@v3"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"断桥横在封冻的河面上，桥板缺了三块。哨站那盏灯本是河谷商队的信标，灭了两夜，路便断了。十二年来一直是守夜人老兵守着它。你望向桥那头的黑沉哨站，把衣领拉紧，先得过桥去。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 420, "completion_tokens": 86}
+        }
+      }
+    },
+    {
+      "request": {"task": "narrate", "agent_id": "narrator", "prompt_version": "narrate@v3"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"断桥横在封冻的河面上，桥板缺了三块，风从缺口里直灌上来。哨站就在桥那头，灯已经灭了两夜。你把衣领拉紧，朝哨站的方向迈出一步，脚下的积雪发出细碎的声响，北风卷着雪沫擦过脸颊，远处河面传来一声开裂的闷响。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 320, "completion_tokens": 100}
+        }
+      }
+    }
+  ]
+}

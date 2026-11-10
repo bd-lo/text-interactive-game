@@ -28,6 +28,9 @@ class TurnResult(BaseModel):
     effects: list[dict[str, Any]] = Field(default_factory=list)
     suggested_actions: list[str] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    #: L3 加法（H4）：本回合屏文本的来源（``llm``/``template``；失败或未产出文本为 ``None``）。
+    #: 由编排层按叙事器返回值填写，前端据此显示来源徽章（无事件回合也能显示）。
+    narrative_source: str | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> TurnResult:
@@ -51,8 +54,13 @@ class TurnResult(BaseModel):
         effects: list[dict[str, Any]] | None = None,
         suggested_actions: list[str] | None = None,
         usage: dict[str, Any] | None = None,
+        narrative_source: str | None = None,
     ) -> TurnResult:
-        """构造成功结果；``version`` 为下一次提交的 expected_version。"""
+        """构造成功结果；``version`` 为下一次提交的 expected_version。
+
+        ``narrative_source``（L3 加法）记录本回合叙事来源（``llm``/``template``），
+        缺省 ``None``；旧调用方不传时行为逐字不变。
+        """
         return cls(
             ok=True,
             turn_id=turn_id,
@@ -62,6 +70,7 @@ class TurnResult(BaseModel):
             effects=effects or [],
             suggested_actions=suggested_actions or [],
             usage=usage or {},
+            narrative_source=narrative_source,
         )
 
     @classmethod

@@ -42,6 +42,9 @@ _VIEW_KEYS = {
     "goal",
     "ending_text",
     "suggested_actions",
+    # H4 世界书加法字段（无世界书存档恒为 None）
+    "world_book",
+    "lore",
 }
 _ROOM_KEYS = {"room_id", "title", "description", "exits", "exit_names", "items", "npcs"}
 _ITEM_KEYS = {"item_id", "name"}

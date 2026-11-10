@@ -407,10 +407,11 @@ def test_event_is_frozen() -> None:
 
 
 def test_event_type_values_match_chapter_14_7() -> None:
-    """14.7 核心事件类型 + M2 扩展：共 9 个，game_created 为小写字面名。
+    """14.7 核心事件类型 + M2 扩展 + H4/L1 环境伤害：共 10 个，game_created 为小写字面名。
 
     M2 按第 6 章 §6.4 动作表扩展 ``DIALOGUE_EXCHANGED``（talk_to -> dialogue_exchanged）；
     第 14 章 §14.7 核心表未列该成员，已登记为 M2 契约偏离（见 .work/m2-contract.md §3.1）。
+    H4/L1 新增 ``ENVIRONMENT_DAMAGE``（story 枯井寒气等可重复环境伤害；旧场景不产生）。
     """
     assert {member.value for member in EventType} == {
         "game_created",
@@ -422,6 +423,7 @@ def test_event_type_values_match_chapter_14_7() -> None:
         "CRAFT_GENERATED",
         "CRAFT_REJECTED",
         "ADMIN_CORRECTION",
+        "ENVIRONMENT_DAMAGE",
     }
     assert EventType.GAME_CREATED.value == "game_created"
 

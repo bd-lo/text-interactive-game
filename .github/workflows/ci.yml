@@ -169,3 +169,39 @@ jobs:
           git diff --exit-code -- web/dist
       - name: 单元测试（vitest：幂等键/版本链/错误契约/安全静态扫描）
         run: pnpm --dir web test
+      - name: 安装 uv（浏览器 E2E 临时服务运行时；仅 CI 用）
+        uses: astral-sh/setup-uv@v10.3.3
+      - name: 同步 Python 运行时依赖（uv sync --no-dev，起临时 uvicorn 用）
+        run: uv sync --frozen --no-dev
+      - name: 浏览器 E2E（临时 uvicorn :8794 + headless Chrome；失败上传日志）
+        # H4-L6：把真实浏览器 e2e（零依赖 CDP 驱动）接入 CI web-build job。
+        # ubuntu-latest 自带 Google Chrome；脚本会探测 /usr/bin/google-chrome。
+        # 临时服务用离线确定性路径（TEXTGAME_LLM_ENABLED=false），静态资源用本 job 刚构建的 web/dist。
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/e2e-web
+          export TEXTGAME_DB_URL="sqlite:///$PWD/artifacts/e2e-web/e2e.db"
+          export TEXTGAME_LLM_ENABLED=false
+          uv run --no-dev uvicorn textgame.main:app --host 127.0.0.1 --port 8794 \
+            > artifacts/e2e-web/server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          READY=0
+          for _ in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8794/healthz >/dev/null 2>&1; then READY=1; break; fi
+            sleep 0.5
+          done
+          if [ "$READY" != "1" ]; then
+            echo '::error::临时 uvicorn 未在 60s 内就绪'
+            tail -n 80 artifacts/e2e-web/server.log || true
+            exit 1
+          fi
+          node scripts/e2e-web.mjs --base-url http://127.0.0.1:8794 --out artifacts/e2e-web
+      - name: 上传 E2E 证据（失败也上传）
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: e2e-web
+          path: artifacts/e2e-web/
+          if-no-files-found: warn

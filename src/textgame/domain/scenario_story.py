@@ -57,12 +57,20 @@ _NPC_WATCHMAN: Final[str] = f"npc_{_ID_PREFIX}F"
 #: 玩家角色 ID：与 ``domain.scenario.PLAYER_ID`` 逐字一致（单测钉住，改常量必须同步测试）。
 _PLAYER_CHARACTER_ID: Final[str] = "char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN"
 
-#: 对外接口常量（规格 §3，签名/取值不可改）。
+#: 对外接口常量（规格 §3，签名/取值不可改；H4/L1 加法：枯井环境伤害）。
 STORY_ENTRY_ROOM_ID: Final[str] = _ROOM_BRIDGE
 STORY_WATCHMAN_ID: Final[str] = _NPC_WATCHMAN
 STORY_SIGNAL_TORCH_TEMPLATE: Final[str] = "item.signal_torch"
 STORY_FLINT_ID: Final[str] = _ITEM_FLINT
 STORY_TOWER_ROOM_ID: Final[str] = _ROOM_TOWER
+STORY_WELL_ROOM_ID: Final[str] = _ROOM_WELL
+
+#: H4/L1：可重复的环境伤害（每次进入该房间扣 HP；确定性、不随机）。
+#: 枯井寒气 -6/次：初始 12 HP → 连续两次进入枯井即可进入「倒下」结局，同时药水/烈酒
+#: 仍能把玩家救回来（药水 +8、烈酒 -4），失败结局因此可达但仍可选择规避。
+_STORY_ROOM_DAMAGE: Final[dict[str, int]] = {
+    _ROOM_WELL: -6,
+}
 
 #: 铜线模板键（两件实例共用；``tags[0]`` 必须是模板键，否则制造材料聚合失败）。
 _TEMPLATE_COPPER_WIRE: Final[str] = "item.copper_wire"
@@ -177,11 +185,13 @@ __all__ = [
     "STORY_TITLE",
     "STORY_TOWER_ROOM_ID",
     "STORY_WATCHMAN_ID",
+    "STORY_WELL_ROOM_ID",
     "build_story_state",
     "is_story_state",
     "story_ending",
     "story_goal",
     "story_reply",
+    "story_room_damage",
 ]
 
 
@@ -373,6 +383,15 @@ def build_story_state(*, save_seed: str) -> GameState:
 # ---------------------------------------------------------------------------
 # 读时求值：场景识别 / 目标 / 结局 / NPC 对话
 # ---------------------------------------------------------------------------
+
+
+def story_room_damage(room_id: str) -> int | None:
+    """H4/L1：某房间的进入伤害（``hp_delta``，负数扣血）；无伤害/非本场景房间返回 ``None``。
+
+    纯函数（同一 ``room_id`` 恒返回同一值）：编排层在 story 存档的 ``CHARACTER_MOVED`` 后
+    据此追加 ``ENVIRONMENT_DAMAGE`` 事件（同回合批次提交），旧场景永不命中 → golden 零影响。
+    """
+    return _STORY_ROOM_DAMAGE.get(room_id)
 
 
 def is_story_state(state: GameState) -> bool:

@@ -81,6 +81,9 @@ class EventType(str, Enum):
     CRAFT_GENERATED = "CRAFT_GENERATED"
     CRAFT_REJECTED = "CRAFT_REJECTED"
     ADMIN_CORRECTION = "ADMIN_CORRECTION"
+    # H4/L1 加法：可重复的环境伤害（story 枯井寒气等）；旧场景永不产生该事件，
+    # reducer 只改 actor 的 hp（clamp 0..max_hp），不改背包/位置/其他字段。
+    ENVIRONMENT_DAMAGE = "ENVIRONMENT_DAMAGE"
 
 
 # Event.event_type 需要在 EventType 定义之后解析（模型定义在枚举之前，保持 M1 文件结构）。

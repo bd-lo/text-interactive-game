@@ -35,11 +35,13 @@ from textgame.api.routes.cards import router as cards_router
 from textgame.api.routes.games import router as games_router
 from textgame.api.routes.health import router as health_router
 from textgame.api.routes.turns import router as turns_router
+from textgame.api.routes.world_books import router as world_books_router
 from textgame.domain.results import ErrorCode
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.services.audit_service import AuditService
 from textgame.services.card_service import CardService
 from textgame.services.query_service import QueryService
+from textgame.services.world_book_service import WorldBookService
 
 #: 静态目录环境变量（显式覆盖；可指向任意已构建的 SPA 产物目录）。
 STATIC_DIR_ENV = "TEXTGAME_STATIC_DIR"
@@ -184,9 +186,10 @@ def create_app(
     query_service: QueryService | None = None,
     audit_service: AuditService | None = None,
     card_service: CardService | None = None,
+    world_book_service: WorldBookService | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
-    """创建 FastAPI 应用实例; 可选注入编排器、查询服务、审计服务、人物卡服务与静态目录。
+    """创建 FastAPI 应用实例; 可选注入编排器、查询服务、审计/人物卡/世界书服务与静态目录。
 
     ``static_dir`` 缺省按 :func:`resolve_static_dir` 解析（env → CWD → 仓库根 → 包内）；
     目录存在则挂载静态托管 + SPA fallback，缺失则跳过并打 WARNING（API 与既有测试行为不变；
@@ -203,6 +206,7 @@ def create_app(
     app.include_router(games_router)
     app.include_router(turns_router)
     app.include_router(cards_router)
+    app.include_router(world_books_router)
     if orchestrator is not None:
         app.state.orchestrator = orchestrator
     if query_service is not None:
@@ -211,6 +215,8 @@ def create_app(
         app.state.audit_service = audit_service
     if card_service is not None:
         app.state.card_service = card_service
+    if world_book_service is not None:
+        app.state.world_book_service = world_book_service
     dist = resolve_static_dir(static_dir)
     #: 实际挂载的静态目录（``None``=未挂载）；供启动诊断与验收断言读取。
     app.state.static_dir = str(dist) if dist is not None else None

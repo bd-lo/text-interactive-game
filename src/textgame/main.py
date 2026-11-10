@@ -34,6 +34,7 @@ from textgame.orchestration.turn_orchestrator import NarratorLike, TurnOrchestra
 from textgame.persistence.card_repository import SqliteCardRepository
 from textgame.persistence.database import init_schema, prepare_db
 from textgame.persistence.sqlite_repository import SqliteRepository
+from textgame.persistence.world_book_repository import SqliteWorldBookRepository
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
 from textgame.services.audit_service import AuditService
@@ -42,6 +43,7 @@ from textgame.services.craft_service import CraftService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
 from textgame.services.recipe_catalog import RecipeCatalog
+from textgame.services.world_book_service import WorldBookService
 from textgame.tools.builtin import build_game_tool_registry
 from textgame.tools.gate import ToolGate
 
@@ -53,7 +55,9 @@ def _build_app() -> FastAPI:
     init_schema(engine)
     repo = SqliteRepository(engine)
     game_engine = GameEngine(repo)
-    query = QueryService(repo)
+    # H4 世界书：独立资料库（不参与事件溯源）；同一 service 作为 WorldBookProvider 注入查询/编排层。
+    world_book_service = WorldBookService(SqliteWorldBookRepository(engine))
+    query = QueryService(repo, world_book_provider=world_book_service)
     action = ActionService(query)
     catalog = RecipeCatalog.load_builtin()
     llm_client = build_llm_client(settings)
@@ -123,12 +127,14 @@ def _build_app() -> FastAPI:
         character_agents=character_agents,
         audit=audit_service,
         judge=judge,
+        world_book_provider=world_book_service,
     )
     return create_app(
         orchestrator=orchestrator,
         query_service=query,
         audit_service=audit_service,
         card_service=card_service,
+        world_book_service=world_book_service,
     )
 
 

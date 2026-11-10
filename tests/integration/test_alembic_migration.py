@@ -1,15 +1,16 @@
-"""M3/M4/M6 集成测试：Alembic 迁移链（0001 baseline → 0002 复合主键 → 0003 人物卡表）。
+"""M3/M4/M6/H4 集成测试：Alembic 迁移链（0001 baseline → 0002 复合主键 → 0003 人物卡表 → 0004 世界书两表）。
 
 覆盖：
 
-- ``alembic upgrade head`` 在临时 SQLite 文件库上建出全部 6 张表
-  （events / snapshots / game_state_current / idempotency / audit_events / character_cards）、
-  ``alembic_version=0003``，``events`` 为 ``(game_id, seq)`` 复合主键 +
+- ``alembic upgrade head`` 在临时 SQLite 文件库上建出全部 8 张表
+  （events / snapshots / game_state_current / idempotency / audit_events / character_cards /
+  world_books / world_book_entries）、``alembic_version=0004``，``events`` 为 ``(game_id, seq)`` 复合主键 +
   ``(game_id, event_uid)`` 复合唯一 + ``(game_id, turn_id, seq)`` 索引；
 - 迁移库 schema 与 ORM ``Base.metadata.create_all`` 的**表/列/主键/索引/唯一约束**
   一致（防止迁移与 tables.py 漂移）；
 - 重复 ``upgrade head`` 幂等；``downgrade base`` 删除全部表后可再次 upgrade；
 - 0003 往返：``downgrade 0002`` 只删 ``character_cards`` 且保留事件数据，再 ``upgrade`` 恢复；
+- 0004 往返：``downgrade 0003`` 只删世界书两表且保留人物卡/事件数据，再 ``upgrade`` 恢复；
 - 0001（M3 schema）单存档数据 upgrade head 后行级保留、可插入第二个存档
   （同 seq=1 可共存），删掉第二个存档数据后可 downgrade 回 0001（旧全局唯一约束）再
   upgrade，数据仍保留；
@@ -44,8 +45,10 @@ _EXPECTED_TABLES = {
     "idempotency",
     "audit_events",
     "character_cards",
+    "world_books",
+    "world_book_entries",
 }
-_HEAD_REVISION = "0003"
+_HEAD_REVISION = "0004"
 _CHARACTER_CARD_COLUMNS = {
     "card_id",
     "schema_version",
@@ -56,6 +59,37 @@ _CHARACTER_CARD_COLUMNS = {
     "created_at",
     "updated_at",
     "deleted_at",
+}
+_WORLD_BOOK_COLUMNS = {
+    "world_book_id",
+    "name",
+    "description",
+    "source",
+    "entry_count",
+    "raw_json",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+}
+_WORLD_BOOK_ENTRY_COLUMNS = {
+    "id",
+    "world_book_id",
+    "entry_uid",
+    "keys_json",
+    "secondary_keys_json",
+    "content",
+    "enabled",
+    "constant",
+    "selective",
+    "selective_logic",
+    "order",
+    "position",
+    "depth",
+    "case_sensitive",
+    "match_whole_words",
+    "exclude_recursion",
+    "prevent_recursion",
+    "raw_json",
 }
 _TS = "2026-11-09 00:00:00.000000"
 
@@ -198,6 +232,28 @@ def test_upgrade_head_creates_all_tables(tmp_path: Path) -> None:
         ) == ("card_id",)
         card_indexes = {str(index["name"]) for index in inspector.get_indexes("character_cards")}
         assert "ix_character_cards_updated_at" in card_indexes
+        # 0004 世界书两表：列集合/主键/唯一约束/索引与 ORM 一致（H4 world-books）
+        world_book_columns = {column["name"] for column in inspector.get_columns("world_books")}
+        assert world_book_columns == _WORLD_BOOK_COLUMNS
+        assert tuple(inspector.get_pk_constraint("world_books")["constrained_columns"] or ()) == (
+            "world_book_id",
+        )
+        assert "ix_world_books_updated_at" in {
+            str(index["name"]) for index in inspector.get_indexes("world_books")
+        }
+        entry_columns = {column["name"] for column in inspector.get_columns("world_book_entries")}
+        assert entry_columns == _WORLD_BOOK_ENTRY_COLUMNS
+        assert tuple(
+            inspector.get_pk_constraint("world_book_entries")["constrained_columns"] or ()
+        ) == ("id",)
+        entry_uniques = {
+            tuple(constraint["column_names"])
+            for constraint in inspector.get_unique_constraints("world_book_entries")
+        }
+        assert ("world_book_id", "entry_uid") in entry_uniques
+        assert "ix_world_book_entries_world_book_id" in {
+            str(index["name"]) for index in inspector.get_indexes("world_book_entries")
+        }
     finally:
         engine.dispose()
 
@@ -294,6 +350,44 @@ def test_0003_character_cards_roundtrip_keeps_event_data(tmp_path: Path) -> None
         with engine.connect() as connection:
             count = connection.execute(text("SELECT COUNT(*) FROM events")).scalar()
         assert count == 2
+    finally:
+        engine.dispose()
+
+
+def test_0004_world_books_roundtrip_keeps_other_tables(tmp_path: Path) -> None:
+    """0004 往返：``downgrade 0003`` 只删世界书两表，人物卡/事件数据保留；再 upgrade 恢复。"""
+    db_url = _db_url(tmp_path)
+    _upgrade(db_url)
+    engine = _engine(db_url)
+    try:
+        with engine.begin() as connection:
+            _insert_raw_event(connection, game_id="game-h4", seq=1, uid="evt_000001")
+        inspector = inspect(engine)
+        assert "world_books" in set(inspector.get_table_names())
+        assert "world_book_entries" in set(inspector.get_table_names())
+    finally:
+        engine.dispose()
+
+    command.downgrade(_alembic_config(db_url), "0003")
+    engine = _engine(db_url)
+    try:
+        assert _alembic_revision(engine) == "0003"
+        tables = set(inspect(engine).get_table_names())
+        assert "world_books" not in tables
+        assert "world_book_entries" not in tables
+        assert "character_cards" in tables  # 0003 之后的人物卡表保留
+        with engine.connect() as connection:
+            count = connection.execute(text("SELECT COUNT(*) FROM events")).scalar()
+        assert count == 1
+    finally:
+        engine.dispose()
+
+    _upgrade(db_url, "head")  # 0003 → head 重新建出世界书两表
+    engine = _engine(db_url)
+    try:
+        assert _alembic_revision(engine) == _HEAD_REVISION
+        tables = set(inspect(engine).get_table_names())
+        assert {"world_books", "world_book_entries"} <= tables
     finally:
         engine.dispose()
 
@@ -507,3 +601,23 @@ def test_orm_metadata_contains_all_baseline_tables() -> None:
     assert [column.name for column in character_cards.primary_key.columns] == ["card_id"]
     assert {column.name for column in character_cards.columns} == _CHARACTER_CARD_COLUMNS
     assert "ix_character_cards_updated_at" in {index.name for index in character_cards.indexes}
+    # 0004 世界书两表与 ORM 定义一致（H4 world-books）
+    world_books = Base.metadata.tables["world_books"]
+    assert [column.name for column in world_books.primary_key.columns] == ["world_book_id"]
+    assert {column.name for column in world_books.columns} == _WORLD_BOOK_COLUMNS
+    assert "ix_world_books_updated_at" in {index.name for index in world_books.indexes}
+    world_book_entries = Base.metadata.tables["world_book_entries"]
+    assert [column.name for column in world_book_entries.primary_key.columns] == ["id"]
+    assert {column.name for column in world_book_entries.columns} == _WORLD_BOOK_ENTRY_COLUMNS
+    assert "ix_world_book_entries_world_book_id" in {
+        index.name for index in world_book_entries.indexes
+    }
+    entry_uniques = {
+        (constraint.name, tuple(column.name for column in constraint.columns))
+        for constraint in world_book_entries.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert (
+        "uq_world_book_entries_book_uid",
+        ("world_book_id", "entry_uid"),
+    ) in entry_uniques

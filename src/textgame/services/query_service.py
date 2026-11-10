@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from textgame.domain.events import Event
 from textgame.domain.models import Character, EntityRef, GameState, PerceptionSlice
@@ -26,6 +26,12 @@ from textgame.domain.scenario_story import (
     story_goal,
 )
 from textgame.domain.suggestions import suggest_actions
+from textgame.domain.world_book import (
+    WorldBook,
+    WorldBookProvider,
+    activate_entries,
+    build_activation_context,
+)
 from textgame.services.ports import GameRepository
 
 #: 感知切片实体种类（与 ``EntityRef.kind`` 的 Literal 对齐）。
@@ -64,9 +70,89 @@ class GameNotFoundError(LookupError):
 class QueryService:
     """只读查询 API；构造注入 ``GameRepository``，不持有任何可写状态。"""
 
-    def __init__(self, repo: GameRepository) -> None:
-        """``repo`` 只用于 ``get_game_view`` 读取当前状态与最近事件。"""
+    def __init__(
+        self,
+        repo: GameRepository,
+        *,
+        world_book_provider: WorldBookProvider | None = None,
+    ) -> None:
+        """``repo`` 只用于 ``get_game_view`` 读取当前状态与最近事件。
+
+        ``world_book_provider``（H4 加法）：可选世界书提供者；缺省 ``None`` 时不计算
+        ``world_book``/``lore`` 字段（旧场景/旧装配行为逐字不变）。
+        """
         self._repo = repo
+        self._world_book_provider = world_book_provider
+
+    # ------------------------------------------------------------------
+    # H4 世界书只读投影（与 TurnOrchestrator 共用激活语义；无书 → null）
+    # ------------------------------------------------------------------
+    def _first_event(self, game_id: str) -> Event | None:
+        """存档首事件（``game_created``）；仓储无 ``read_first_event`` 时回退全量读。"""
+        getter = getattr(self._repo, "read_first_event", None)
+        if callable(getter):
+            return cast(Event | None, getter(game_id))
+        events = self._repo.read_events(game_id)
+        return events[0] if events else None
+
+    def _world_book_of_game(self, game_id: str) -> tuple[str, WorldBook] | None:
+        """该存档绑定的 ``(world_book_id, book)``；未绑定/已删除/provider 异常 → ``None``。"""
+        if self._world_book_provider is None:
+            return None
+        event = self._first_event(game_id)
+        if event is None:
+            return None
+        params = event.params
+        world_book_id = params.get("world_book_id") if isinstance(params, dict) else None
+        if not isinstance(world_book_id, str) or not world_book_id:
+            return None
+        try:
+            book = self._world_book_provider.get(world_book_id)
+        except Exception:
+            return None
+        if book is None:
+            return None
+        return world_book_id, book
+
+    def _world_book_fields(
+        self, game_id: str, state: GameState
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """``(world_book 摘要, lore.active_entries)``；无世界书 → ``(None, None)``。
+
+        lore 由「当前状态 + 最近叙事」按与回合注入同一 ``activate_entries`` 语义只读计算
+        （``turn_id`` 取当前 ``state.turn``，即上一提交回合），零写入、零模型调用。
+        """
+        found = self._world_book_of_game(game_id)
+        if found is None:
+            return None, None
+        world_book_id, book = found
+        summary = {
+            "world_book_id": world_book_id,
+            "name": book.name,
+            "entry_count": len(book.entries),
+        }
+        try:
+            events = self._repo.read_events(game_id)
+        except Exception:
+            events = []
+        narratives: list[str] = []
+        for event in events:
+            narrative = event.result.get("narrative")
+            if isinstance(narrative, str) and narrative:
+                narratives.append(narrative)
+        context = build_activation_context(state, narrative_texts=narratives)
+        active = activate_entries(
+            book,
+            context_texts=context,
+            turn_id=state.turn,
+            save_seed=state.rng_state.save_seed,
+        )
+        lore = {
+            "active_entries": [
+                {"entry_uid": entry.uid, "content": entry.content} for entry in active
+            ]
+        }
+        return summary, lore
 
     def get_room_view(self, state: GameState, actor_id: str) -> dict[str, Any]:
         """返回 ``{room_id, title, description, exits, exit_names, items[], npcs[]}``。
@@ -243,6 +329,7 @@ class QueryService:
                 break
         snapshot = self._repo.latest_snapshot(game_id)
         ending = game_ending_of_state(record.state)
+        world_book, lore = self._world_book_fields(game_id, record.state)
         return {
             "game_id": game_id,
             "turn": record.state.turn,
@@ -252,6 +339,9 @@ class QueryService:
             "last_text": last_text,
             "scenario": scenario_name_of_state(record.state),
             "ending_text": str(ending["text"]) if ending is not None else None,
+            "world_book": world_book,
+            "world_book_id": world_book["world_book_id"] if world_book is not None else None,
+            "lore": lore,
         }
 
     def get_player_view(self, game_id: str) -> dict[str, Any]:
@@ -278,6 +368,7 @@ class QueryService:
         max_hp = character.attributes.get("max_hp")
         snapshot = self._repo.latest_snapshot(game_id)
         ending = game_ending_of_state(state)
+        world_book, lore = self._world_book_fields(game_id, state)
         return {
             "game_id": game_id,
             "turn": state.turn,
@@ -292,6 +383,8 @@ class QueryService:
             "goal": story_goal(state),
             "ending_text": str(ending["text"]) if ending is not None else None,
             "suggested_actions": suggest_actions(state),
+            "world_book": world_book,
+            "lore": lore,
         }
 
     def list_games(self, *, limit: int = 10, offset: int = 0) -> dict[str, Any]:

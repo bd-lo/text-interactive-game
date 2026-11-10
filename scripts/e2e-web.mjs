@@ -745,9 +745,25 @@ async function submitTurnInBrowser(input, gameId, expectedTurn) {
   return view
 }
 
-/** 浏览器内提交只读回合（零事件、回合数不增）：以「冒险记录多一行」判定处理完成。 */
+/**
+ * 浏览器内提交只读回合（零事件、回合数不增）：处理完成判定 = 冒险记录 +1 行 且 输入框恢复可编辑。
+ *
+ * 口径（H4 前端修复后）：新局「开场」派生行会保留到真正的推进回合（turnId≥2），首个只读回合
+ * 会**新增** 1 行叙事（1→2）；同时等 `#command-input` 的 readOnly 释放（busy/ended 结束）。
+ * 不能等 `.turn-text-body`（生产构建下 TurnTextStream 仅在开发诊断面板内渲染，玩家不可见）。
+ */
 async function submitReadonlyTurnInBrowser(input) {
-  const before = await evaluate(`document.querySelectorAll('.narrative-history li').length`)
+  // 先等冒险记录就绪（新局开场行出现），避免「加载中 vs 追加」竞态导致计数偏差。
+  await waitFor(
+    `document.querySelectorAll('.narrative-history li').length >= 1`,
+    '冒险记录就绪（至少开场行）',
+  )
+  const beforeCount = Number(
+    await evaluate(`document.querySelectorAll('.narrative-history li').length`),
+  )
+  const beforeText = String(
+    await evaluate(`document.querySelector('.narrative-history')?.innerText ?? ''`),
+  )
   await setValue('#command-input', input, `只读指令 ${input}`)
   await waitFor(
     `document.querySelector('form.command-input button[type="submit"]')?.disabled === false`,
@@ -755,8 +771,32 @@ async function submitReadonlyTurnInBrowser(input) {
   )
   await click('form.command-input button[type="submit"]', `发送「${input}」`)
   await waitFor(
-    `document.querySelectorAll('.narrative-history li').length === ${Number(before) + 1}`,
+    `document.querySelectorAll('.narrative-history li').length === ${beforeCount + 1}`,
     `「${input}」冒险记录 +1 行`,
+  )
+  await waitFor(
+    `(() => {
+      const el = document.querySelector('.narrative-history');
+      if (el === null) return false;
+      const text = (el.innerText ?? '').trim();
+      return text !== '' && text !== ${JSON.stringify(beforeText.trim())};
+    })()`,
+    `「${input}」冒险记录正文更新`,
+  )
+  await waitFor(
+    `(() => {
+      const el = document.querySelector('#command-input');
+      return el !== null && el.readOnly === false;
+    })()`,
+    `「${input}」输入框恢复可编辑`,
+  )
+  const afterCount = Number(
+    await evaluate(`document.querySelectorAll('.narrative-history li').length`),
+  )
+  check(
+    `只读回合「${input}」在冒险记录新增 1 行（开场行保留）`,
+    afterCount === beforeCount + 1,
+    `${beforeCount}→${afterCount}`,
   )
   await sleep(100)
 }
@@ -831,6 +871,7 @@ function isBenignConsoleError(entry) {
 // 主流程
 // ---------------------------------------------------------------------------
 async function runFlow() {
+  let worldBookId = ''
   await step('env.server', '服务健康检查（uvicorn 由外部启动，默认离线）', async () => {
     const deadline = Date.now() + 20000
     let lastError = null
@@ -1202,19 +1243,23 @@ async function runFlow() {
 
   await step('s2.readonly-hint', 'P2-3 只读回合提示（对局页 + 回放页）', async () => {
     const hint = String(await textOf('.history-readonly-hint'))
-    check('对局页只读提示存在', hint.includes('只读') && hint.includes('冒险记录'), truncate(hint, 120))
+    check(
+      '对局页只读提示存在（只读正文只在当前会话显示、不写入回放）',
+      hint.includes('只读') && hint.includes('不写入回放'),
+      truncate(hint, 120),
+    )
     const gameId = state.openingGameId
     await navigate(`/game/${encodeURIComponent(gameId)}/replay`, '回放页', '.replay-view')
     await waitFor(`document.querySelectorAll('.replay-note').length >= 2`, '回放页只读提示')
     const replayText = await pageText()
     check(
-      '回放页提示含「不会写入冒险记录」',
-      replayText.includes('不会写入冒险记录'),
+      '回放页提示含「不会出现在回放里」',
+      replayText.includes('不会出现在回放里'),
       truncate(replayText, 160),
     )
     check(
-      '回放页提示含「不会出现在回放里」',
-      replayText.includes('不会出现在回放里'),
+      '回放页提示含「只在当前会话的冒险记录中显示」',
+      replayText.includes('只在当前会话'),
       truncate(replayText, 160),
     )
     // task-12：回放页（标题/事件面板角色行）不得出现内部 game_/npc_/char_ 等 ID。
@@ -1343,6 +1388,122 @@ async function runFlow() {
     )
     await screenshot('11-rate-limit.png')
     return `第 ${attempts} 次生成触发限流：${truncate(errorText.replace(/\s+/g, ' '), 120)}`
+  })
+
+  // -------------------------------------------------------------------------
+  // H4：世界书（导入 → Home 绑定开局 → 对局「世界设定」面板 → 375px → 删除）
+  // -------------------------------------------------------------------------
+  const WORLD_BOOK_NAME = 'E2E 余烬设定'
+  const WORLD_BOOK_PAYLOAD = {
+    name: WORLD_BOOK_NAME,
+    entries: [
+      {
+        uid: 1,
+        keys: ['断桥', '雪', '河'],
+        content: '断桥之下是封冻的河面，桥板缺了三块，雪从缺口里直灌上来，风声像有人在哭。',
+        order: 10,
+      },
+      {
+        uid: 2,
+        keys: ['老兵', '守夜人'],
+        content: '守夜人老兵在哨站守了很多年，火盆边永远放着一根旧烟斗，他记得每一个没能回来的人。',
+        order: 20,
+      },
+    ],
+  }
+
+  await step('wb.import', '世界书：UI 粘贴 JSON → 校验 → 导入并跳转详情', async () => {
+    await navigate('/world-books/import', '导入世界书页', '.world-book-import-view')
+    await setValue(
+      '.card-json-input',
+      JSON.stringify(WORLD_BOOK_PAYLOAD, null, 2),
+      '世界书 JSON',
+    )
+    await clickButtonByText('.world-book-import-form button', '校验（只看不存）', '校验世界书')
+    await waitVisible('.world-book-preview-panel', '格式识别通过面板')
+    const previewText = String(await textOf('.world-book-preview-panel'))
+    check(
+      '校验通过并展示书名/条目数',
+      previewText.includes(WORLD_BOOK_NAME) && previewText.includes('2 条'),
+      truncate(previewText, 160),
+    )
+    await clickButtonByText('.world-book-import-form button', '导入并保存', '导入世界书')
+    await waitFor(
+      `location.pathname.startsWith('/world-books/') && !location.pathname.endsWith('/import')`,
+      '导入成功后跳转世界书详情页',
+    )
+    await waitVisible('.world-book-detail-view', '世界书详情页')
+    const detailText = String(await pageText())
+    check(
+      '详情页展示书名与条目触发词/内容',
+      detailText.includes(WORLD_BOOK_NAME) && detailText.includes('断桥'),
+      truncate(detailText, 160),
+    )
+    await checkNoInternalIdsVisible('世界书详情页')
+    worldBookId = String(
+      await evaluate(`location.pathname.split('/').filter(Boolean).pop() ?? ''`),
+    )
+    check('详情 URL 含 world_book_id', worldBookId !== '', worldBookId)
+    await screenshot('17-world-book-detail-1280.png')
+    return `world_book_id=${worldBookId}`
+  })
+
+  await step('wb.bind-and-game', '世界书：Home 选择世界书开局 → 对局内「世界设定」面板触发', async () => {
+    await navigate('/', '首页（世界书绑定）', '.home-form')
+    await waitFor(
+      `(() => {
+        const labels = [...document.querySelectorAll('.home-form label.field')];
+        const label = labels.find((node) => (node.innerText ?? '').includes('世界书（可选）'));
+        return label !== undefined && label.querySelectorAll('select option').length >= 2;
+      })()`,
+      '首页世界书下拉出现可选项',
+    )
+    const selected = await evaluate(`(() => {
+      const labels = [...document.querySelectorAll('.home-form label.field')];
+      const label = labels.find((node) => (node.innerText ?? '').includes('世界书（可选）'));
+      if (label === undefined) return null;
+      const select = label.querySelector('select');
+      const option = [...select.options].find((item) => (item.text ?? '').includes(${JSON.stringify(WORLD_BOOK_NAME)}));
+      if (option === undefined) return null;
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return select.value;
+    })()`)
+    check('世界书下拉已选中导入的书', selected !== null && String(selected) !== '', String(selected))
+    await clickButtonByText('.home-form button', '开始冒险', '开始冒险（绑定世界书）')
+    await waitFor(`location.pathname.startsWith('/game/')`, '进入对局页（世界书）')
+    await waitVisible('.world-lore-panel', '世界设定面板')
+    const loreText = String(await textOf('.world-lore-panel'))
+    check('世界设定面板展示绑定书名', loreText.includes(WORLD_BOOK_NAME), truncate(loreText, 200))
+    const loreCount = await evaluate(`document.querySelectorAll('.world-lore-entry').length`)
+    check('世界设定面板展示本回合激活条目（触发成功）', loreCount >= 1, String(loreCount))
+    await checkNoInternalIdsVisible('世界书对局页')
+    await screenshot('18-world-book-game-1280.png')
+    return `lore_entries=${loreCount}`
+  })
+
+  await step('wb.mobile-375', '世界书：列表页 375px 无横向溢出', async () => {
+    await navigate('/world-books', '世界书列表页（375）', '.world-books-view')
+    await waitVisible('.world-book-item', '世界书列表项')
+    await setViewport(MOBILE_VIEWPORT.width, MOBILE_VIEWPORT.height, true)
+    const metrics = await checkNoHorizontalOverflow('世界书列表 375px')
+    await screenshot('19-world-books-375.png')
+    await clearViewport()
+    return JSON.stringify(metrics)
+  })
+
+  await step('wb.delete', '世界书：详情页两段确认删除（软删）后从列表消失', async () => {
+    await navigate(`/world-books/${worldBookId}`, '世界书详情（删除）', '.world-book-detail-view')
+    await clickButtonByText('.world-book-detail-view button', '删除', '删除按钮')
+    await clickButtonByText('.world-book-detail-view button', '确认删除（不可恢复）', '确认删除')
+    await waitFor(`location.pathname === '/world-books'`, '删除后回到世界书列表')
+    await waitFor(
+      `!document.body.innerText.includes(${JSON.stringify(WORLD_BOOK_NAME)})`,
+      '列表不再出现已删除的世界书',
+    )
+    const listText = String(await pageText())
+    check('删除后列表无残留书名', !listText.includes(WORLD_BOOK_NAME), truncate(listText, 160))
+    return 'deleted=true'
   })
 
   await step('console.no-errors', '全程无 console 错误 / 未捕获异常', async () => {

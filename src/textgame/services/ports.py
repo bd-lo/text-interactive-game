@@ -125,6 +125,14 @@ class GameRepository(Protocol):
         """按 ``seq`` 升序读取 ``seq > after_seq`` 的事件。"""
         ...
 
+    def read_first_event(self, game_id: str) -> Event | None:
+        """读该存档的第一条事件（``seq`` 最小，即 ``game_created``）；无存档返回 ``None``。
+
+        H4 加法：编排层/查询层据此读取 ``game_created.params`` 里的 ``world_book_id``
+        等建局绑定信息（只读、零写入）；旧实现不调用时行为不变。
+        """
+        ...
+
     def latest_snapshot(self, game_id: str) -> SnapshotRecord | None:
         """返回最新快照；无快照时返回 ``None``。"""
         ...

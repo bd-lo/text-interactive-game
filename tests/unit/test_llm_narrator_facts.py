@@ -1,4 +1,4 @@
-"""单元测试：``LLMNarratorAgent`` 的**事实供给**（R2 A1，narrate@v2）。
+"""单元测试：``LLMNarratorAgent`` 的**事实供给**（R2 A1，narrate@v3）。
 
 覆盖：物品名 / 目标房间名 / 中文方位 / NPC 名 / NPC 回话 / 背包聚合数量 / 当前目标（story）
 全部以玩家可见展示名进入 prompt；内部 ULID 绝不进入 prompt；玩家原话（topic）不进入 prompt；
@@ -277,7 +277,7 @@ def test_request_contract_is_unchanged_except_prompt_version() -> None:
     assert request.agent_id == "narrator"
     assert request.turn_id == 7
     assert request.max_repair == 1
-    assert request.prompt_version == PROMPT_VERSION == "narrate@v2"
+    assert request.prompt_version == PROMPT_VERSION == "narrate@v3"
 
 
 def test_offline_client_falls_back_to_template() -> None:

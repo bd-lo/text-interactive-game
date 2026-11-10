@@ -5,15 +5,15 @@
 M4 前 D-008-3 又用 0002 把 ``events`` 改为 ``(game_id, seq)`` 复合主键。本模块提供
 **显式**升级入口（组合根启动仍走 ``init_schema``/``create_all``，不自动迁移）：
 
-- 已是 head（``alembic_version=0003``）→ no-op；
-- 已 stamp 0001（M3 schema）→ 直接 ``alembic upgrade head``（备份文件后执行 0002/0003）；
+- 已是 head（``alembic_version=0004``）→ no-op；
+- 已 stamp 0001（M3 schema）→ 直接 ``alembic upgrade head``（备份文件后执行 0002/0003/0004）；
 - 无 ``alembic_version`` 的旧库：
   - 旧 M2 schema（``events`` 为 ``seq`` 单主键、``snapshots`` 缺 ``version``、无
     ``audit_events``）→ 备份文件 → ``ALTER TABLE snapshots ADD COLUMN version`` →
     按当前 metadata 建 ``audit_events`` → ``alembic stamp 0001`` → ``alembic upgrade head``；
   - M3 ``create_all`` schema（已有 ``version``/``audit_events`` 但事件仍是 ``seq`` 单主键）
     → 备份后补 ``stamp 0001`` 再 upgrade head；
-  - 当前 ``create_all`` schema（事件已是复合主键、含 M6 人物卡表）→ 仅 ``stamp head``（不重建表）；
+  - 当前 ``create_all`` schema（事件已是复合主键、含 M6 人物卡表与 H4 世界书两表）→ 仅 ``stamp head``（不重建表）；
   - 空库/不存在的文件 → ``alembic upgrade head`` 初始化。
 - 任何失败：恢复备份文件（含清理 ``-wal``/``-shm`` 残留）并抛
   :class:`LegacyUpgradeError`，消息含失败步骤与备份路径。
@@ -40,7 +40,7 @@ from sqlalchemy import Engine, create_engine, inspect, text
 
 from .tables import Base
 
-_HEAD_REVISION = "0003"
+_HEAD_REVISION = "0004"
 _BASELINE_REVISION = "0001"
 _LEGACY_TABLES = frozenset({"events", "snapshots", "game_state_current", "idempotency"})
 _COMPOSITE_EVENT_PK = ("game_id", "seq")
@@ -51,9 +51,9 @@ _ALEMBIC_DIR = _REPO_ROOT / "alembic"
 
 UpgradeAction = Literal[
     "noop",  # 已是 head
-    "upgraded_m3",  # 0001 → head（0002/0003）
+    "upgraded_m3",  # 0001 → head（0002/0003/0004）
     "upgraded_legacy",  # M2 旧库补齐后 stamp 0001 → head
-    "stamped_head",  # create_all 建的 head 形状库，仅补 alembic_version
+    "stamped_head",  # create_all 建的 head 形状库，仅补 alembic_version（0003 形状先 stamp 0003）
     "initialized",  # 空库/新文件 upgrade head
 ]
 
@@ -165,6 +165,9 @@ def _verify_head(engine: Engine) -> None:
     if not state.has_audit_events:
         raise LegacyUpgradeError("升级后仍缺少 audit_events 表")
     inspector = inspect(engine)
+    missing_world_books = {"world_books", "world_book_entries"} - set(inspector.get_table_names())
+    if missing_world_books:
+        raise LegacyUpgradeError(f"升级后仍缺少 H4 世界书表：{sorted(missing_world_books)}")
     unique_columns = {
         tuple(str(column) for column in constraint["column_names"])
         for constraint in inspector.get_unique_constraints("events")
@@ -316,7 +319,7 @@ def _upgrade_with_backup(
 # 对外入口
 # ---------------------------------------------------------------------------
 def upgrade_legacy_database(db_url: str) -> LegacyUpgradeReport:
-    """把旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡表），返回升级报告。
+    """把旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡 + 0004 世界书两表），返回升级报告。
 
     幂等：head 库直接 no-op；失败时恢复备份并抛 :class:`LegacyUpgradeError`。
     """
@@ -362,15 +365,26 @@ def upgrade_legacy_database(db_url: str) -> LegacyUpgradeReport:
         )
     if state.revision is not None:
         raise LegacyUpgradeError(
-            f"未知 Alembic 版本 {state.revision!r}（仅支持 0001/0002/0003），请人工确认数据库来源"
+            f"未知 Alembic 版本 {state.revision!r}（仅支持 0001–0004），请人工确认数据库来源"
         )
     if not state.tables:
         raise LegacyUpgradeError("SQLite 文件存在但没有任何表，无法判断是否为存档库")
     if state.events_pk == _COMPOSITE_EVENT_PK:
-        # M4 create_all 建出的 head 形状库：结构已是 head，仅补 alembic_version。
+        # create_all 建出的 head 形状库（M4/M6/H4）：结构已足够，仅补 alembic_version。
         if not (state.has_snapshots_version and state.has_audit_events):
             raise LegacyUpgradeError(
                 "events 已是复合主键但缺少 snapshots.version 或 audit_events，结构不完整"
+            )
+        if not {"world_books", "world_book_entries"} <= state.tables:
+            # H4 之前的 create_all 库（0003 形状）：补 stamp 0003 后由 0004 建世界书两表。
+            return _upgrade_with_backup(
+                db_url,
+                db_path,
+                action="stamped_head",
+                from_revision=None,
+                legacy_fix=False,
+                stamp="0003",
+                steps=("alembic stamp 0003", "alembic upgrade head"),
             )
         config = _alembic_config(db_url)
         command.stamp(config, "head")
@@ -408,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI 入口：``python -m textgame.persistence.legacy_upgrade --db-url ...``。"""
     parser = argparse.ArgumentParser(
         prog="python -m textgame.persistence.legacy_upgrade",
-        description="把 textgame 的旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡表）",
+        description="把 textgame 的旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡 + 0004 世界书表）",
     )
     parser.add_argument(
         "--db-url",

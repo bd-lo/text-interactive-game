@@ -61,6 +61,8 @@ class GameEngine:
         scenario: Scenario = "m2",
         initial_state: dict[str, Any] | None = None,
         card_id: str | None = None,
+        world_book_id: str | None = None,
+        world_book_name: str | None = None,
     ) -> Result:
         """创建存档：``game_created`` 首事件（seq=1）+ 当前状态 + 初始快照（契约 §3.2）。
 
@@ -73,6 +75,11 @@ class GameEngine:
         好的初始状态 JSON（人物卡建局时由 ``CardService`` 映射，玩家槽位仍是 ``PLAYER_ID``），
         提供时不再构造内置场景状态；``card_id`` 只写入 ``game_created.params`` 供回放/审计
         （加法字段，M2–M4 无卡路径恒为 ``None``）。
+
+        H4 加法（D-H4）：``world_book_id``/``world_book_name`` **仅在非 None 时**追加进
+        ``game_created.params``（世界书绑定留给编排层/查询层经 ``read_first_event`` 读取；
+        旧请求的 params 逐字不变，事件哈希不受影响）。存在性校验在编排层/接入层完成
+        （未知世界书 404），引擎不做 IO 查询。
 
         返回 ``Result.data = {"game_id", "turn", "version", "snapshot_version", "save_seed"}``；
         同一 ``game_id`` 已存在时返回 ``CONFLICT``；同一数据库可创建多个不同 ``game_id``
@@ -99,18 +106,24 @@ class GameEngine:
             base_state = build_story_state(save_seed=save_seed)
         else:
             base_state = build_initial_state(save_seed=save_seed)
+        created_params: dict[str, Any] = {
+            "card_id": card_id,
+            "starting_room_id": ROOM_ENTRY,
+            "initial_character_id": PLAYER_ID,
+            "save_seed": save_seed,
+            "snapshot_version": _INITIAL_SNAPSHOT_VERSION,
+        }
+        # H4：仅建局显式绑定世界书时追加（旧请求 params 逐字不变；含 name 便于回放/审计）。
+        if world_book_id is not None:
+            created_params["world_book_id"] = world_book_id
+        if world_book_name is not None:
+            created_params["world_book_name"] = world_book_name
         game_created = Event(
             turn_id=1,
             actor_id="system",
             method="game_created",
             event_type=EventType.GAME_CREATED,
-            params={
-                "card_id": card_id,
-                "starting_room_id": ROOM_ENTRY,
-                "initial_character_id": PLAYER_ID,
-                "save_seed": save_seed,
-                "snapshot_version": _INITIAL_SNAPSHOT_VERSION,
-            },
+            params=created_params,
             result={"initial_state": base_state.model_dump(mode="json")},
         )
         try:

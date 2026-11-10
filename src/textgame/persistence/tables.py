@@ -1,11 +1,12 @@
 """SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency / audit_events
-/ character_cards。
+/ character_cards / world_books / world_book_entries。
 
 M2 契约 §6、M3 契约 §3.5/D-M3-6/D-M3-7、M4 前 D-008-3 与第 14 章 14.3：SQLAlchemy 2.0
 同步 ORM + SQLite，新库建表走 ``Base.metadata.create_all``；迁移走 Alembic
 （``alembic/versions/0001_m3_baseline.py`` 空库 5 表，``0002_composite_event_key.py``
 把 events 改为 ``(game_id, seq)`` 复合主键以支持同库多存档，
-``0003_character_cards.py`` 增 M6 人物卡库表 ``character_cards``）。
+``0003_character_cards.py`` 增 M6 人物卡库表 ``character_cards``，
+``0004_world_books.py`` 增 H4 世界书两表 ``world_books``/``world_book_entries``）。
 
 ``events.seq`` 是**每存档内**全局单调序号、由 ``EventLog`` 分配（**不使用数据库自增**），
 ``id = f"evt_{seq:06d}"`` 即领域 ``Event.id``——因此 ``event_uid`` 只在存档内唯一，
@@ -20,6 +21,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Index,
     Integer,
@@ -158,3 +160,64 @@ class CharacterCardRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorldBookRow(Base):
+    """H4 世界书表：一份导入/手工创建的世界设定资料（**不参与事件溯源**）。
+
+    世界书是独立于游戏世界状态的资料库：``POST /world-books/import`` 由
+    ``WorldBookService`` 规范化后落本表，``POST /games`` 只把 ``world_book_id`` 记录进
+    ``game_created.params``（事件基线字段不扩展）；对局内每回合由纯函数
+    ``domain.world_book.activate_entries`` 决定激活条目，**不写事件、不改 GameState**。
+
+    - ``entry_count``：规范化后条目数（enabled+disabled 全量，供列表展示）；
+    - ``raw_json``：原始导入 payload 的规范 JSON（审计/回放/前向兼容）；
+    - ``deleted_at``：软删除时间戳（``NULL`` = 未删除），删除不物理删行。
+    """
+
+    __tablename__ = "world_books"
+    __table_args__ = (Index("ix_world_books_updated_at", "updated_at"),)
+
+    world_book_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    entry_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorldBookEntryRow(Base):
+    """H4 世界书条目表：一条触发条目（SillyTavern ``world_info.entries`` 的规范化投影）。
+
+    字段语义见 ``services.world_book_service`` 与 ``domain.world_book.WorldBookEntry``：
+    ``keys_json``/``secondary_keys_json`` 为规范化 JSON 字符串数组；``raw_json`` 保留原始
+    entry（含未映射字段，前向兼容）。唯一约束 ``(world_book_id, entry_uid)``：同书内
+    ``entry_uid``（来自格式 uid，缺失时取数组下标）不得重复。
+    """
+
+    __tablename__ = "world_book_entries"
+    __table_args__ = (
+        UniqueConstraint("world_book_id", "entry_uid", name="uq_world_book_entries_book_uid"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    world_book_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    entry_uid: Mapped[int] = mapped_column(Integer, nullable=False)
+    keys_json: Mapped[str] = mapped_column(Text, nullable=False)
+    secondary_keys_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    constant: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    selective: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    selective_logic: Mapped[int] = mapped_column(Integer, nullable=False)
+    order: Mapped[int] = mapped_column(Integer, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False)
+    case_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    match_whole_words: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    exclude_recursion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    prevent_recursion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False)
