@@ -1,8 +1,10 @@
 /**
- * API client（M6-025 + M6-027）：只调现有 5 个端点（含只读 replay），无自动重试、无 SSE。
+ * API client（M6-025 + M6-026 + M6-027 + M6-028）：只调现有 11 个端点（含只读 replay），
+ * 无自动重试、无 SSE。
  *
  * 错误契约（第 6 章 §6.7、D-M6-6③）：业务失败仍是 HTTP 200 + `TurnResult(ok=false)`；
  * 协议错误走 4xx/5xx 统一失败信封 `{ok:false, error_code, message, violations?}`。
+ * 限流 429 的 `Retry-After` 头解析进 `ApiClientError.retryAfterSeconds`（第 23 章 §23.6）。
  * 关键响应先做运行时字段校验再返回（第 23 章 §23.3「不得裸 body as T」）。
  */
 
@@ -10,9 +12,13 @@ import { getOrCreate } from '@/utils/idempotency'
 
 import type {
   ApiErrorEnvelope,
+  CardGenerateRequest,
+  CardGenerateResponse,
+  CharacterCard,
   CharacterCardDetailResponse,
   CharacterCardImportResponse,
   CharacterCardListResponse,
+  CharacterCardSaveResponse,
   CharacterCardValidateResponse,
   CreateGameRequest,
   CreatedGameResponse,
@@ -33,13 +39,22 @@ export class ApiClientError extends Error {
   readonly status: number
   readonly code: string
   readonly violations: unknown
+  /** 429 响应的 `Retry-After` 秒数（无该头/非法值时为 0；第 23 章 §23.6）。 */
+  readonly retryAfterSeconds: number
 
-  constructor(status: number, code: string, message: string, violations?: unknown) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    violations?: unknown,
+    retryAfterSeconds = 0,
+  ) {
     super(message)
     this.name = 'ApiClientError'
     this.status = status
     this.code = code
     this.violations = violations
+    this.retryAfterSeconds = retryAfterSeconds
   }
 
   get isConflict(): boolean {
@@ -82,14 +97,23 @@ function assertKeys(record: Record<string, unknown>, label: string, expected: re
   }
 }
 
-function parseErrorEnvelope(body: unknown, status: number): ApiClientError {
+/** 解析 `Retry-After`（服务端只发「秒」形式；HTTP-date 等非法值按 0 处理）。 */
+function parseRetryAfter(value: string | null): number {
+  if (value === null) {
+    return 0
+  }
+  const seconds = Number.parseInt(value.trim(), 10)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+}
+
+function parseErrorEnvelope(body: unknown, status: number, retryAfterSeconds = 0): ApiClientError {
   if (isRecord(body) && body.ok === false) {
     const envelope = body as unknown as ApiErrorEnvelope
     const code = typeof envelope.error_code === 'string' ? envelope.error_code : 'INTERNAL'
     const message = typeof envelope.message === 'string' ? envelope.message : `HTTP ${status}`
-    return new ApiClientError(status, code, message, envelope.violations)
+    return new ApiClientError(status, code, message, envelope.violations, retryAfterSeconds)
   }
-  return new ApiClientError(status, 'INTERNAL', `HTTP ${status}`)
+  return new ApiClientError(status, 'INTERNAL', `HTTP ${status}`, undefined, retryAfterSeconds)
 }
 
 async function request<T>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<T> {
@@ -123,7 +147,11 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
       throw new ApiClientError(response.status, 'INTERNAL', `HTTP ${response.status}：响应不是合法 JSON`)
     }
     if (!response.ok) {
-      throw parseErrorEnvelope(body, response.status)
+      throw parseErrorEnvelope(
+        body,
+        response.status,
+        parseRetryAfter(response.headers.get('Retry-After')),
+      )
     }
     return body as T
   } finally {
@@ -479,4 +507,101 @@ export async function importCard(
     }
   }
   return record as unknown as CharacterCardImportResponse
+}
+
+// ---------------------------------------------------------------------------
+// M6-028 生成人物卡（generate 草稿 + 保存到卡库；第 23 章 §23.6）
+// ---------------------------------------------------------------------------
+
+/** 生成请求超时：服务端 LLM 任务 timeout_s=20 + 一次修复，前端给足 60s（`RequestOptions.timeoutMs`）。 */
+export const CARD_GENERATE_TIMEOUT_MS = 60_000
+
+const CARD_GENERATE_KEYS = ['draft', 'validation', 'generated_by'] as const
+const CARD_GENERATE_VALIDATION_KEYS = ['valid', 'errors', 'warnings'] as const
+const CARD_SAVE_KEYS = ['card_id', 'card'] as const
+
+/** 生成草稿校验错误列表 `[{loc,type,msg}]` 逐项校验（Pydantic `extra="forbid"`）。 */
+function assertCardValidationErrors(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw contractError(label, 'errors 不是数组')
+  }
+  for (const item of value) {
+    assertKeys(
+      assertRecord(item, 'CharacterCardValidationErrorResponse'),
+      'CharacterCardValidationErrorResponse',
+      CARD_VALIDATION_ERROR_KEYS,
+    )
+  }
+}
+
+/** 告警列表 `[{code,message,field?}]`：code/message 必填，field 可缺省。 */
+function assertCardWarnings(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw contractError(label, 'warnings 不是数组')
+  }
+  for (const item of value) {
+    const warning = assertRecord(item, 'CharacterCardWarningResponse')
+    if (typeof warning.code !== 'string' || typeof warning.message !== 'string') {
+      throw contractError('CharacterCardWarningResponse', 'code/message 类型不符')
+    }
+  }
+}
+
+/**
+ * `POST /api/v1/character-cards/generate`：按 `brief` 生成人物卡草稿（不保存/不建局）。
+ *
+ * - **写幂等键**：`Idempotency-Key` 由 `actionKey` 派生，手动重试复用同一键（无自动重试）；
+ * - 响应精确校验 `{draft, validation, generated_by}`、`validation` 的 `valid/errors/warnings`
+ *   与 `draft` 的 9 字段（后端 `extra="forbid"`；漂移即失败）；
+ * - 默认离线：服务端返回确定性模板兜底（`generated_by=null` + `TEMPLATE_FALLBACK` warning）；
+ * - 限流 429（`OUT_OF_RANGE` + `Retry-After`）由 `ApiClientError.retryAfterSeconds` 携带。
+ */
+export async function generateCard(
+  body: CardGenerateRequest,
+  actionKey: string,
+  signal?: AbortSignal,
+): Promise<CardGenerateResponse> {
+  const payload = await request<unknown>(
+    '/api/v1/character-cards/generate',
+    { method: 'POST', body: JSON.stringify(body) },
+    { idempotent: true, actionKey, signal, timeoutMs: CARD_GENERATE_TIMEOUT_MS },
+  )
+  const record = assertRecord(payload, 'CardGenerateResponse')
+  assertKeys(record, 'CardGenerateResponse', CARD_GENERATE_KEYS)
+  assertCardRecord(assertRecord(record.draft, 'CharacterCard'), 'CharacterCard')
+  const validation = assertRecord(record.validation, 'CardGenerateValidation')
+  assertKeys(validation, 'CardGenerateValidation', CARD_GENERATE_VALIDATION_KEYS)
+  if (typeof validation.valid !== 'boolean') {
+    throw contractError('CardGenerateValidation', 'valid 类型不符')
+  }
+  assertCardValidationErrors(validation.errors, 'CardGenerateValidation')
+  assertCardWarnings(validation.warnings, 'CardGenerateValidation')
+  if (record.generated_by !== null && typeof record.generated_by !== 'string') {
+    throw contractError('CardGenerateResponse', 'generated_by 应为字符串或 null')
+  }
+  return record as unknown as CardGenerateResponse
+}
+
+/**
+ * `POST /api/v1/character-cards`：保存已校验人物卡 → 201 `{card_id, card}`（写幂等键）。
+ *
+ * 保存前**禁止**自动建局/跳转（第 23 章 §23.6-6）；同键异参由服务端 409，前端清键后手动重试。
+ */
+export async function saveCard(
+  card: CharacterCard,
+  actionKey: string,
+  signal?: AbortSignal,
+): Promise<CharacterCardSaveResponse> {
+  const payload = await request<unknown>(
+    '/api/v1/character-cards',
+    { method: 'POST', body: JSON.stringify(card) },
+    { idempotent: true, actionKey, signal },
+  )
+  const record = assertRecord(payload, 'CharacterCardSaveResponse')
+  assertKeys(record, 'CharacterCardSaveResponse', CARD_SAVE_KEYS)
+  if (typeof record.card_id !== 'string' || record.card_id === '') {
+    throw contractError('CharacterCardSaveResponse', 'card_id 应为非空字符串')
+  }
+  assertCardRecord(assertRecord(record.card, 'CharacterCard'), 'CharacterCard')
+  return record as unknown as CharacterCardSaveResponse
 }

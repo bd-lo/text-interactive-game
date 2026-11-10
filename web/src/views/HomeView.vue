@@ -207,6 +207,8 @@ onMounted(() => {
     <p class="muted home-links">
       想先看看人物卡？
       <RouterLink :to="{ name: 'cards' }">打开人物卡库</RouterLink>
+      · 也可以
+      <RouterLink :to="{ name: 'card-generate' }">用一句设定生成人物卡</RouterLink>
     </p>
   </section>
 </template>

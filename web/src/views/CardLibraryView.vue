@@ -58,8 +58,9 @@ onMounted(() => {
     </header>
 
     <div class="game-tools">
+      <RouterLink class="btn btn-small" :to="{ name: 'card-generate' }">生成人物卡</RouterLink>
       <RouterLink class="btn btn-small" :to="{ name: 'card-import' }">导入卡片</RouterLink>
-      <span class="muted">挑一张卡开始冒险，或从 JSON 导入自己的角色。</span>
+      <span class="muted">用一句设定生成一张卡、挑现成的卡开始冒险，或从 JSON 导入自己的角色。</span>
     </div>
 
     <form class="panel cards-tools" @submit.prevent="onSearch">
@@ -76,8 +77,10 @@ onMounted(() => {
     <p v-if="store.loading" class="muted" role="status">正在加载人物卡…</p>
     <p v-else-if="store.items.length === 0 && store.error === ''" class="muted" role="status">
       暂无人物卡。可以先
+      <RouterLink :to="{ name: 'card-generate' }">生成一张人物卡</RouterLink>
+      ，或
       <RouterLink :to="{ name: 'card-import' }">导入一张 JSON 人物卡</RouterLink>
-      ，或用现有卡开局。
+      。
     </p>
 
     <ul v-else class="plain-list card-list">

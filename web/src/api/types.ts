@@ -1,10 +1,10 @@
 /**
- * 前端契约类型快照（M6-025 骨架 + M6-027 回放 + M6-026 卡库导入）。
+ * 前端契约类型快照（M6-025 骨架 + M6-027 回放 + M6-026 卡库导入 + M6-028 生成）。
  *
  * 唯一来源是 live OpenAPI：`create_app().openapi()`（D-M6-2 / 第 23 章 §23.3）。
  * 字段集合由 `tests/integration/test_frontend_contract.py` 静态比对；后端契约变更未同步
- * 到本文件时契约测试会失败。当前使用现有 10 个端点（games/turns/replay + character-cards）；
- * generate（M6-028）交付后再做加法扩展。
+ * 到本文件时契约测试会失败。当前使用现有 11 个端点（games/turns/replay + character-cards 8 个）；
+ * M6-028 generate 端点已接入（API client `generateCard`）。
  */
 
 /** 前端实际调用的端点（必须是 live OpenAPI 的子集，契约测试逐项断言）。 */
@@ -263,7 +263,7 @@ export interface CharacterCardImportResponse {
   warnings: CharacterCardWarning[]
 }
 
-/** `POST /api/v1/character-cards`（保存）201 响应；M6-026 不启用该入口。 */
+/** `POST /api/v1/character-cards`（保存）201 响应；M6-028 生成草稿的保存入口使用。 */
 export interface CharacterCardSaveResponse {
   card_id: string
   card: CharacterCard

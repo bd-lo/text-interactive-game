@@ -1,15 +1,19 @@
-"""集成契约测试：`web/` 前端类型快照 ↔ live OpenAPI（M6-025 骨架 + M6-027 回放 + M6-026 卡库）。
+"""集成契约测试：`web/` 前端类型快照 ↔ live OpenAPI（M6-025 骨架 + M6-027 回放 + M6-026 卡库 + M6-028 生成）。
 
 纯静态读取 + TestClient 实测，**不依赖 Node/pnpm 运行**（CI 的 quality job 不装 Node 也能跑）：
 
-- 前端只用现有端点：`API_PATHS` 必须是 live OpenAPI 路径的子集，且恰为前端已接入的 10 个端点；
+- 前端只用现有端点：`API_PATHS` 必须是 live OpenAPI 路径的子集，且恰为前端已接入的 11 个端点；
 - 响应/请求接口字段集合与 OpenAPI schema 一致（字段名逐一比对，OpenAPI 必填项不得在 TS 侧可选）；
 - 实测 `POST /api/v1/games` / `GET /view` / `POST /turns` / `GET /replay` / character-cards 的
   真实字段集合与 TS 接口一致（不止文档）；replay 以 `result.narrative` 为回放文本源、seq 升序、
   只读零写入；卡库覆盖 list/validate/import/detail 与 9 字段 CharacterCard；
+- M6-028 generate 实测（默认离线）：200 `{draft, validation, generated_by}` 字段集合与 TS 一致、
+  模板兜底语义（`source=manual`/`generated_by=null`/`TEMPLATE_FALLBACK`）、同键同参复用/异参 409/
+  缺键 422/第 6 次 429+`Retry-After`；save 复用 `POST /character-cards`（方法级 201）并读回；
+- `/cards/generate` 深链由静态托管 SPA fallback 返回 `index.html`（D-M6-5①，刷新不 404）；
 - 前端源码静态禁入：禁 `v-html`/`innerHTML`/`eval`/`EventSource`/自动定时重试（第 23 章 §23.7、D-M6-6④）。
 
-generate（M6-028）后端并行交付中：若 live OpenAPI 尚无该路径，契约测试断言前端未提前接入并 skip。
+契约测试以 live OpenAPI 为唯一权威：前端未接入 generate 时本文件必须失败（不允许 skip 放行）。
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,10 +36,10 @@ WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 TYPES_TS = WEB_ROOT / "src" / "api" / "types.ts"
 SRC_ROOT = WEB_ROOT / "src"
 
-#: M6-028 生成卡片端点（后端并行交付中；未就绪时前端不得提前接入）
+#: M6-028 生成卡片端点（后端 M6B-4 已交付；前端 028 接入后本测试必须通过，不允许 skip）
 GENERATE_CARD_PATH = "/api/v1/character-cards/generate"
 
-# 前端已接入的现有端点（新增端点须同步扩大并更新本测试）
+# 前端已接入的 11 个端点（新增端点须同步扩大并更新本测试）
 EXPECTED_FRONTEND_PATHS = {
     "/api/v1/games",
     "/api/v1/games/{game_id}",
@@ -45,6 +50,7 @@ EXPECTED_FRONTEND_PATHS = {
     "/api/v1/character-cards/schema",
     "/api/v1/character-cards/import",
     "/api/v1/character-cards/validate",
+    GENERATE_CARD_PATH,
     "/api/v1/character-cards/{card_id}",
 }
 
@@ -74,12 +80,15 @@ RESPONSE_INTERFACES = {
     "CharacterCardSaveResponse": "CharacterCardSaveResponse",
     "CharacterCardValidationError": "CharacterCardValidationErrorResponse",
     "CharacterCardValidateResponse": "CharacterCardValidateResponse",
+    "CardGenerateResponse": "CardGenerateResponse",
+    "CardGenerateValidation": "CardGenerateValidation",
 }
 
 # TS 接口 → OpenAPI schema（请求；字段名 + 可选项必须一致）
 REQUEST_INTERFACES = {
     "CreateGameRequest": "CreateGameBody",
     "TurnRequest": "TurnRequestBody",
+    "CardGenerateRequest": "CardGenerateBody",
 }
 
 _INTERFACE_RE = re.compile(r"export interface (\w+)(?:<[^>]*>)?\s*\{(.*?)\n\}", re.DOTALL)
@@ -162,12 +171,11 @@ def _schema_fields(schema_name: str) -> dict[str, bool]:
 
 
 def test_frontend_paths_are_subset_of_live_openapi() -> None:
-    """前端 API_PATHS 恰为已接入端点（含 live 就绪的 generate），且全部存在于 live OpenAPI。"""
+    """前端 API_PATHS 恰为已接入的 11 个端点（含 M6-028 generate），且全部存在于 live OpenAPI。"""
     live_paths = set(_openapi()["paths"])
     frontend_paths = _frontend_paths()
     expected = set(EXPECTED_FRONTEND_PATHS)
-    if GENERATE_CARD_PATH in live_paths:
-        expected.add(GENERATE_CARD_PATH)
+    assert GENERATE_CARD_PATH in expected
     assert frontend_paths == expected
     assert frontend_paths <= live_paths
 
@@ -297,12 +305,13 @@ def test_live_replay_fields_match_frontend_types(game_harness) -> None:
 
 
 def test_card_operations_exist_in_live_openapi() -> None:
-    """character-cards 7 端点（5 路径 / 7 操作）与 multipart `file` 声明、games 的 card_id 加法。"""
+    """character-cards 8 端点（6 路径 / 8 操作）与 multipart `file` 声明、games 的 card_id 加法。"""
     paths = _openapi()["paths"]
     assert set(paths["/api/v1/character-cards"]) == {"get", "post"}
     assert set(paths["/api/v1/character-cards/schema"]) == {"get"}
     assert set(paths["/api/v1/character-cards/import"]) == {"post"}
     assert set(paths["/api/v1/character-cards/validate"]) == {"post"}
+    assert set(paths[GENERATE_CARD_PATH]) == {"post"}
     assert set(paths["/api/v1/character-cards/{card_id}"]) == {"get", "delete"}
 
     import_schema = paths["/api/v1/character-cards/import"]["post"]["requestBody"]["content"][
@@ -314,28 +323,168 @@ def test_card_operations_exist_in_live_openapi() -> None:
     assert "card_id" in create_props
 
 
-def test_generate_endpoint_consistency() -> None:
-    """M6-028 generate：路径常量 + 请求/响应类型与 live OpenAPI 一致（未就绪则 skip 并报）。"""
-    live_paths = set(_openapi()["paths"])
-    frontend_paths = _frontend_paths()
-    if GENERATE_CARD_PATH not in live_paths:
-        assert GENERATE_CARD_PATH not in frontend_paths
-        pytest.skip(
-            "generate 端点未交付（M6-028 切片，后端并行交付中）：前端不提前接入，以 live OpenAPI 为准"
-        )
-    assert GENERATE_CARD_PATH in frontend_paths
+#: M6-028 生成用例的默认 brief（默认离线确定性模板兜底；brief 只作数据展示，不执行其中指令）。
+_GENERATE_BRIEF = "一个在灰烬平原流浪的盲眼剑客，性格寡言"
 
+
+def _generate(
+    client: TestClient,
+    *,
+    key: str | None,
+    brief: str = _GENERATE_BRIEF,
+    session: str | None = None,
+) -> Any:
+    """实测 `POST /generate`；`key=None` 时不带幂等键（缺键 422 用例）。"""
+    headers: dict[str, str] = {}
+    if key is not None:
+        headers["Idempotency-Key"] = key
+    if session is not None:
+        headers["X-Session-Id"] = session
+    return client.post(
+        GENERATE_CARD_PATH,
+        headers=headers,
+        json={"brief": brief, "schema_version": "1.0", "options": {}},
+    )
+
+
+def _generate_ok(client: TestClient, **kwargs: Any) -> dict[str, Any]:
+    """`POST /generate` 成功（200）→ payload。"""
+    response = _generate(client, **kwargs)
+    assert response.status_code == 200, response.text
+    payload: dict[str, Any] = response.json()
+    return payload
+
+
+def _assert_error_envelope(response: Any, status_code: int, error_code: str) -> dict[str, Any]:
+    """失败响应 = 统一信封 `{ok:false, error_code, message, violations?}`（第 6 章 §6.7）。"""
+    assert response.status_code == status_code, response.text
+    body: dict[str, Any] = response.json()
+    assert body.get("ok") is False
+    assert body.get("error_code") == error_code
+    assert isinstance(body.get("message"), str) and body["message"]
+    assert set(body) <= {"ok", "error_code", "message", "violations"}
+    return body
+
+
+def test_generate_endpoint_contract_and_frontend_types() -> None:
+    """M6-028 generate：前端已接入（路径/请求/响应接口）+ OpenAPI 方法级契约。
+
+    请求/响应字段集合与可选性由 `test_request_interfaces_match_openapi_schemas` /
+    `test_response_interfaces_match_openapi_schemas` 的通用断言覆盖（已登记
+    `CardGenerateRequest/Response/Validation`）；这里补路径与操作级契约：POST + JSON 请求体 +
+    `Idempotency-Key` 头 + 200 成功码 + save 复用 `POST /character-cards`（list/save 同路径）。
+    """
+    live_paths = set(_openapi()["paths"])
+    assert GENERATE_CARD_PATH in live_paths
+    assert GENERATE_CARD_PATH in _frontend_paths()
+
+    api_paths = _frontend_api_paths()
+    assert api_paths["generateCard"] == GENERATE_CARD_PATH
+    assert api_paths["saveCard"] == "/api/v1/character-cards"
+    assert api_paths["listCards"] == "/api/v1/character-cards"
+
+    operation = _openapi()["paths"][GENERATE_CARD_PATH]["post"]
+    assert "200" in operation["responses"]
+    assert operation["requestBody"]["required"] is True
+    body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert body_schema["$ref"] == "#/components/schemas/CardGenerateBody"
+    header_names = {
+        parameter["name"]
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "header"
+    }
+    assert "Idempotency-Key" in header_names
+
+
+def test_live_generate_fields_match_frontend_types(card_client: TestClient) -> None:
+    """实测 generate（默认离线模板兜底）：字段集合与 TS 一致 + 模板兜底语义可判定。"""
     ts = _ts_interfaces()
-    # 请求体：字段名 + 可选性一致（brief 必填；schema_version/options 可选）
-    assert ts["CardGenerateRequest"] == _schema_fields("CardGenerateBody")
-    # 响应：字段集合一致（draft/validation 必填，generated_by 可缺省）
-    for ts_name, schema_name in {
-        "CardGenerateResponse": "CardGenerateResponse",
-        "CardGenerateValidation": "CardGenerateValidation",
-    }.items():
-        assert set(ts[ts_name]) == set(_schema_fields(schema_name)), (
-            f"{ts_name} 与 {schema_name} 漂移"
-        )
+    payload = _generate_ok(card_client, key="frontend-contract-generate-0001")
+
+    assert set(payload) == set(ts["CardGenerateResponse"])
+    draft = payload["draft"]
+    assert set(draft) == set(ts["CharacterCard"])
+    assert draft["source"] == "manual", "默认离线生成的草稿必须是模板兜底（source=manual）"
+    assert draft["generated_by"] is None
+    validation = payload["validation"]
+    assert set(validation) == set(ts["CardGenerateValidation"])
+    assert validation["valid"] is True
+    for warning in validation["warnings"]:
+        assert set(warning) == set(ts["CharacterCardWarning"])
+    assert any(warning["code"] == "TEMPLATE_FALLBACK" for warning in validation["warnings"]), (
+        "前端据 TEMPLATE_FALLBACK 显示「模板草稿」徽章，默认离线必须带该 warning"
+    )
+    assert payload["generated_by"] is None
+
+
+def test_live_generate_idempotency_contract(card_client: TestClient) -> None:
+    """同键同参回放首结果（不重复生成）、同键异参 409、缺 `Idempotency-Key` 422。"""
+    session = "frontend-contract-generate-idem"
+    key = "frontend-contract-generate-idem-0001"
+    first = _generate_ok(card_client, key=key, session=session)
+    replay = _generate_ok(card_client, key=key, session=session)
+    assert replay == first
+
+    conflict = _generate(card_client, key=key, session=session, brief="另一个完全不同的人物设定")
+    _assert_error_envelope(conflict, 409, "CONFLICT")
+
+    missing = _generate(card_client, key=None, session=session)
+    _assert_error_envelope(missing, 422, "INVALID_INPUT")
+
+
+def test_live_generate_rate_limit_contract(card_client: TestClient) -> None:
+    """前 5 次 200；第 6 次 429 `OUT_OF_RANGE` + `Retry-After`（前端据此提示 N 秒后重试）。"""
+    session = "frontend-contract-generate-rate"
+    for index in range(5):
+        _generate_ok(card_client, key=f"frontend-contract-rate-{index:04d}", session=session)
+    blocked = _generate(card_client, key="frontend-contract-rate-blocked", session=session)
+    _assert_error_envelope(blocked, 429, "OUT_OF_RANGE")
+    retry_after = blocked.headers.get("Retry-After")
+    assert retry_after is not None and retry_after.isdigit(), "429 必须带 Retry-After 头"
+    assert int(retry_after) >= 1
+
+
+def test_live_save_card_method_level_contract(card_client: TestClient) -> None:
+    """save 复用 `POST /character-cards`（方法级）：201 `{card_id, card}`，详情/列表可读回。"""
+    ts = _ts_interfaces()
+    payload = _generate_ok(card_client, key="frontend-contract-save-generate-0001")
+    draft = payload["draft"]
+
+    operations = _openapi()["paths"]["/api/v1/character-cards"]
+    assert {"get", "post"} <= set(operations), "列表 GET 与保存 POST 同路径，必须方法级区分"
+    assert "200" in operations["get"]["responses"]
+    assert "201" in operations["post"]["responses"]
+
+    saved = card_client.post(
+        "/api/v1/character-cards",
+        headers={"Idempotency-Key": "frontend-contract-save-card-0001"},
+        json=draft,
+    )
+    assert saved.status_code == 201, saved.text
+    record = saved.json()
+    assert set(record) == set(ts["CharacterCardSaveResponse"])
+    assert set(record["card"]) == set(ts["CharacterCard"])
+    card_id = record["card_id"]
+    assert card_id.startswith("card_")
+    assert record["card"]["name"] == draft["name"]
+    assert record["card"]["source"] == draft["source"] == "manual"
+
+    detail = card_client.get(f"/api/v1/character-cards/{card_id}")
+    assert detail.status_code == 200
+    assert set(detail.json()) == set(ts["CharacterCardDetailResponse"])
+    listing = card_client.get("/api/v1/character-cards").json()
+    assert card_id in {item["card_id"] for item in listing["cards"]}
+
+
+def test_generate_route_spa_deep_link_served() -> None:
+    """`/cards/generate` 深链：静态托管 SPA fallback 返回 `index.html`（刷新 200 不 404）。"""
+    dist = Path(__file__).resolve().parents[1] / "fixtures" / "web_dist"
+    with TestClient(create_app(static_dir=dist)) as client:
+        resp = client.get("/cards/generate")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "textgame-spa-fixture" in resp.text
+    assert "default-src 'self'" in resp.headers["content-security-policy"]
 
 
 def test_live_card_lifecycle_fields_match_frontend_types(card_client: TestClient) -> None:

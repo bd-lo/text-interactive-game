@@ -53,6 +53,7 @@ function makeRouter() {
       { path: '/', name: 'home', component: HomeView },
       { path: '/game/:id', name: 'game', component: { template: '<div>game</div>' } },
       { path: '/cards', name: 'cards', component: { template: '<div>cards</div>' } },
+      { path: '/cards/generate', name: 'card-generate', component: { template: '<div>generate</div>' } },
     ],
   })
 }

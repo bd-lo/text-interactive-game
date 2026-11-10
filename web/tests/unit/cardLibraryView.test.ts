@@ -18,6 +18,7 @@ function makeRouter() {
     routes: [
       { path: '/cards', name: 'cards', component: CardLibraryView },
       { path: '/cards/import', name: 'card-import', component: { template: '<div>import</div>' } },
+      { path: '/cards/generate', name: 'card-generate', component: { template: '<div>generate</div>' } },
       { path: '/cards/:cardId', name: 'card-detail', component: { template: '<div>detail</div>' } },
     ],
   })

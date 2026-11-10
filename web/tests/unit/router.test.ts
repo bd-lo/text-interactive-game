@@ -22,4 +22,10 @@ describe('路由表（懒加载 + 404 兜底）', () => {
     expect(resolved.name).toBe('replay')
     expect(resolved.params.id).toBe('game_123')
   })
+
+  it('M6-028 /cards/generate 命中生成页，而不是被 /cards/:cardId 详情吞掉', () => {
+    expect(router.hasRoute('card-generate')).toBe(true)
+    expect(router.resolve('/cards/generate').name).toBe('card-generate')
+    expect(router.resolve('/cards/card_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK').name).toBe('card-detail')
+  })
 })

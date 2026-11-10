@@ -134,6 +134,108 @@ a {
   line-height: 1.45;
 }
 
+/* M6-028 生成人物卡：离线提示/表单/草稿预览/保存成功 */
+.offline-hint {
+  border-color: var(--warn);
+}
+
+.offline-hint .panel-title {
+  color: var(--warn);
+}
+
+.offline-hint p {
+  margin: 6px 0 0;
+}
+
+.generate-brief {
+  min-height: 6.5em;
+  resize: vertical;
+}
+
+.generate-form .field-hint,
+.tone-field {
+  margin-bottom: 10px;
+}
+
+.counter {
+  color: var(--fg-dim);
+}
+
+.counter-over {
+  color: var(--danger);
+  font-weight: bold;
+}
+
+.tone-field {
+  border: 0;
+  padding: 0;
+}
+
+.tone-field legend {
+  margin-bottom: 4px;
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+}
+
+.tone-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.tone-option {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.draft-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.draft-badge {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.draft-badge-template {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.draft-badge-llm {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.draft-notice {
+  margin: 8px 0;
+  padding: 8px 12px;
+}
+
+.draft-notice .panel-subtitle {
+  margin-top: 0;
+}
+
+.draft-editor {
+  margin-top: 8px;
+}
+
+.draft-editor textarea {
+  margin-bottom: 8px;
+}
+
+.save-result {
+  border-color: var(--accent);
+}
+
 .attr-list {
   display: flex;
   flex-wrap: wrap;

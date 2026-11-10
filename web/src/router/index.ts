@@ -11,6 +11,12 @@ const router = createRouter({
       name: 'card-import',
       component: () => import('@/views/CardImportView.vue'),
     },
+    // 必须在 `/cards/:cardId` 之前注册，否则会被详情路由吞掉（M6-028）。
+    {
+      path: '/cards/generate',
+      name: 'card-generate',
+      component: () => import('@/views/GenerateCardView.vue'),
+    },
     {
       path: '/cards/:cardId',
       name: 'card-detail',
