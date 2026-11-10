@@ -3,8 +3,8 @@
 架构红线（第 11 章 §11.1–§11.3）：**多个角色 Agent 只生产提案，``ProposalQueue`` 收集并排序，
 ``Resolver`` 统一裁决，唯一写入者 ``GameEngine`` 原子提交**。``Resolver`` 是**纯函数**：
 
-- 不调模型（``judgements`` 参数仅为第 11 章 §11.2 的裁判接口保留，M3 无 ``needs_judge`` 分支、
-  完全不读取，禁止在此实现任何模型调用）；
+- 不调模型（裁判证据由编排层调用 ``JudgeAgent`` 并 Schema 校验后随 ``judgements`` 传入；
+  本模块只消费证据，M5E-2 打开 ``needs_judge`` 分支，但**只在分支内**读取 ``judgements``）；
 - 不写库、不读仓储、不读时钟、无随机；同一 ``(entries, snapshot, judgements)`` 必得同一
   ``list[Resolution]``（否则固定种子回放会漂移，第 11 章 §11.3）；
 - 按**传入顺序**逐条裁决，不再排序：``entries`` 已由 ``ProposalQueue.drain`` 按
@@ -17,11 +17,15 @@
    ``authority``/``actor_tags`` 字段一律不参与授权（第 11 章 §11.1 红线）；
 2. ``rules.evaluate_preconditions(...state=working_state)`` 失败 → ``verdict="rejected"``，
    附前置条件给出的理由（如 ``item ... is not in ...``，第 11 章 §11.3 规则 2）；
-3. ``services.call(tool, ctx, args, working_state)``（= ``ToolGate.dispatch``）失败 →
+3. **M5E-2 裁判分支**：``preconditions.data["needs_judge"]`` 为真时，只取本提案对应槽位的
+   已校验 ``JudgeOutput``——``confidence >= 0.7`` 且 ``reason`` 非空 → ``verify_agent_override``
+   复核，否则 ``deterministic_fallback`` 保守兜底；不通过即 ``rejected``（零事件）。非
+   ``needs_judge`` 提案**完全不读取** ``judgements``（ExplodingJudge 安全测试保持零访问）；
+4. ``services.call(tool, ctx, args, working_state)``（= ``ToolGate.dispatch``）失败 →
    ``"conflict"`` 当且仅当 ``error_code is ErrorCode.CONFLICT``，否则 ``"rejected"``；
    成功 → ``"applied"``，``applied_events`` 必须是草稿事件，每条事件 ``params`` 追加
    ``{"proposal_id": ..., "resolution_id": ...}``（契约 §3.3 / D-M3-8：``Event`` 基线字段不扩展）；
-4. 每条 applied 之后 ``working_state = working_state.apply(events)``：后序提案基于前序结果重新
+5. 每条 applied 之后 ``working_state = working_state.apply(events)``：后序提案基于前序结果重新
    校验（资源竞争/目标冲突规则，第 11 章 §11.3 规则 2/3）。
 
 ``services`` 端口按契约是 ``ServiceRouter.call``；``ToolGate`` 的方法是 ``dispatch``，
@@ -37,6 +41,7 @@ from collections.abc import Sequence
 from typing import Any, Final, Literal, Protocol
 
 from textgame.domain.events import Event
+from textgame.domain.judge import JUDGE_CONFIDENCE_FLOOR, JudgeOutput
 from textgame.domain.models import GameState, Proposal, Resolution
 from textgame.domain.results import ErrorCode, Result
 from textgame.orchestration.proposal_queue import QueueEntry
@@ -77,6 +82,14 @@ class PreconditionRules(Protocol):
         save_seed: str,
         state: GameState,
     ) -> Result: ...
+
+    def verify_agent_override(self, ctx: Any, proposal: Proposal, judge: JudgeOutput) -> Result:
+        """复核裁判覆盖建议（纯计算、零事件；M5E-2 由 ``RuleEngine`` 实现）。"""
+        ...
+
+    def deterministic_fallback(self, ctx: Any, proposal: Proposal, snapshot: GameState) -> Result:
+        """裁判证据缺失/不可用时的确定性保守兜底（纯计算、零事件）。"""
+        ...
 
 
 class DispatcherLike(Protocol):
@@ -196,17 +209,21 @@ class Resolver:
         self,
         entries: Sequence[QueueEntry],
         snapshot: GameState,
-        judgements: Sequence[Any] | None = None,
+        judgements: Sequence[JudgeOutput | None] | None = None,
     ) -> list[Resolution]:
         """按传入顺序逐条裁决并返回与 ``entries`` 等长、同序的 ``Resolution`` 列表。
 
-        - ``judgements`` 仅为第 11 章 §11.2 的裁判证据接口保留，M3 无 ``needs_judge`` 分支，
-          本实现**忽略**该参数（不读取、不调用模型），见 ``_ = judgements``；
+        - ``judgements`` 为编排层调用 ``JudgeAgent`` 并完成 Schema 校验后传入的裁判证据，
+          与 ``entries`` **同序等长、槽位可为 None**（第 11 章 §11.2、第 21 章 §21.2.2）；
+          **只有** ``needs_judge`` 提案才会读取对应槽位，其余提案零访问（ExplodingJudge
+          安全测试口径保持）；``judgements=None`` 等价空列表；
+        - ``needs_judge`` 分支：``confidence >= JUDGE_CONFIDENCE_FLOOR`` 且 ``reason`` 非空 →
+          ``rules.verify_agent_override`` 复核；否则 ``rules.deterministic_fallback`` 保守兜底；
+          不通过即 ``rejected``（零事件），裁判不写状态/不调模型（模型调用在编排层）；
         - ``snapshot`` 不被修改（``GameState`` frozen）；裁决过程只用局部 ``working_state``，
           每条 applied 后累积 apply，后序提案基于前序结果重新校验（第 11 章 §11.3 规则 3）；
         - 不合并同一 actor 的多提案、不重排输入（审计逐提案一行，第 11 章 §11.4）。
         """
-        _ = judgements  # M3 无裁判分支：保留接口、禁止模型调用（第 11 章 §11.2）
         # D-M4-14：裁决内 ToolContext/规则前置使用的种子必须绑定「本存档」真实 save_seed，
         # 不能用组合根默认种子（save-42）；否则非默认 seed 存档的服务层派生（craft rng_seed/
         # 实例 ID）会与 EventLog.stamp 的派生不一致。
@@ -244,6 +261,32 @@ class Resolver:
                     )
                 )
                 continue
+            # M5E-2 裁判分支（第 11 章 §11.2 / 第 21 章 §21.2.2）：只消费编排层注入的已校验证据，
+            # 证据缺失/低置信 → deterministic_fallback 保守处理（不产生有利效果）。
+            if preconditions.data and preconditions.data.get("needs_judge"):
+                judge: JudgeOutput | None = None
+                if judgements is not None and index - 1 < len(judgements):
+                    judge = judgements[index - 1]
+                if (
+                    judge is not None
+                    and getattr(judge, "confidence", 0.0) >= JUDGE_CONFIDENCE_FLOOR
+                    and str(getattr(judge, "reason", "")).strip()
+                ):
+                    preconditions = self._rules.verify_agent_override(ctx, proposal, judge)
+                else:
+                    preconditions = self._rules.deterministic_fallback(ctx, proposal, snapshot)
+                if not preconditions.ok or not (preconditions.data or {}).get("allowed", False):
+                    results.append(
+                        Resolution(
+                            proposal_id=proposal_id,
+                            verdict="rejected",
+                            reason=_clip_reason(
+                                preconditions.message or "judge evidence rejected / fallback"
+                            ),
+                            applied_events=[],
+                        )
+                    )
+                    continue
             executed = self._services.call(
                 tool=proposal.tool,
                 ctx=ctx,

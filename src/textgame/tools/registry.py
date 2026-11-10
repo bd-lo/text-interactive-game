@@ -90,6 +90,18 @@ class ToolRegistry:
         except KeyError as exc:
             raise KeyError(f"unknown tool: {name}") from exc
 
+    def agent_assisted_tools(self) -> frozenset[str]:
+        """``resolution_policy=AGENT_ASSISTED`` 的工具名集合（M5E-2 needs_judge 生产点）。
+
+        组合根用它构造 ``RuleEngine(agent_assisted_tools=...)``；生产默认工具全部
+        deterministic → 空集 → 裁判分支不可达（默认离线逐字等价）。纯只读、确定性。
+        """
+        return frozenset(
+            spec.name
+            for spec in self._specs.values()
+            if spec.resolution_policy is ResolutionPolicy.AGENT_ASSISTED
+        )
+
     def visible_tools(
         self, actor_id: str, actor_tags: frozenset[str] = _EMPTY_TAGS
     ) -> list[ToolSpec]:

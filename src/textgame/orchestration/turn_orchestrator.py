@@ -23,14 +23,17 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from textgame.agents.dto import ParseOutcome
+from textgame.agents.judge_agent import JudgeAgentLike
 from textgame.config.rng import save_seed_from_settings
 from textgame.domain.events import Event, EventType
 from textgame.domain.hashing import params_hash
+from textgame.domain.judge import JudgeOutput
 from textgame.domain.models import (
     GameState,
     PerceptionSlice,
     Proposal,
     Resolution,
+    ResolutionPolicy,
     SideEffect,
     ToolSpec,
 )
@@ -59,6 +62,8 @@ _MAX_TEXT_CHARS = 150
 _CONFIDENCE_FLOOR = 0.6
 _DEFAULT_SAVE_SEED = "save-42"
 _MAX_SUBMIT_ATTEMPTS = 3
+#: 单回合裁判调用上限（第 8 章 §8.3 "仅规则空白时 1 次"、第 12 章 §12.8 最多 3 次含裁判）。
+_MAX_JUDGE_CALLS_PER_TURN = 1
 # 幂等键分段锁条数（D-M4-15/G-1）：同键请求串行、不同键基本并行；固定条数避免
 # 锁字典随请求键增长（不回收、无泄漏），哈希碰撞只造成无关键偶发串行。
 _IDEMPOTENCY_LOCK_STRIPES = 64
@@ -551,12 +556,14 @@ class TurnOrchestrator:
         character_agents: Mapping[str, CharacterAgentLike] | None = None,
         audit: AuditRecorderLike | None = None,
         agent_scheduler: AgentSchedulerLike | None = None,
+        judge: JudgeAgentLike | None = None,
     ) -> None:
         """装配依赖；``narrator=None`` 时使用内置确定性模板叙事。
 
         注入 ``registry``/``resolver``/``actors`` 三者后启用 M3 多角色链路；缺省保持 M2
         单角色链路（默认装配行为与 M2 完全一致，M2 测试不回归）。``agent_scheduler``
         为 M5-023 可选的批量/休眠 NPC 调度器，默认 ``None`` = 原逐 Agent 循环。
+        ``judge`` 为 M5E-2 可选裁判 Agent（默认 ``None``：不构建裁判候选、零模型调用）。
         """
         self._repo = repo
         self._engine = engine
@@ -574,6 +581,8 @@ class TurnOrchestrator:
         self._audit = audit
         # M5-023：可选 NPC 调度器（批量合并 + 休眠唤醒 + 审计）；None = 原逐 Agent 循环。
         self._agent_scheduler = agent_scheduler
+        # M5E-2：可选裁判 Agent（None = 不构建 judgements、零模型调用；默认离线逐字等价）。
+        self._judge = judge
         # D-M4-15/G-1：同 Idempotency-Key 的回合在进程内串行，避免两个线程同时未命中
         # 幂等缓存、后到者拿到 CONFLICT/INVALID_INPUT 而非首结果；固定分段避免锁增长。
         self._idempotency_locks = tuple(threading.Lock() for _ in range(_IDEMPOTENCY_LOCK_STRIPES))
@@ -874,6 +883,62 @@ class TurnOrchestrator:
     # ------------------------------------------------------------------
     # M3 多角色链路
     # ------------------------------------------------------------------
+    def _entry_needs_judge(self, entry: QueueEntry) -> bool:
+        """该提案工具是否需要裁判（``resolution_policy=agent_assisted``；未知工具为 False）。"""
+        if self._registry is None:
+            return False
+        try:
+            spec = self._registry.get(entry.proposal.tool)
+        except KeyError:
+            return False
+        return spec.resolution_policy is ResolutionPolicy.AGENT_ASSISTED
+
+    def _collect_judgements(
+        self,
+        entries: Sequence[QueueEntry],
+        state: GameState,
+        *,
+        turn_id: int,
+        save_seed: str,
+        events: Sequence[Event],
+    ) -> list[JudgeOutput | None] | None:
+        """构建与 ``entries`` 同序等长的裁判证据槽位（M5E-2，第 9 章 §9.2 步骤 6）。
+
+        - ``judge=None``（默认）或无需裁判 → 返回 ``None``：**不构建感知切片、零模型调用**；
+        - 仅对 ``agent_assisted`` 提案调用裁判，且每回合最多 ``_MAX_JUDGE_CALLS_PER_TURN`` 次
+          （第 8 章 §8.3 / 第 12 章 §12.8）；未获裁判的槽位保持 ``None`` → Resolver 走确定性
+          兜底（保守拒绝）；
+        - 裁判调用在 CAS 重试循环外只做一次（第 11 章 §11.3 "重试只重裁决、不重调模型"）；
+        - 裁判 Agent 自身失败返回 ``None``；这里再包一层异常保护，裁判绝不影响回合。
+        """
+        if self._judge is None or self._registry is None or not entries:
+            return None
+        slots: list[JudgeOutput | None] = [None] * len(entries)
+        judged = 0
+        for index, entry in enumerate(entries):
+            if judged >= _MAX_JUDGE_CALLS_PER_TURN:
+                break
+            if not self._entry_needs_judge(entry):
+                continue
+            perception = self._query.build_perception_slice(
+                state,
+                entry.proposal.actor_id,
+                turn_id=turn_id,
+                save_seed=save_seed,
+                events=events,
+            )
+            try:
+                slots[index] = self._judge.evaluate(
+                    perception,
+                    entry.proposal,
+                    turn_id=turn_id,
+                    save_seed=save_seed,
+                )
+            except Exception:  # 裁判异常不得中断回合（确定性兜底）
+                slots[index] = None
+            judged += 1
+        return slots
+
     def _run_multi_actor(
         self,
         request: TurnRequest,
@@ -1011,12 +1076,21 @@ class TurnOrchestrator:
         # GameState.turn 未推进）；审计行以 (game, turn, attempt, proposal) 去重，故本回合
         # 的 attempt 从「该 turn 已有审计的最大 attempt + 1」起算，保证只增审计不互相覆盖。
         audit_base = self._audit_next_attempt(request.game_id, turn_id)
+        # M5E-2 步骤 6：裁判证据在 CAS 重试循环外构建一次（重试只重裁决、不重调模型）。
+        # judge=None（默认）→ None：不构建感知切片、零模型调用；无 agent_assisted 提案亦然。
+        judgements = self._collect_judgements(
+            drained,
+            state,
+            turn_id=turn_id,
+            save_seed=save_seed,
+            events=events_history,
+        )
 
         current = record
         text = ""
         attempt = 0
         for attempt in range(1, _MAX_SUBMIT_ATTEMPTS + 1):
-            resolutions = self._resolver.resolve(drained, current.state)
+            resolutions = self._resolver.resolve(drained, current.state, judgements)
             by_proposal = {resolution.proposal_id: resolution for resolution in resolutions}
             player_resolution = (
                 by_proposal.get(player_entry.proposal_id) if player_entry is not None else None

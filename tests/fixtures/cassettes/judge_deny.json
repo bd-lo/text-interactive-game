@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "M5E-2 裁判 Agent 否决输出：deny + 高置信（用于 needs_judge rejected 用例）。",
+  "interactions": [
+    {
+      "request": {"task": "judge", "agent_id": "judge"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"verdict\": \"deny\", \"reason\": \"这份东西另有主人，不能就这样取走。\", \"evidence_refs\": [\"火把\"], \"confidence\": 0.92}",
+          "model": "cassette-judge",
+          "usage": {"prompt_tokens": 220, "completion_tokens": 30}
+        }
+      }
+    }
+  ]
+}
