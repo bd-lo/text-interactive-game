@@ -40,12 +40,12 @@
 
 | 项 | 结果 |
 | --- | --- |
-| Python 全量 | **1641 passed**（33.99s，HEAD `708c7ea`） |
+| Python 全量 | **1642 passed**（HEAD `828d349`） |
 | 回放 | **68 passed** = 旧 golden m1/m2/m3/m4 **61 例零改动** + golden provenance sha256 pin 7 例 |
 | Web | `pnpm test` **25 files / 117 tests passed**；`typecheck` 0 错；`build` 74 modules / dist 14 文件 / 172,710B；入口 js 101.37KB（gzip 39.51KB，较 R1 -27%） |
 | 契约 | `test_frontend_contract` **12 passed**（含 GET/POST `/games` 方法级断言、Goal/GameList 字段） |
 | 质量门 | ruff format（192 files）/ ruff check / mypy（93 files）/ lint-imports（2 kept）/ check_docs 全绿 |
-| 可玩烟测 | `demo --check` 7/7 屏逐字不变；`console --check` 4/4；`python -m textgame.console --scenario story` 14 回合通关 |
+| 远端 CI | **run #38 @828d349 全绿**：quality 3.10/3.12 + web-build（含 dist drift 门）+ deps 四 job success（run #35 @708c7ea 曾因 golden provenance 跨平台行尾差异失败，已由 b1e1300 修复） |\n| 可玩烟测 | `demo --check` 7/7 屏逐字不变；`console --check` 4/4；`python -m textgame.console --scenario story` 14 回合通关 |
 | story HTTP 主线 | 12–14 回合：目标 0/3→3/3、`status=ended`、`ending_text` 非空、结局后回合被拒且零写入；heal 12→20、inspect、软锁回归（用火把/铜线被拒）均通过 |
 | 一键入口 | `play.ps1 -Check` 在 pwsh 与 Windows PowerShell 5.1 双通 exit 0（`/healthz`+`/` 200）；PS5.1 解析 0 error；无 dist 时自动降级终端 |
 | 分发 | `uv build` wheel 369KB，含 `textgame/web_dist/index.html` + 13 assets；异 CWD 起服务仍托管网页；`/assets/nope.js` 404 JSON、`/api/v1/nope` 404 JSON |
