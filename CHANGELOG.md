@@ -7,6 +7,27 @@
 
 ### 新增
 
+- **H4 批次：世界书 MVP + 前端炫酷化 + 剧情失败结局（不占 M1–M6 编号，2026-11-11）**：
+  **世界书**——SillyTavern World Info（entries map/array/裸 map）/ Character Card V2 `data.character_book` / 本项目简化 schema
+  三格式导入（multipart ≤256KB、`POST /world-books/validate` 只读预检、列表分页搜索、详情、软删、幂等/413/422/404/409，
+  共 5 端点）；`world_books`/`world_book_entries` 两表 + **Alembic 0004**；`POST /games` 加法 `world_book_id`
+  （`game_created.params` 仅传入时记录，旧请求逐字不变；未知/已删 404，可与 `card_id` 共存）；确定性触发引擎
+  `domain/world_book.py`（keys/keysecondary/selectiveLogic 0–3/constant/order/scanDepth/递归≤2/预算 800 字/≤8 条/
+  `sha256` 确定性概率）；`TemplateNarrator` 与 LLMNarrator 注入世界设定（旧场景/无世界书文本逐字不变）；
+  `/view` 加法 `world_book`/`lore.active_entries`（`GET /games/{id}` 加法 `world_book_id`）；前端 `/world-books`
+  列表/导入/详情 + Home 世界书下拉 + 对局「世界设定」面板。示例：`examples/world-books/story-lorebook.json`（29 条 tavern）、
+  `story-character-card.json`（角色卡 V2 + 内嵌 4 条）、`README.md`。**炫酷化**——自写 Canvas 2D 余烬粒子（懒加载
+  1.49KB gzip/低功耗 20fps/页面隐藏暂停）+ 纯 CSS CRT 层（扫描线/暗角/辉光/微噪点）+ 打字机（可跳过、读屏完整文本）+
+  目标/结局动效 + **三档视觉设置**（全特效/低功耗/关闭，localStorage 持久化，`prefers-reduced-motion` 自动降级）；
+  **零新增前端运行时依赖**；首屏 gzip 51.7KB（增量 ≈+8.9KB）；375px/对比度/`security-scan` 保持。**剧情失败结局（L1）**——
+  新 EventType `ENVIRONMENT_DAMAGE` + reducer；story 枯井「寒气」每次进入 -6 HP，两次进井 HP→0 可达「倒下」结局，
+  药水/烈酒仍可救回；旧场景不产生该事件（旧 golden 零影响）。**其它**——`TurnResult.narrative_source`（llm/template/null）
+  加法（L3）；`scripts/e2e-web.mjs` 扩到 22 步/111 断言/19 截图并接入 CI web-build job（临时 uvicorn:8794 + headless Chrome，L6）。
+  验证：全量 pytest **2007 passed**（0 failed）、replay **68 passed**（旧 golden 61 零改动 + provenance 7）、web vitest
+  **41 files / 241 tests**、frontend_contract **19 passed**、世界书/伤害/激活 QA **47 例**、e2e **22 步/111 断言**；
+  `demo --check` 7/7 与 `console --check` 4/4 逐字不变。详见 [H4 进度文档](docs/progress/H4-2026-11-11-worldbook-visual.md) 与
+  [ADR D-H4-1..6](docs/decisions/2026-11-11-h4-worldbook-and-visual.md)、[视觉参考](docs/design/frontend-visual-refs.md)、
+  [世界书格式兼容](docs/design/world-book-format-compat.md)。
 - **M5E-2 裁判 Agent 接线（M5 出口附加项完成，2026-11-11）**：`domain/judge.py` 契约（`JudgeEvidence`/`JudgeOutput`、`verdict ∈ {allow, deny, modify}` + 只读 `allowed`、置信门槛 0.7、证据上限 5）+ `agents/judge_agent.py`（`JudgeAgentLike`/`DeterministicJudgeAgent`/`LLMJudgeAgent`：`task="judge"`、`prompt_version="judge@v1"`、STRONG、`max_repair=1`，输入=脱内部 ID 的私有感知切片+提案+规则空白说明，失败/异常→`None` 交确定性兜底）+ `needs_judge` 生产点（`ToolRegistry.agent_assisted_tools()`；生产 8 工具全 `DETERMINISTIC` → 当前 0 消费者=机制就绪）+ `RuleEngine.verify_agent_override`（严格类型/NaN 校验，非法一律否）/`deterministic_fallback`（恒保守否决、零事件）+ Resolver 懒读取分支（非 needs 零访问 judgements、applied reason 可审计）+ 编排层每回合≤1 次/CAS 重试复用证据；`main.py` 仅 `llm_enabled=true` 构造。**默认离线 `judge=None`、零模型调用、逐字等价**（旧 golden 与 demo/console `--check` 不变）；新增 64 例 + QA 独立红队 52 例 + 5 个手工合成 cassette（零网络）。详见 [M5E-2 进度文档](docs/progress/M5E-2-2026-11-11-judge-wiring.md) 与 [ADR D-M5-14](docs/decisions/2026-11-11-m5-judge-wiring.md)。
 - **R3 玩家体验打磨批次（范围外，不占 M1–M6 编号，2026-11-11）**：① **结局体验**——结局屏通关总结「本局 N 回合 · 目标 X/Y · 生命值 HP/MAX」、结局文本进冒险记录（纯派生不重复）、终局回合叙事不再只有普通移动描述；② **新手引导**——新局冒险记录第 1 条「开场」（房间描述+目标进度，首回合后不重复）、冒险记录与回放页只读提示、诊断面板仅 dev 渲染、无事件回合来源徽章改中性「来源未知」；③ **文案去重**——细看（inspect）句级去重修「空气里浮着灰尘与旧木头的气味」连排、story 对话删固定框架重复句、up/down 移动改爬梯自然文案（四方向逐字不变）；④ **可执行建议**——缺材料/缺工具/工位不符时 hint 点名材料与所在房间、`suggested_actions[0]` 当前可执行一步（同屋「拿起X」/相邻「去{房间}拿X」实测解析为 `move_to` 并真的移动）；⑤ **入口与兼容**——console `--card-id/--card` 按卡开局 + `--list-cards`、旧格式存档（无 `scenario`/`quests`）读取/继续/发现兼容；⑥ **内部 ID 脱敏**——生成页保存区/卡库列表/卡详情/回放页不可见 `card_…`/`game_…`/未登记 actor ULID，`item.torch` 等模板键显示中文名。验证：全量 **1683 passed**（+QA 独立 12 = 1695 时点）、replay **68**（旧 golden 零改动）、web vitest **32 files/178 tests**、真实浏览器 e2e **18 步/101 断言**、demo 7 屏与 console `--check` 逐字不变。详见 [R3 进度文档](docs/progress/R3-2026-11-11-player-polish.md) 与 [ADR D-R3-1..5](docs/decisions/2026-11-11-m6-exit-and-r3-closure.md)。
 - **M6-028 生成人物卡 UI（M6 4/4 完成，2026-11-11）**：新路由 `/cards/generate`（brief ≤1000 码点 → `POST /character-cards/generate` → 草稿预览/模板兜底徽章 → JSON 编辑+重新校验 → 保存到卡库 → 「查看卡片」/「按此卡开局」两个显式入口）；**显著离线提示**（默认离线生成即确定性模板兜底，`source=manual`/`generated_by=null`/`TEMPLATE_FALLBACK`，M6B-4 已知限制）；429 按 `Retry-After` 给中文等待提示且不自动重试；禁 `v-html`/自动定时重试。新增真实浏览器 e2e：`scripts/e2e-web.mjs`（Node 26 零依赖 CDP，14 步/62 断言 + 负向控制；**不接入 CI**，D-M6-11）。验证：web vitest 29 files/158 tests、契约测试 17 passed、全量 **1647 passed**、replay **68**（旧 golden 零改动）、玩家独立验收 PASS（P0 76/76，2 项展示层 P1 记入 R3）。详见 [028 进度文档](docs/progress/028-2026-11-11-llm-card-generate.md) 与 [ADR D-M6-11](docs/decisions/2026-11-11-m6-exit-and-r3-closure.md)。
@@ -23,6 +44,13 @@
 
 ### 变更
 
+- **前端视觉主题（H4）**：统一 CRT + 余烬 + 霓虹描边视觉语言；粒子层懒加载（首屏 gzip 增量 ≈+8.9KB，
+  预算 ≤100KB），新增**三档视觉设置**（全特效/低功耗/关闭，本机持久化）；系统 `prefers-reduced-motion`
+  时粒子停播/打字机瞬显/过渡降级；不引入 three.js/TresJS（bundlephobia 实测 three@0.187.0 gzip 185.7KB 超预算）
+  与任何动画库（本轮前端新增运行时依赖 0）。来源/许可证见 [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)
+  （MIT 技法参考；SillyTavern UI 未参考）。
+- **世界书只读注入（H4）**：激活条目为读时纯计算，不写 `GameState`、不新增事件；无世界书存档行为逐字不变；
+  未支持字段保留 `raw_json` 并给 warning（不静默丢弃）。
 - **CI Actions 升级（2026-11-11）**：GitHub Actions 改为**固定精确语义版本**并升级到 Node24 运行时——`actions/checkout@v7.0.1`、`astral-sh/setup-uv@v10.3.3`（自 v8 起上游不再发布 major/minor tag，必须精确固定）、`actions/upload-artifact@v7.0.2`、`pnpm/action-setup@v6.1.1`、`actions/setup-node@v7.1.0`；消除 runner 上「Node.js 20 is deprecated」警告；既有输入（`python-version`/`node-version`/`cache`/`version`/`name`/`path`/`if-no-files-found`）在新版本均保留，CI 门禁与缓存行为不变。
 - **静态托管解析（R2）**：`create_app` 静态目录按 `TEXTGAME_STATIC_DIR` → CWD `web/dist` → 仓库根 `web/dist`（由 `__file__` 推导，不依赖 CWD）→ 包内 `textgame/web_dist` 解析；缺失时 WARNING；缺失的带扩展名路径（`/assets/x.js`、`/favicon.ico`）返回 404 JSON 而非 SPA HTML；`index.html` 响应 `Cache-Control: no-cache`、`/assets/*` 为 `immutable`。
 - **终端入口（R2）**：`ensure_utf8_stdio` 同时修复 stdin（管道/重定向输入中文不再抛 `UnicodeEncodeError`）；`--db` 支持 `sqlite:///` DSN 自动转换，非 SQLite DSN/内存库给中文报错；显式 `--scenario` 与同库旧存档场景不一致时不再静默继续（提示 `--new`/`--continue`）。
@@ -31,12 +59,19 @@
 
 ### 修复
 
+- L1 失败结局不可达（H4 修复）：story 枯井「寒气」环境伤害（每次进入 -6 HP）使「倒下」结局可稳定复现；
+  新增 `EventType.ENVIRONMENT_DAMAGE` + reducer（clamp 0..max、旧场景不产生 → 旧 golden 零改动）。
+- L3 无事件回合来源徽章（H4）：`TurnResult.narrative_source`（`llm`/`template`/`null`）加法字段，前端徽章读该字段，
+  不再依赖事件推断。
+- L6 e2e 未进 CI（H4 修复）：真实浏览器 e2e（Node 零依赖 CDP）接入 CI `web-build` job（临时 uvicorn:8794），
+  失败上传服务器日志/e2e 产物。
 - D-M4-14：`Resolver.resolve` 用快照 `rng_state.save_seed` 构造 `ToolContext`/规则前置，修复非默认 seed 存档制造种子与实例 ID 派生不一致。
 - D-M4-15（P2 已知限制）：并发同 `Idempotency-Key` 瞬时响应不一致——待 022-concurrency-idempotency 关闭。
 
 ### 质量基线（HEAD `cb7863b` 历史实测值，当前值以实际输出为准）
 
 - 历史值：`uv run pytest -q` → **1179 passed**；`uv run pytest tests/replay -q` → **61 passed**（M2/M3/M4 = 4/5/24，零回归）；ruff/format/mypy/lint-imports 四门全绿；覆盖率 88%。后续切片持续新增测试，**不要**把历史数字当当前基线。
+- H4 时点基线（2026-11-11，`a5ddb17` + H4 未提交改动）：全量 **2007 passed**、replay **68 passed**（旧 golden 61 零改动 + provenance 7）、web vitest **41 files/241 tests**、frontend_contract **19 passed**；`demo --check` 7/7、`console --check` 4/4 逐字不变。
 
 ### 已知限制
 
