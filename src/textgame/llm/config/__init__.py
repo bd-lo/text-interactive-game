@@ -30,6 +30,8 @@ from textgame.llm.client import ModelTier
 __all__ = [
     "CACHE_DEFAULT_MAXSIZE",
     "CACHE_DEFAULT_TTL_S",
+    "CircuitSpec",
+    "FallbackSpec",
     "LLMClientConfig",
     "LLMConfig",
     "ProviderSpec",
@@ -53,8 +55,8 @@ class ProviderSpec(BaseModel):
     api_base: str = Field(min_length=1, max_length=512)
 
 
-class TierSpec(BaseModel):
-    """单个模型分级的后端声明（``provider`` + ``model`` + 可选 ``api_base`` 覆盖）。"""
+class FallbackSpec(BaseModel):
+    """回退链单项（M5-024/第 12 章 §12.4）：主供应商失败后按序尝试的 provider/model。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -66,6 +68,41 @@ class TierSpec(BaseModel):
         max_length=512,
         description="可选；缺省时取 providers[provider].api_base",
     )
+
+
+class TierSpec(BaseModel):
+    """单个模型分级的后端声明（``provider`` + ``model`` + 可选 ``api_base``/回退链）。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=128)
+    api_base: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        description="可选；缺省时取 providers[provider].api_base",
+    )
+    #: M5-024：主供应商失败后按序回退（空元组 = 不回退，行为与 020 一致）。
+    fallbacks: tuple[FallbackSpec, ...] = Field(default=(), max_length=8)
+
+
+class CircuitSpec(BaseModel):
+    """熔断参数（第 12 章 §12.8；进程内状态机，不跨进程共享）。
+
+    触发条件满足任一即 open：滑动窗口 ``window_s`` 内错误率 ``> error_rate_threshold``
+    （仅在窗口内 ≥4 次调用时评估，避免小样本误开）或连续失败 ``consecutive_failures`` 次。
+    open 持续 ``open_s`` 后进入 half-open，最多放行 ``half_open_probes`` 次探测：
+    探测成功 → 关闭并清零；探测失败 → 重新 open。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    window_s: float = Field(default=60.0, gt=0, le=3600)
+    error_rate_threshold: float = Field(default=0.5, gt=0, le=1)
+    consecutive_failures: int = Field(default=5, ge=1, le=100)
+    open_s: float = Field(default=60.0, gt=0, le=3600)
+    half_open_probes: int = Field(default=1, ge=1, le=10)
 
 
 class CacheSpec(BaseModel):
@@ -91,25 +128,45 @@ class LLMConfig(BaseModel):
     providers: dict[str, ProviderSpec] = Field(min_length=1)
     tiers: dict[ModelTier, TierSpec]
     cache: CacheSpec = Field(default_factory=CacheSpec)
+    #: M5-024：熔断参数（默认值即第 12 章 §12.8 口径；不配置时行为与 019/020 一致）。
+    circuit: CircuitSpec = Field(default_factory=CircuitSpec)
 
     @model_validator(mode="after")
     def _validate_tiers(self) -> LLMConfig:
-        """两个分级都必须声明，且 provider 必须在 providers 中存在（fail-fast）。"""
+        """两个分级都必须声明，且主/回退 provider 都必须在 providers 中存在（fail-fast）。"""
         missing = [tier.value for tier in ModelTier if tier not in self.tiers]
         if missing:
             raise ValueError(f"tiers 缺少模型分级: {', '.join(missing)}")
-        unknown = sorted({spec.provider for spec in self.tiers.values()} - set(self.providers))
+        referenced = {spec.provider for spec in self.tiers.values()}
+        for spec in self.tiers.values():
+            referenced.update(fallback.provider for fallback in spec.fallbacks)
+        unknown = sorted(referenced - set(self.providers))
         if unknown:
-            raise ValueError(f"tiers 引用了未声明 provider: {', '.join(unknown)}")
+            raise ValueError(f"tiers/fallbacks 引用了未声明 provider: {', '.join(unknown)}")
         return self
 
+    def _resolve(self, provider: str, model: str, api_base: str | None) -> tuple[str, str, str]:
+        """``(provider, model, api_base)`` 三元组；api_base 缺省时取 providers 声明。"""
+        return provider, model, api_base or self.providers[provider].api_base
+
     def backend_for(self, tier: ModelTier) -> tuple[str, str, str]:
-        """返回该分级的 ``(provider, model, api_base)``；缺分级属配置错误。"""
+        """返回该分级的**主** ``(provider, model, api_base)``；缺分级属配置错误。"""
         spec = self.tiers.get(tier)
         if spec is None:
             raise ValueError(f"缺少模型分级配置: {tier.value}")
-        api_base = spec.api_base or self.providers[spec.provider].api_base
-        return spec.provider, spec.model, api_base
+        return self._resolve(spec.provider, spec.model, spec.api_base)
+
+    def backends_for(self, tier: ModelTier) -> tuple[tuple[str, str, str], ...]:
+        """返回该分级的完整尝试链：主供应商在前、``fallbacks`` 按声明顺序在后（M5-024）。"""
+        spec = self.tiers.get(tier)
+        if spec is None:
+            raise ValueError(f"缺少模型分级配置: {tier.value}")
+        primary = self._resolve(spec.provider, spec.model, spec.api_base)
+        fallbacks = tuple(
+            self._resolve(fallback.provider, fallback.model, fallback.api_base)
+            for fallback in spec.fallbacks
+        )
+        return (primary, *fallbacks)
 
 
 class LLMClientConfig(BaseModel):

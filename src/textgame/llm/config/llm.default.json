@@ -8,16 +8,25 @@
   "tiers": {
     "strong": {
       "provider": "deepseek",
-      "model": "deepseek-flash"
+      "model": "deepseek-flash",
+      "fallbacks": []
     },
     "economy": {
       "provider": "deepseek",
-      "model": "deepseek-flash"
+      "model": "deepseek-flash",
+      "fallbacks": []
     }
   },
   "cache": {
     "maxsize": 1024,
     "ttl_s": 600,
     "allowed_tasks": []
+  },
+  "circuit": {
+    "window_s": 60,
+    "error_rate_threshold": 0.5,
+    "consecutive_failures": 5,
+    "open_s": 60,
+    "half_open_probes": 1
   }
 }
