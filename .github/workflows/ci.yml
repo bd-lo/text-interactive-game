@@ -51,6 +51,12 @@ jobs:
         run: |
           set -o pipefail
           uv run pytest -q 2>&1 | tee pytest.log
+      - name: 覆盖率门禁（C-1：D-M5-9 到期承诺，CI 专用，不改 pyproject addopts）
+        # quality 已按 3.10/3.12 双矩阵各跑一次全量；覆盖率门只需一份，固定 3.12 跑（省 CI 时间）
+        if: matrix.python-version == '3.12'
+        run: uv run pytest -q --cov=textgame --cov-report=term-missing --cov-fail-under=80
+      - name: 文档一致性门禁（C-2：开发文档拼接/进度索引/下一编号）
+        run: uv run python scripts/check_docs.py
       - name: 失败摘要（写入 Check 注解，便于公开仓库定位失败用例）
         if: failure()
         run: |
