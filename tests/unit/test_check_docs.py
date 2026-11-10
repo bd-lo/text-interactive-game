@@ -6,7 +6,9 @@
 3. ``docs/progress/`` 有文档未在 PROGRESS §3 索引 → ``FAIL:``；
 4. 头部「下一个可用编号」与 §4 表不一致 → ``FAIL:``；
 5. 头部编号已被标记为「已用编号」→ ``FAIL:``；
-6. 分章文件数不足（缺章）→ ``FAIL:``。
+6. 分章文件数不足（缺章）→ ``FAIL:``；
+7. 001–028 全部交付（头部「下一个可用编号：无」且 §4 无剩余编号）→ ``PASS``；
+8. 头部声明「无」但 §4 仍留可用编号 → ``FAIL:``。
 
 脚本仅标准库；测试以子进程方式执行（与 CI 同命令），显式 UTF-8 解码。
 """
@@ -40,15 +42,18 @@ def _chapter_text(number: int) -> str:
 def _build_repo(
     root: Path,
     *,
-    header_next: int = 21,
-    row_next: int = 21,
+    header_next: int | str = 21,
+    row_next: int | str = 21,
     used: str = "019–020、022",
     progress_files: tuple[str, ...] = ("001-2026-11-10-test.md",),
     indexed_files: tuple[str, ...] | None = None,
     chapter_files: int = _EXPECTED_CHAPTERS,
     tamper_chapter: int | None = None,
 ) -> Path:
-    """构造最小仓库：docs/开发文档.md + 分章 + progress + PROGRESS 总览。"""
+    """构造最小仓库：docs/开发文档.md + 分章 + progress + PROGRESS 总览。
+
+    ``header_next`` / ``row_next`` 允许传 ``"无"`` / ``"—"`` 以模拟 001–028 全部交付。
+    """
     docs = root / "docs"
     chapter_dir = docs / "开发文档"
     progress_dir = docs / "progress"
@@ -79,11 +84,13 @@ def _build_repo(
         f"| {name[:3]} | 2026-11-10 | M5 | test | 测试 | [link](progress/{name}) |"
         for name in indexed
     )
+    header_cell = header_next if isinstance(header_next, str) else f"{header_next:03d}"
+    row_cell = row_next if isinstance(row_next, str) else f"{row_next:03d}"
     (docs / "PROGRESS.md").write_text(
         "# 总体进展总览（PROGRESS）\n"
         "\n"
         "> 统计基准日：2026-11-10 ｜ 当前里程碑：M5 ｜ "
-        f"下一个可用编号：**{header_next:03d}**（测试样例）\n"
+        f"下一个可用编号：**{header_cell}**（测试样例）\n"
         "\n"
         "## 3. 单次进度文档索引\n"
         "\n"
@@ -95,7 +102,7 @@ def _build_repo(
         "\n"
         "| 里程碑 | 区间 | 已用编号 | 下一个可用 | 备注 |\n"
         "| --- | --- | --- | --- | --- |\n"
-        f"| M5 | 019–024 | {used} | {row_next:03d} | 测试 |\n"
+        f"| M5 | 019–024 | {used} | {row_cell} | 测试 |\n"
         "\n"
         "## 5. 接口偏离登记\n"
         "\n"
@@ -191,3 +198,25 @@ def test_missing_chapter_file_fails(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "FAIL:" in result.stdout
     assert "分章文件数" in result.stdout
+
+
+def test_no_next_number_clean_repo_prints_pass(tmp_path: Path) -> None:
+    """001–028 全部交付（头部「无」且 §4 无剩余编号）：PASS。"""
+    root = _build_repo(tmp_path, header_next="无", row_next="—", used="019–024")
+
+    result = _run(root)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
+def test_no_next_number_but_slot_available_fails(tmp_path: Path) -> None:
+    """头部声明「无」，但 §4 行仍留可用编号：FAIL（防编号漂移）。"""
+    root = _build_repo(tmp_path, header_next="无", row_next="021", used="019–020、022")
+
+    result = _run(root)
+
+    assert result.returncode == 1
+    assert "FAIL:" in result.stdout
+    assert "仍有可用编号" in result.stdout
+    assert "021" in result.stdout

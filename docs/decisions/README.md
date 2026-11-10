@@ -60,6 +60,7 @@
 | 2026-11-10 | M6 后端前置契约冻结（D-M6-1..6） | 已定案 | M6 025–028 + M6 出口附加项 | [2026-11-10-m6-backend-contract.md](2026-11-10-m6-backend-contract.md) |
 | 2026-11-10 | 022 缩范围与成本记录不做（D-M5-10） | 已定案 | M5 022 + M6 卡库迁移（Alembic 0003） | [2026-11-10-022-scope-and-cost-out.md](2026-11-10-022-scope-and-cost-out.md) |
 | 2026-11-10 | R2 玩家体验批次决策（D-R2-1..12） | 已定案 | 范围外玩家体验批次（story/Web/一键入口/NLU/道具） | [2026-11-10-player-experience.md](2026-11-10-player-experience.md) |
+| 2026-11-11 | M6 出口 e2e 验收口径（D-M6-11）＋ R3 收尾决策（后续条目追加） | 已定案 | M6 025–028 + M6 出口附加项；R3 打磨批次 | [2026-11-11-m6-exit-and-r3-closure.md](2026-11-11-m6-exit-and-r3-closure.md) |
 
 ## 7. 记录模板
 

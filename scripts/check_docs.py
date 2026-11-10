@@ -12,7 +12,9 @@
    - 章号恰为 1..23、章文件数一致、代码围栏成对、每章三节固定小节存在。
 2. ``docs/progress/*.md``（``README.md`` 除外）均出现在 ``docs/PROGRESS.md`` §3 索引中。
 3. ``docs/PROGRESS.md`` 头部「下一个可用编号」与 §4 编号分配表一致：
-   该编号落在 §4 某里程碑区间内、等于该行「下一个可用」且**未被该行「已用编号」占用**。
+   该编号落在 §4 某里程碑区间内、等于该行「下一个可用」且**未被该行「已用编号」占用**；
+   当 001–028 全部交付（路线图里程碑完成）时，头部允许写「无」，此时 §4 所有行的
+   「下一个可用」都不得再留可用编号（避免出现「声明无号可用、表里却还有空位」的漂移）。
 
 用法::
 
@@ -43,7 +45,7 @@ REQUIRED_CHAPTER_SECTIONS = (
 
 _CHAPTER_HEADING_RE = re.compile(r"^## 第 (\d+) 章 (.+)$", re.M)
 _CHAPTER_FILE_RE = re.compile(r"^第(\d+)章-.*\.md$")
-_NEXT_NUMBER_RE = re.compile(r"下一个可用编号：\s*\**\s*(\d{3})")
+_NEXT_NUMBER_RE = re.compile(r"下一个可用编号：\s*\**\s*(\d{3}|无)")
 _SECTION_3_RE = re.compile(r"^## 3\..*?$(.*?)(?=^## 4\. )", re.M | re.S)
 _SECTION_4_RE = re.compile(r"^## 4\..*?$(.*?)(?=^## 5\. )", re.M | re.S)
 _RANGE_RE = re.compile(r"(\d{3})\s*[–—\-~]\s*(\d{3})")
@@ -156,33 +158,57 @@ def _parse_milestone_range(cell: str) -> tuple[int, int] | None:
 
 
 def _parse_used_numbers(cell: str) -> set[int]:
-    """解析「已用编号」单元格：``019–020、022`` → {19,20,22}；``-`` → 空集。"""
+    """解析「已用编号」单元格：``019–020、022`` → {19,20,22}；``-`` → 空集。
+
+    容错单元格里的中文注记（如 §4 的 ``「025–028（全部）」``、``「019–024（全部）」``）：
+    区间用 ``search``、单号取前三位数字，注记不影响解析。
+    """
     used: set[int] = set()
     for part in re.split(r"[、,，\s]+", cell):
         part = part.strip()
         if not part or part in {"-", "—", "–"}:
             continue
-        range_match = _RANGE_RE.fullmatch(part)
+        range_match = _RANGE_RE.search(part)
         if range_match:
             used.update(range(int(range_match.group(1)), int(range_match.group(2)) + 1))
-        elif part.isdigit():
-            used.add(int(part))
+            continue
+        single_match = re.match(r"(\d{3})", part)
+        if single_match:
+            used.add(int(single_match.group(1)))
     return used
 
 
 def check_next_number(root: Path) -> list[str]:
-    """校验 ③：PROGRESS 头部「下一个可用编号」与 §4 表一致。"""
+    """校验 ③：PROGRESS 头部「下一个可用编号」与 §4 表一致。
+
+    头部为「无」时（001–028 全部交付）：要求 §4 所有行的「下一个可用」不再留可用编号。
+    """
     progress_md = root / "docs" / "PROGRESS.md"
     if not progress_md.is_file():
         return [f"缺少总览文档: {progress_md}"]
     text = _read(progress_md)
     header = _NEXT_NUMBER_RE.search(text)
     if not header:
-        return ["PROGRESS 头部缺少「下一个可用编号：NNN」"]
-    next_number = int(header.group(1))
+        return ["PROGRESS 头部缺少「下一个可用编号：NNN / 无」"]
     rows = _parse_section4_rows(text)
     if not rows:
         return ["PROGRESS §4 编号分配表缺失或无法解析"]
+    if header.group(1) == "无":
+        problems: list[str] = []
+        # 「可用编号」跨里程碑共享：只有未被任何 §4 行「已用编号」占用的数字才算剩余空位
+        # （例如 M4 行「下一个可用 019」在 019 已被 M5 使用后不再是可用编号）。
+        all_used: set[int] = set()
+        for row in rows:
+            all_used |= _parse_used_numbers(row["used"])
+        for row in rows:
+            leftover = {int(number) for number in re.findall(r"\d{3}", row["next"])} - all_used
+            if leftover:
+                problems.append(
+                    f"头部声明无可用编号，但 §4 {row['milestone']} 行仍有可用编号 "
+                    f"{[f'{number:03d}' for number in sorted(leftover)]}"
+                )
+        return problems
+    next_number = int(header.group(1))
     matched = [
         row
         for row in rows

@@ -101,6 +101,7 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
   uv run --no-dev python -m textgame.console --new --scenario story
   ```
 - 剧情场景首屏会显示目标与子目标完成态（如「【目标】让信号灯亮起来 · 0/3」）；走到结局时打印结局屏，输入 `:quit` 退出。终端 `--list` 可查看同库最近存档（含场景/回合/是否已结局）。
+- 网页版卡库支持**导入 JSON 人物卡**（`/cards/import`）与**生成人物卡**（`/cards/generate`：写一句人物设定 → 草稿预览 → 保存 → 按此卡开局）；**默认离线时生成结果=确定性模板草稿**（页面有显著提示），配置 LLM 后才是 LLM 生成（可选，见 FAQ）。
 - HTTP API 也可以直接玩/集成：`POST /api/v1/games`（写操作必带 `Idempotency-Key`）→ `POST /api/v1/turns` → `GET /api/v1/games` / `{id}` / `/view` / `/replay`；交互式文档在服务启动后的 `/api/docs`。
 
 <details>
