@@ -39,6 +39,15 @@ describe('玩家可读错误文案（错误码 → 人话，技术细节只进�
     expect(timeout.message).toContain('超时')
   })
 
+  it('角色卡 V2 / character_book 被卡库拒绝：引导到「世界书 → 导入世界书」（H4 WB-03b）', () => {
+    const info = describeError(
+      new ApiClientError(422, 'SCHEMA_VIOLATION', 'extra fields: data.character_book'),
+    )
+    expect(info.title).toContain('世界书')
+    expect(info.message).toContain('世界书')
+    expect(info.message).toContain('9 字段')
+  })
+
   it('网络 TypeError：提示检查后端，而不是甩英文堆栈', () => {
     const info = describeError(new TypeError('fetch failed'))
     expect(info.title).toContain('连接不上')

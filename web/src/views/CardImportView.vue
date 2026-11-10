@@ -61,6 +61,12 @@ function onClear(): void {
       <p class="game-meta">
         粘贴或选择一张 .json 人物卡（不超过 64KB），校验通过后就能用来开局。
       </p>
+      <p class="muted card-import-worldbook-hint">
+        卡库只收 9 字段的纯人物卡；若这是含
+        <code>data.character_book</code>
+        的角色卡 V2 文件，它属于「世界书」——
+        <RouterLink :to="{ name: 'world-book-import' }">请到世界书导入</RouterLink>。
+      </p>
     </header>
 
     <div class="game-tools">

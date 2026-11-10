@@ -1460,11 +1460,30 @@ async function runFlow() {
       '导入成功后跳转世界书详情页',
     )
     await waitVisible('.world-book-detail-view', '世界书详情页')
+    // 详情页先渲染壳、条目是异步 GET：CI 上可能仍显示「正在读取世界书…」，等加载完成再断言。
+    // 以「标题已是书名 + 条目表至少 2 行 + 无加载态」为完成标志（纯文本匹配在 SPA 路由切换
+    // 瞬间可能命中旧页面残留文本，CI 曾因此误判）。
+    await waitFor(
+      `(() => {
+        const root = document.querySelector('.world-book-detail-view');
+        if (root === null) return false;
+        const text = root.innerText ?? '';
+        if (text.includes('正在读取世界书')) return false;
+        const title = document.querySelector('.world-books-title')?.textContent ?? '';
+        const rows = document.querySelectorAll('.world-entry-list .world-entry').length;
+        return title.includes(${JSON.stringify(WORLD_BOOK_NAME)}) && rows >= 2;
+      })()`,
+      '世界书详情加载完成（标题+条目表）',
+    )
+    const detailTitle = String(await textOf('.world-books-title'))
+    const detailRows = Number(
+      await evaluate(`document.querySelectorAll('.world-entry-list .world-entry').length`),
+    )
     const detailText = String(await pageText())
     check(
       '详情页展示书名与条目触发词/内容',
-      detailText.includes(WORLD_BOOK_NAME) && detailText.includes('断桥'),
-      truncate(detailText, 160),
+      detailTitle.includes(WORLD_BOOK_NAME) && detailRows >= 2 && detailText.includes('断桥'),
+      `${detailTitle} / rows=${detailRows}`,
     )
     await checkNoInternalIdsVisible('世界书详情页')
     worldBookId = String(
@@ -1521,6 +1540,14 @@ async function runFlow() {
 
   await step('wb.delete', '世界书：详情页两段确认删除（软删）后从列表消失', async () => {
     await navigate(`/world-books/${worldBookId}`, '世界书详情（删除）', '.world-book-detail-view')
+    // 删除按钮在详情异步加载完成前是 disabled；等详情加载完成再点。
+    await waitFor(
+      `(() => {
+        const text = document.body.innerText ?? '';
+        return text.includes(${JSON.stringify(WORLD_BOOK_NAME)}) && !text.includes('正在读取世界书');
+      })()`,
+      '世界书详情加载完成（可删除）',
+    )
     await clickButtonByText('.world-book-detail-view button', '删除', '删除按钮')
     await clickButtonByText('.world-book-detail-view button', '确认删除（不可恢复）', '确认删除')
     await waitFor(`location.pathname === '/world-books'`, '删除后回到世界书列表')

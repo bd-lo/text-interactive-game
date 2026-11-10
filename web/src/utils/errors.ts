@@ -95,6 +95,19 @@ export function describeError(error: unknown): PlayerErrorInfo {
     const violations = describeViolations(error.violations)
     if (error.status === 422 || error.code === 'INVALID_INPUT' || error.code === 'SCHEMA_VIOLATION') {
       const reason = violations.length > 0 ? violations.join('；') : error.message
+      // 世界书引导（H4）：角色卡 V2 包装（含 data.character_book / spec_version）不是卡库的
+      // 9 字段纯人物卡；卡库导入被拒时明确告诉玩家该去「世界书 → 导入世界书」。
+      const worldBookLike = /character_book|spec_version|character card v2/i.test(
+        `${error.message} ${reason}`,
+      )
+      if (worldBookLike) {
+        return {
+          title: '这看起来是世界书文件',
+          message:
+            '卡库只收 9 字段的纯人物卡；含 data.character_book 的角色卡 V2 请到「世界书 → 导入世界书」，或改成 9 字段纯卡再导入。',
+          detail,
+        }
+      }
       return { title: '填写的内容不对', message: reason, detail }
     }
     if (error.code === 'NOT_ALLOWED' || error.code === 'OUT_OF_RANGE') {
