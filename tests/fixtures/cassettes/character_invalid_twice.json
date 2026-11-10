@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "角色 Agent 两次 Schema 违规 → 回退确定性 CharacterAgent（零状态写入风险由编排层保证）。",
+  "interactions": [
+    {
+      "request": {"task": "character_act", "agent_id": "character"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"proposals\": \"not-a-list\"}",
+          "model": "cassette-character",
+          "usage": {"prompt_tokens": 150, "completion_tokens": 10}
+        }
+      }
+    },
+    {
+      "request": {"task": "character_act", "agent_id": "character"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"proposals\": [{\"tool\": \"take_item\", \"args\": {}, \"reason\": \"缺失 item_id\"}]}",
+          "model": "cassette-character",
+          "usage": {"prompt_tokens": 150, "completion_tokens": 12}
+        }
+      }
+    }
+  ]
+}

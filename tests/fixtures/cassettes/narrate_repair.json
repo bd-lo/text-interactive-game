@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "叙事一次修复：第 1 次长度违规（<80 字），第 2 次合法。",
+  "interactions": [
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"太短\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 96, "completion_tokens": 8}
+        }
+      }
+    },
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"火光在潮湿的石壁上轻轻跳动，你把拾起的火把靠近门楣，断裂的木纹被照出一条条深色的沟壑。远处的水滴声一下一下落进黑暗里，你放轻脚步听着周围的动静，把行囊理了理，盘算接下来先去哪里、再做什么，心里渐渐安定下来。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 140, "completion_tokens": 80}
+        }
+      }
+    }
+  ]
+}

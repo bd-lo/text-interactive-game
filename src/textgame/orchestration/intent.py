@@ -71,13 +71,23 @@ class DeterministicIntentParser:
     ``recipe_names`` 为可选「配方中文名 → recipe_id」映射（组合根从 RecipeCatalog 注入）：
     提供时，制造关键词且命中配方名才产出 ``craft_item``（M4-016）；缺省 None 时行为与
     M2 完全一致（不产生任何 craft 意图，旧测试/回放不回归）。
+
+    ``free_craft_enabled``（M5 出口接线，P2-4(a)）：制造关键词未命中任何配方名时，只有
+    显式开启（组合根传 ``Settings.free_craft_enabled``，默认 **False** = fail-closed）才
+    产出 ``craft_item(mode="free")`` 自由制造意图；关闭时行为与 M2–M4 完全一致。
     """
 
-    def __init__(self, recipe_names: Mapping[str, str] | None = None) -> None:
-        """注入可选配方名索引；M2 默认不注入（None），制造解析关闭。"""
+    def __init__(
+        self,
+        recipe_names: Mapping[str, str] | None = None,
+        *,
+        free_craft_enabled: bool = False,
+    ) -> None:
+        """注入可选配方名索引与自由制造开关（默认均关闭 = M2 行为）。"""
         self._recipe_names: dict[str, str] | None = (
             dict(recipe_names) if recipe_names is not None else None
         )
+        self._free_craft_enabled = free_craft_enabled
 
     def parse(
         self,
@@ -106,19 +116,28 @@ class DeterministicIntentParser:
         if _contains_any(normalized, _LOOK_WORDS):
             # 读工具名用第 7 章 §7.3 的规范名 ``get_room_view``（``look`` 只是服务方法名）。
             return _outcome("get_room_view", {})
-        if self._recipe_names is not None and _contains_any(normalized, _CRAFT_WORDS):
-            matched = next(
-                (
-                    recipe_id
-                    for name, recipe_id in sorted(
-                        self._recipe_names.items(), key=lambda item: len(item[0]), reverse=True
-                    )
-                    if name and name in normalized
-                ),
-                None,
-            )
-            if matched is not None:
-                return _outcome("craft_item", {"mode": "recipe", "recipe_id": matched})
+        if _contains_any(normalized, _CRAFT_WORDS):
+            if self._recipe_names is not None:
+                matched = next(
+                    (
+                        recipe_id
+                        for name, recipe_id in sorted(
+                            self._recipe_names.items(),
+                            key=lambda item: len(item[0]),
+                            reverse=True,
+                        )
+                        if name and name in normalized
+                    ),
+                    None,
+                )
+                if matched is not None:
+                    return _outcome("craft_item", {"mode": "recipe", "recipe_id": matched})
+            if self._free_craft_enabled:
+                # P2-4(a)：自由制造自由句分支（fail-closed：仅开关显式开启时可达）。
+                return _outcome(
+                    "craft_item",
+                    {"mode": "free", "free_description": normalized[:200]},
+                )
         direction = _match_direction(normalized)
         if direction is not None and _contains_any(normalized, _MOVE_WORDS):
             return _outcome("move_to", {"direction": direction})

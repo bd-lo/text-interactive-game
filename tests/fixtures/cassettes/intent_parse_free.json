@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "解析 Agent 自由制造意图（ParseOutput 合法 JSON；实际生产路径由确定性解析器兜底）。",
+  "interactions": [
+    {
+      "request": {"task": "intent_parse", "agent_id": "parse"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"intent\": {\"action\": \"craft_item\", \"params\": {\"mode\": \"free\", \"free_description\": \"打造一把趁手的短刀\"}, \"confidence\": 0.9}, \"tool\": \"craft_item\", \"args\": {\"mode\": \"free\", \"free_description\": \"打造一把趁手的短刀\"}, \"candidate_narrative\": \"\"}",
+          "model": "cassette-parse",
+          "usage": {"prompt_tokens": 200, "completion_tokens": 30}
+        }
+      }
+    }
+  ]
+}

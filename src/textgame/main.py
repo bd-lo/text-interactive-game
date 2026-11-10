@@ -15,8 +15,10 @@ M5 接入；``build_llm_client`` 默认返回 ``DisabledLLMClient``，保证默�
 
 from fastapi import FastAPI
 
-from textgame.agents.character_agent import DeterministicCharacterAgent
+from textgame.agents.character_agent import CharacterAgentLike, DeterministicCharacterAgent
 from textgame.agents.craft_agent import CraftAgent
+from textgame.agents.llm_character_agent import LLMCharacterAgent
+from textgame.agents.narrator_agent import LLMNarratorAgent
 from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.rng import save_seed_from_settings
@@ -27,14 +29,14 @@ from textgame.llm.factory import build_llm_client
 from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
 from textgame.orchestration.resolver import Resolver, ToolGateRouter
-from textgame.orchestration.turn_orchestrator import TurnOrchestrator
+from textgame.orchestration.turn_orchestrator import NarratorLike, TurnOrchestrator
 from textgame.persistence.card_repository import SqliteCardRepository
 from textgame.persistence.database import init_schema, prepare_db
 from textgame.persistence.sqlite_repository import SqliteRepository
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
 from textgame.services.audit_service import AuditService
-from textgame.services.card_service import CardService
+from textgame.services.card_service import CardService, LLMCardDraftGenerator
 from textgame.services.craft_service import CraftService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
@@ -52,9 +54,13 @@ def _build_app() -> FastAPI:
     game_engine = GameEngine(repo)
     query = QueryService(repo)
     action = ActionService(query)
-    card_service = CardService(SqliteCardRepository(engine))
     catalog = RecipeCatalog.load_builtin()
     llm_client = build_llm_client(settings)
+    # M6 卡生成（028 后端前置）：LLM 可用时走 LLM 草稿生成器，否则（默认离线）模板兜底。
+    card_service = CardService(
+        SqliteCardRepository(engine),
+        draft_generator=LLMCardDraftGenerator(llm_client) if settings.llm_enabled else None,
+    )
     craft_service = CraftService(
         catalog,
         generator=CraftAgent(llm_client),
@@ -71,12 +77,26 @@ def _build_app() -> FastAPI:
         actors=actors,
         save_seed=save_seed_default,
     )
-    character_agent = DeterministicCharacterAgent(M3_NPC_PLANS)
-    character_agents = dict.fromkeys(M3_NPC_PLANS, character_agent)
+    deterministic_character_agent = DeterministicCharacterAgent(M3_NPC_PLANS)
+    narrator: NarratorLike
+    character_agents: dict[str, CharacterAgentLike]
+    if settings.llm_enabled:
+        # M5 出口接线（解析→叙事→角色）：默认 false 时下列分支不执行，装配逐字等价。
+        narrator = LLMNarratorAgent(llm_client, fallback=TemplateNarrator())
+        character_agents = {
+            actor_id: LLMCharacterAgent(llm_client, fallback=deterministic_character_agent)
+            for actor_id in M3_NPC_PLANS
+        }
+    else:
+        narrator = TemplateNarrator()
+        character_agents = dict.fromkeys(M3_NPC_PLANS, deterministic_character_agent)
     audit_service = AuditService(repo)
     parser = IntentParseAgent(
         llm_client,
-        DeterministicIntentParser(recipe_names=catalog.name_index()),
+        DeterministicIntentParser(
+            recipe_names=catalog.name_index(),
+            free_craft_enabled=settings.free_craft_enabled,
+        ),
         tool_specs=registry.visible_tools(PLAYER_ID, frozenset({"player"})),
     )
     orchestrator = TurnOrchestrator(
@@ -86,7 +106,7 @@ def _build_app() -> FastAPI:
         action=action,
         parser=parser,
         gate=gate,
-        narrator=TemplateNarrator(),
+        narrator=narrator,
         rules=rules,
         save_seed_default=save_seed_default,
         registry=registry,

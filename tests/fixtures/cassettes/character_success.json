@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "角色 Agent 输出：1 条合法提案（仅工具名/参数/理由；数值由框架重算）。",
+  "interactions": [
+    {
+      "request": {"task": "character_act", "agent_id": "character"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"proposals\": [{\"tool\": \"take_item\", \"args\": {\"item_id\": \"item_01J9Z3K4Q7X8Y9Z0ABCDEFGHJR\"}, \"reason\": \"抢先把药水收进背包\"}]}",
+          "model": "cassette-character",
+          "usage": {"prompt_tokens": 160, "completion_tokens": 40}
+        }
+      }
+    }
+  ]
+}

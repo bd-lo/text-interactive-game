@@ -662,7 +662,9 @@ class TurnOrchestrator:
                     text=preconditions.message or _ACTION_REJECTED_TEXT,
                 )
         result_data = dict(gate_result.data or {})
-        text = self._render(action=outcome, events=drafts, state=state, result_data=result_data)
+        text, narrative_source = self._render_with_source(
+            action=outcome, events=drafts, state=state, result_data=result_data
+        )
 
         if not drafts:
             response = TurnResult.success(turn_id=state.turn, version=record.version, text=text)
@@ -675,7 +677,7 @@ class TurnOrchestrator:
                     "result": {
                         **draft.result,
                         "narrative": text,
-                        "narrative_source": "template",
+                        "narrative_source": narrative_source,
                     }
                 }
             )
@@ -905,7 +907,7 @@ class TurnOrchestrator:
                         player_drafts.append(draft)
                     else:
                         npc_drafts.append(draft)
-            text = self._render_multi_actor(
+            text, narrative_source = self._render_multi_actor(
                 action=outcome,
                 state=state,
                 player_drafts=player_drafts,
@@ -935,7 +937,7 @@ class TurnOrchestrator:
                         "result": {
                             **draft.result,
                             "narrative": text,
-                            "narrative_source": "template",
+                            "narrative_source": narrative_source,
                         }
                     }
                 )
@@ -1020,13 +1022,13 @@ class TurnOrchestrator:
         player_drafts: list[Event],
         npc_drafts: list[Event],
         read_only_data: dict[str, Any],
-    ) -> str:
-        """玩家事件用叙事器渲染，NPC 事件拼一句确定性短句，最终收敛到 80–150 字。"""
-        base = self._render(
+    ) -> tuple[str, str]:
+        """玩家事件用叙事器渲染（返回 ``(text, narrative_source)``），NPC 事件拼确定性短句。"""
+        base, narrative_source = self._render_with_source(
             action=action, events=player_drafts, state=state, result_data=read_only_data
         )
         clause = _npc_event_clause(state, npc_drafts)
-        return _compose_text(base, clause)
+        return _compose_text(base, clause), narrative_source
 
     def _audit_next_attempt(self, game_id: str, turn_id: int) -> int:
         """计算该回合下一批审计行的 attempt 起始值（同 turn 零写入重试时不覆盖旧行）。
@@ -1100,11 +1102,40 @@ class TurnOrchestrator:
         result_data: dict[str, Any],
     ) -> str:
         """优先用注入的叙事器；M2 默认走确定性模板 ``_fallback_text``。"""
+        return self._render_with_source(
+            action=action, events=events, state=state, result_data=result_data
+        )[0]
+
+    def _render_with_source(
+        self,
+        *,
+        action: ParseOutcome,
+        events: list[Event],
+        state: GameState,
+        result_data: dict[str, Any],
+    ) -> tuple[str, str]:
+        """返回 ``(text, narrative_source)``：LLM 叙事器带来源元数据，其余一律 ``template``。
+
+        ``narrative_source`` 按 D-007-2 只有 ``llm``/``template`` 两值：LLM 叙事失败回退时
+        由 Agent 自报 ``template``（``render_with_meta``），默认/模板路径恒为 ``template``。
+        """
         if self._narrator is not None:
-            return self._narrator.render(
-                action=action, events=events, state=state, result_data=result_data
+            render_with_meta = getattr(self._narrator, "render_with_meta", None)
+            if callable(render_with_meta):
+                text, source = render_with_meta(
+                    action=action, events=events, state=state, result_data=result_data
+                )
+                return text, source
+            return (
+                self._narrator.render(
+                    action=action, events=events, state=state, result_data=result_data
+                ),
+                "template",
             )
-        return _fallback_text(action=action, events=events, state=state, result_data=result_data)
+        return (
+            _fallback_text(action=action, events=events, state=state, result_data=result_data),
+            "template",
+        )
 
     def _replay_idempotent(
         self, store_key: str, request_hash: str, failure: TurnResult

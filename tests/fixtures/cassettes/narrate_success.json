@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "M5 出口接线测试用手工合成 cassette（非真实 API 录制；不含密钥/玩家隐私）。",
+  "interactions": [
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"你弯下腰，把地上的火把拾起来，指尖沾了一层薄灰。火光在石壁上晃了晃，把断裂的门楣照出一小片暖色。你把火把收进行囊，重新直起身，听着风从废墟的缝隙里穿过，盘算着下一步该往哪里走，先做什么、后做什么，心里慢慢有了打算。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 128, "completion_tokens": 72}
+        }
+      }
+    }
+  ]
+}

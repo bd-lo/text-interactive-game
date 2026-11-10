@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "叙事修复仍失败：两次输出都不满足 80–150 字约束 → 编排层/Agent 回退模板。",
+  "interactions": [
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "not-json-at-all",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 96, "completion_tokens": 8}
+        }
+      }
+    },
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"还是太短\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 100, "completion_tokens": 10}
+        }
+      }
+    }
+  ]
+}
