@@ -1,6 +1,6 @@
 # CI-1 · 2026-11-10 · 基础设施（不占 M1–M6 编号） · actions-offline-fix
 
-> 一次性目标：修复仓库公开后 GitHub Actions 在 **ubuntu 上 pytest 步骤**的确定性失败（Python 3.10/3.12 两个 job 同错），使远端 CI 恢复全绿；并建立「CI-only 失败」的取证与复现纪律 ｜ 验收：远端 `ci` workflow 4 个 job 全绿 + 本地全量/回放/四门不回归 ｜ 关联：`docs/decisions/`（无契约变更）、第 12 章 §12.4、第 18 章 §18.6、`.github/workflows/ci.yml`
+> 一次性目标：修复仓库公开后 GitHub Actions 在 **ubuntu 上 pytest 步骤**的确定性失败（Python 3.10/3.12 两个 job 同错），使远端 CI 恢复全绿；并建立「CI-only 失败」的取证与复现纪律 ｜ 验收：远端 `ci` workflow 3 个 job 全绿 + 本地全量/回放/四门不回归 ｜ 关联：`docs/decisions/`（无契约变更）、第 12 章 §12.4、第 18 章 §18.6、`.github/workflows/ci.yml`
 
 ## 1. 现象与证据
 
@@ -39,16 +39,18 @@
 | 四门 | ruff check / ruff format（144 files）/ mypy strict（84 files）/ lint-imports（2 kept）全绿 |
 | 复现脚本 | 未设 env → RuntimeError（CI 路径）；设 env → import ok / 4255 条（修复路径） |
 | CI 同构模拟（全量） | 修复前 2 failed / 1175 passed；修复后 1179 passed |
-| 远端 CI | **run `42819330386`（sha `efe1471`）conclusion=success**：`deps (Python 3.12)`、`quality (Python 3.10)`、`quality (Python 3.12)` 3 个 job 全 success；quality 两个 check-run 无 failure 注解（公开 API，2026-11-10 20:5x 复核） |
+| 远端 CI | **run `42819330386`（sha `efe1471`）conclusion=success**：`deps (Python 3.12)`、`quality (Python 3.10)`、`quality (Python 3.12)` 3 个 job 全 success；quality 两个 check-run 无 failure 注解（公开 API，2026-11-10 20:5x 复核）。文档回填提交 `fa70b9c` 的 run `42819577507` 亦 success（21:0x 复核，当前 main HEAD） |
 
 ## 5. 远端验收（push 后复核）
 
 - 修复提交：`2e0cb8d fix: CI 离线化 LiteLLM 模型成本表（LITELLM_LOCAL_MODEL_COST_MAP）+ 2 例回归测试`；文档/回写提交：`efe1471`。
 - 远端结果（公开 API，无需 token）：run **42819330386**（`head_sha=efe1471`）`conclusion=success`；jobs = `deps (Python 3.12)` success、`quality (Python 3.10)` success、`quality (Python 3.12)` success；`/check-runs/{id}/annotations` 中 quality 两个 job 均无 failure 注解（此前 185.199.* 网络错误注解消失）。
-- 复盘顺序（可复跑）：`/actions/runs?per_page=10` → 取 `head_sha` 命中的 run → `/actions/runs/{id}/jobs` → `/check-runs/{job_id}/annotations`；未认证 API 有 60 次/小时限制，限流时可直接看 GitHub Actions 页面或等额度恢复。
+- 复盘顺序（可复跑）：`/actions/runs?per_page=10` → 取 `head_sha` 命中的 run → `/actions/runs/{id}/jobs` → `/check-runs/{job_id}/annotations`；未认证 API 有 60 次/小时限制，限流时可直接看 GitHub Actions 页面、workflow badge（`.../badge.svg?branch=main`）或等额度恢复。
+- 后续 HEAD 复核：`fa70b9c`（docs 回填）run **`42819577507`** `conclusion=success`；badge `ci - passing` 与 API 一致。
 
 ## 6. 后续与不做
 
 - 不做：不在 ci.yml 重复注入同名 env（否则代码级修复/回归测试会被 CI 环境掩盖，失去回归意义）；不引入 `--maxfail`（会隐藏多失败）；不新增 `pytest-timeout` 依赖（需过第 19 章）；不升级 `actions/checkout@v4`/`setup-uv@v6`（Node20 弃用仅 warning，升级留给依赖治理切片）。
 - 后续（可选，已记录）：`pytest --junitxml` + `if:always()` artifact（公开 triage 仍以注解为主）；`persist-credentials: false`；CI secret-scan；覆盖率门禁 C-1 与文档 CI C-2 仍按 D-M5-9 在 M5 末落地。
 - 纪律沉淀：第 18 章 §18.6 已写入「CI-only 失败纪律」——第三方库 import 副作用必须用官方开关关闭；禁止依赖本机代理/NO_PROXY 才通过的用例；复现时先「清代理 env + 伪造 DNS 可达 + 保留禁网守卫」。
+- 团队副产物（建议入 review checklist / 后续切片）：① 前端轨残余风险——`main.py` 模块级 `app = _build_app()` import 即建库，且 CLI 测试可能 dispose 模块级 app（pytest-randomly 顺序下理论时序风险；本轮「无 `.env`/`data/` + 4 种顺序」全绿未触发），根治 = `main.py` 惰性工厂，列 M6 前置候选；② CI 依赖升级（Node20 弃用 warning，非阻断）：`actions/checkout@v4→v5`、`astral-sh/setup-uv@v6→v7`、`actions/upload-artifact@v4→v5`，并考虑 pin `ubuntu-24.04`；③ 未来可加 `pytest --junitxml` + `if:always()` artifact、CI secret-scan、`persist-credentials: false`，均不阻塞 M5。
