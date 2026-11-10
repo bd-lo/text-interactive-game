@@ -197,7 +197,20 @@ jobs:
             tail -n 80 artifacts/e2e-web/server.log || true
             exit 1
           fi
-          node scripts/e2e-web.mjs --base-url http://127.0.0.1:8794 --out artifacts/e2e-web
+          # 浏览器可用性证据（CI 失败时便于定位；ubuntu-latest 预装 Google Chrome）
+          (google-chrome --version || google-chrome-stable --version || chromium --version || true) 2>&1 || true
+          set +e
+          node scripts/e2e-web.mjs --base-url http://127.0.0.1:8794 --out artifacts/e2e-web --timeout 30000
+          E2E_EXIT=$?
+          set -e
+          if [ "$E2E_EXIT" -ne 0 ]; then
+            echo "::error::浏览器 E2E 失败（exit $E2E_EXIT）"
+            if [ -f artifacts/e2e-web/result.json ]; then
+              node -e "const r=require('./artifacts/e2e-web/result.json'); const failed=(r.steps||[]).filter(s=>!s.ok).map(s=>s.id+':'+String(s.detail||'').slice(0,300)); const msg=r.fatalError?('fatal='+r.fatalError):('failed='+failed.join(' || ')); console.log('::error::'+msg.replace(/\r?\n/g,' '));" 2>/dev/null || true
+            fi
+            tail -n 80 artifacts/e2e-web/server.log || true
+            exit "$E2E_EXIT"
+          fi
       - name: 上传 E2E 证据（失败也上传）
         if: always()
         uses: actions/upload-artifact@v7.0.2

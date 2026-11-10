@@ -274,13 +274,40 @@ async function launchBrowser({ browserPath, port, profileDir, headless, width, h
     '--hide-scrollbars',
     `--window-size=${width},${height}`,
   ]
+  // Linux CI（GitHub Actions ubuntu runner）常见限制：Chrome 的 setuid sandbox 不可用
+  // （user namespace 受限/以 CI 用户运行），不加 --no-sandbox 时进程会直接退出、CDP 端口
+  // 永不就绪（本地 Windows/macOS 不受影响）。仅对 Linux 且处于 CI 环境时加，降低面。
+  if (process.platform === 'linux' && (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true')) {
+    args.push('--no-sandbox', '--disable-setuid-sandbox')
+  }
   if (headless) {
     args.unshift('--headless=new')
   }
   args.push('about:blank')
-  const child = spawn(browserPath, args, { stdio: 'ignore', windowsHide: true })
-  const version = await waitForCdp(port, 25000)
-  return { child, version }
+  // 收集浏览器 stderr 尾部：启动失败时把原因带进 fatalError（CI 里 stdio 为 ignore 时不可见）。
+  let stderrTail = ''
+  const child = spawn(browserPath, args, {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  })
+  child.stderr?.on('data', (chunk) => {
+    stderrTail = (stderrTail + String(chunk)).slice(-4000)
+  })
+  try {
+    const version = await waitForCdp(port, 25000)
+    return { child, version, stderrTail }
+  } catch (error) {
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // 进程可能已退出
+    }
+    const detail = stderrTail.trim().split('\n').slice(-6).join(' | ')
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}` +
+        (detail === '' ? '' : `；browser stderr: ${detail}`),
+    )
+  }
 }
 
 class CdpClient {
