@@ -1,7 +1,7 @@
 # 总体进展总览（PROGRESS）
 
 > 本文件与 `docs/progress/` 下的单次进度文档配合使用；每次新建进度文档必须在同一提交或 PR 内更新本文件。
-> 统计基准日：2026-11-10 ｜ 当前里程碑：**M5 API 调用治理（已完成 6/6；出口附加项：解析/叙事/角色已接线，裁判待用户授权）＋ M6 前端体验（进行中 3/4，025/026/027 已交付；028 为最后一片）** ｜ 下一个可用编号：**028**（M5 019–024 已用尽；M6 下一个 028；M5E-*/M6B-*/B3/C123/OSS-* 为出口附加项/不占编号）
+> 统计基准日：2026-11-11 ｜ 当前里程碑：**M5 API 调用治理（已完成 6/6；出口附加项：解析/叙事/角色已接线，裁判待用户授权）＋ M6 前端体验（进行中 3/4，025/026/027 已交付；028 为最后一片）＋ R2 玩家体验批次（已完成，范围外不占编号，见 [R2](progress/R2-2026-11-10-player-experience.md)）** ｜ 下一个可用编号：**028**（M5 019–024 已用尽；M6 下一个 028；`R2` 与 M5E-*/M6B-*/B3/C123/OSS-* 为范围外批次/出口附加项，不占编号）
 
 ## 1. 里程碑状态
 
@@ -13,6 +13,7 @@
 | M4 | 制造 | 015–018 | 已完成 | 4/4 | 100.0% | [018](progress/018-2026-11-09-craft-replay.md) | 无 |
 | M5 | API 调用治理 | 019–024 | 已完成 | 6/6 | 100.0% | [023](progress/023-2026-11-10-batch-sleep.md) | 无（**出口附加项进展**：解析 free 分支/LLM 叙事/LLM 角色已接线（M5E-1）；**裁判未接，待用户授权改 Resolver**；不占编号、不改变 6/6 切片口径） |
 | M6 | 前端体验 | 025–028 | 进行中 | 3/4 | 75.0% | [026](progress/026-2026-11-10-card-import-ui.md) | 028（LLM 生成卡 UI）为最后一片，依赖 generate 端点（已交付）+ M5 出口接线（叙事/角色已接）；后端前置仅剩**裁判接线（待用户授权）**；e2e Playwright 后移 |
+| R2 | 玩家体验批次（范围外，不占编号） | R2 | 已完成 | — | — | [R2](progress/R2-2026-11-10-player-experience.md) | 无；遗留 P2/P1 见进度文档 §5（失败结局内容、LLM 延迟、m3 建模重构等） |
 
 ## 2. 完成度计算规则
 
@@ -61,6 +62,7 @@
 | M5E-1 | 2026-11-10 | M5 出口附加项（不占编号） | llm-agent-wiring | 解析 free 分支（默认 fail-closed）+ LLM 叙事（`narrate@v1`）/LLM 角色（`character@v1`）cassette 离线接线、失败回退、默认离线装配逐字等价；13 例；**裁判未接（待用户授权）** | [M5E-1](progress/M5E-1-2026-11-10-llm-agent-wiring.md) |
 | M6B-4 | 2026-11-10 | M6 后端前置（不占编号） | card-generate | `POST /character-cards/generate`：LLM/模板兜底、限流 5 次/60s→429+`Retry-After`、写幂等；不写库不建局；25 例 | [M6B-4](progress/M6B-4-2026-11-10-card-generate.md) |
 | 026 | 2026-11-10 | M6 | card-import-ui | 卡库 UI：列表分页/搜索、详情 9 字段、导入（64KB/UTF-8 预检 + 服务端 validate + multipart 幂等 + 错误映射 413/422/403/409/404）、按卡开局；vitest 15 files/62、契约 11、build 61 modules（js 139.72kB/gzip 51.50kB） | [026](progress/026-2026-11-10-card-import-ui.md) |
+| R2 | 2026-11-11 | 范围外玩家体验批次 | player-experience | **玩家体验全面修复**：新剧情场景 story「余烬哨站」（6 房/3 步目标链/双结局，读时纯求值零 golden 风险）+ 道具真实化（heal/hp_delta、武器工具不可用掉、材料保护、inspect_item）+ 失败原因具体化/成功建议 + 离线 NLU 识别率 45%→85%（房间名导航/别名/模糊）+ API 加法（goal/ending_text/suggested_actions/exit_names、GET /games 存档列表）+ Web 对局回路重做（历史/面板/自愈/续玩/目标结局 UI/移动端/懒加载）+ 一键网页入口（play.ps1|sh、web/dist 入库、wheel 内嵌、静态解析）+ README/FAQ；全量 **1641 passed**、replay **68**（旧 golden 61 零改动 + provenance 7）、web 25 files/117 tests、质量门全绿 | [R2](progress/R2-2026-11-10-player-experience.md) |
 
 ## 4. 编号分配与变更记录
 
@@ -73,7 +75,7 @@
 | M5 | 019–024 | 019–024（全部） | - | **M5 6/6 已完成**（019/020/021/022/023/024 全交付；全量 1376 passed、replay 61）；M5 决策 D-M5-1..12 见 `docs/decisions/`；**出口附加项 LLM Agent 接线（解析/叙事/角色/裁判）尚未做**，不占编号、不改变 6/6 切片口径（裁判接线需用户授权改 Resolver） |
 | M6 | 025–028 | 025、026、027 | 028 | 025/026/027 已交付（3/4；全量 1417 passed、前端 build/vitest 绿）；028（LLM 生成卡 UI）为最后一片，依赖 generate 端点（M6B-4 已交付）+ M5 出口接线（叙事/角色已接）；**M6 后端前置**已交付 view/replay/静态托管（M6B-1/2）+ 卡库 7 端点/0003/card_id（M6B-3）+ **generate 端点（M6B-4）**，仅剩**裁判接线（待用户授权）**；e2e Playwright 后移 |
 
-> 范围外入口轨（OSS-1/OSS-2 终端入口）、M6 后端前置（M6B-1/M6B-2/M6B-3/M6B-4）、M5 出口附加项（M5E-*）、基础设施（C123 C-1/C-2 工程门）与前端打磨（B3）不占 001–028 编号，进度文档以 `OSS-*`/`M6B-*`/`M5E-*`/`C123-*`/`B3-*` 单独命名并登记于 §3。
+> 范围外入口轨（OSS-1/OSS-2 终端入口）、M6 后端前置（M6B-1/M6B-2/M6B-3/M6B-4）、M5 出口附加项（M5E-*）、基础设施（C123 C-1/C-2 工程门）、前端打磨（B3）与 **R2 玩家体验批次** 不占 001–028 编号，进度文档以 `OSS-*`/`M6B-*`/`M5E-*`/`C123-*`/`B3-*`/`R2-*` 单独命名并登记于 §3。
 
 ## 5. 接口偏离登记（对照开发文档第 6、7 章）
 
@@ -135,6 +137,7 @@
 | D-M6-8 | 人物卡库实现偏差 | 第 6 章 §6.7 / 第 23 章：multipart 依赖 python-multipart；source 由入口判定；list 分页默认 | 不新增 python-multipart（标准库 email 解析 multipart + `openapi_extra` 补 requestBody）；`import` 强制 `source=upload`（其他来源记 `SOURCE_OVERRIDDEN` warning）；list 默认 `limit=20`/上限 100；重复模板合并（`DUPLICATE_ITEM_MERGED` warning）；`generate` 端点由 M6B-4 交付（模板兜底/限流口径见 D-M6-9） | M6B-3 定案（第 6/16/23 章已回写） | 已回写 |
 | D-M5-13 | LLM Agent 接线口径（M5 出口附加项） | 第 12 章 §12.5/§12.6：叙事/角色 Agent 的 Prompt 版本与回放口径；第 18 章 cassette 录制口径 | 新增 `LLMNarratorAgent`（`narrate@v1`）/`LLMCharacterAgent`（`character@v1`），输入分别=已提交事件事实 / 仅私有感知+私有记忆；失败/离线/修复耗尽回退模板/确定性；`narrative_source ∈ {llm,template}`；解析 free 分支默认 fail-closed；**cassette 手工合成 JSON 而非 vcrpy YAML**（PyYAML 非声明依赖；结构兼容 `interactions`）；默认 `llm_enabled=false` 装配逐字等价；**裁判未接（待用户授权）** | M5E-1 定案（第 8/9/12/16 章已回写） | 已回写 |
 | D-M6-9 | 卡生成端点口径 | 第 6 章 §6.7 / 第 23 章 §23.6：generate 契约与限流 | `POST /character-cards/generate` 200 `{draft,validation,generated_by}`；默认离线/LLM 不可用→确定性模板兜底（`source=manual`/`generated_by=null`/`TEMPLATE_FALLBACK` warning）；限流 5 次/60s（IP+`X-Session-Id` **进程内滑窗**）→ 429 `OUT_OF_RANGE`+`Retry-After`；写幂等（同键复用含失败、异参 409）；不写库不建局 | M6B-4 定案（第 6/12/23 章已回写） | 已回写 |
+| D-R2-1..12 | R2 玩家体验批次 | 无目标/结局、Web 调试器化、网页版不可发现、道具假效果、离线 NLU 覆盖窄 | 新场景 story（读时目标/结局，无新事件/无迁移）、heal/hp_delta 与道具保护、inspect_item、失败原因/成功建议、离线 NLU 增强、API 加法（goal/ending_text/suggested_actions/exit_names + GET /games）、Web 对局回路重做、web/dist 入库与 play 一键入口 | [ADR 2026-11-10-player-experience.md](decisions/2026-11-10-player-experience.md)（决策全文与 known limitations） | 已定案（2026-11-11） |
 | D-M6-10 | 026 卡库 UI 实现偏差 | 第 23 章 §23.5/§23.8：客户端 Ajv2020 校验、导入全流程、删除/模板新建入口 | 不引入 Ajv（客户端仅基础预检，字段级以服务端 `POST /validate` 为权威）；无 `/cards/new`、详情无删除/模板新建（后移）；无 `v-html`/自动重试；导入 64KB/UTF-8 预检 + multipart 幂等 + 错误码映射 413/422/403/409/404 | 026 定案（第 23 章已回写） | 已回写 |
 | D-M6-7 | `/view` 与 `TurnResult` 加法字段 | 第 6/9 章：`/view` inventory `{item_id,name}`；`TurnResult` 为既定 9 字段 | `/view` inventory 增 `qty`（同模板实例聚合计数；房间物品 `ItemRefResponse` 不变）；`TurnResult.effects`/`suggested_actions`（005 起恒空字段）在失败回合按 `ErrorCode` 固定映射填充（纯加法：不改 `text`/事件/version，不破 golden） | 第 6/9/23 章已回写；前端类型按加法扩展（D-M6-3/4、A4；M6B-2/OSS-2 进度文档） | 已登记 |
 
@@ -153,12 +156,16 @@
 | R4（M2 新开） | SQLite 交付前无迁移工具（建表用 `create_all`）；current 行丢失时 `version` 取 `last_seq`（M2 每次提交恰 1 事件） | 中 | 已关闭（M3 交付 Alembic baseline 迁移（空库 5 表，可升级/回滚）+ `snapshots.version` 持久化与重建规则；多存档复合主键 D-008-3 留 M4 前评估） | lead |
 | R5（M3 新开） | M2 旧库升级：已存在的 `snapshots` 表缺 `version` 列，不在 Alembic baseline（空库建表）范围 | 低 | 已关闭（2026-11-09 交付 `textgame.persistence.legacy_upgrade`：备份 → 补 `version` 列 → 建 `audit_events` → stamp 0001 → upgrade head（0002 主键重建）；失败恢复备份并报明确错误、重复执行为 noop；12 个旧库样本/失败注入用例；README 已写升级指引） | lead |
 | R6（M3 新开） | 审计 uid 为确定性去重 `(game, turn, attempt, proposal)`：同一 attempt 重投以首写为准（严格 append 语义未启用） | 低 | 缓解中（编排层每 attempt 每提案只写一次；如需严格 append 再改 uuid 主键，persistence-dev 可 5 分钟切换） | lead |
+| R-T8（R2 新开） | 真实 LLM 延迟体感：首回合 7–8s、后续 2–6s，无流式；LLM 不可用回退模板但延迟已发生 | 中 | 缓解中（默认离线 10–22ms；README 写明代价；后续建议流式/预热） | lead |
+| R-T9（R2 新开） | `web/dist` 入库后的产物漂移（源码已改但忘记重建） | 低 | 缓解中（CI `web-build` dist drift gate + 本机 `pnpm build` 零 diff 验证） | lead |
+| R-T10（R2 新开） | story 失败结局（倒下）逻辑已实现但当前内容不可达（唯一伤害源 -4，初始 12 HP） | 低 | 已登记（不做战斗/死亡系统；后续内容系统补伤害源，复用 `hp_delta` reducer 即可） | lead |
 
 > 编号映射（2026-11-09 回写）：R1–R6 为里程碑内历史编号，归口第 20 章 `R-*` 体系——R1/R4/R5/R6 → `R-T*`（技术），R2/R3 → `R-L*`（合规/许可证）；第 1 章 §1.3 的 R1–R4 为需求约束编号，与风险编号不同域。R5/R6 已补入第 20 章 §20.2.2；R-L3 状态词按第 20/22 章统一为「打开」。
 
 ## 7. 当前状态与下一步
 
-- 当前状态：**M1–M4 已完成（4/4、5/5、5/5、4/4 = 100.0%，出口独立验收 PASS）；M5 API 调用治理已完成（6/6：019–024；出口附加项：解析/叙事/角色已接线（M5E-1），裁判待用户授权）；M6 前端体验进行中（3/4：025/026/027 已交付，028 为最后一片；B3 展示层打磨不占编号）**；M5 决策 D-M5-1..13、D-TEAM-1..7、M6 后端契约 D-M6-1..10 均已定案并落档 `docs/decisions/` 与 PROGRESS §5；M6 后端前置已交付 view/replay/静态托管（M6B-1/2）+ 卡库 7 端点/0003/card_id（M6B-3）+ **generate 端点（M6B-4）**，仅剩**裁判接线（待用户授权）**。**当前 HEAD `18196a7`（=origin/main，工作树 clean）实测全量 1417 passed in 22.56s、replay 61 passed（M2/M3/M4 = 4/5/24，零回归）、覆盖率 88.86%、四门质量门全绿（ruff check/format 172 files、mypy 91 files、lint-imports 2 kept）**；第三批基线 1376 passed（HEAD `1174af1`）→ 本批新增 **41** 例。M3 出口证据（合并提交 `a5f2be3` 时点复算，**全量 960 passed**）：
+- 当前状态：**M1–M4 已完成（4/4、5/5、5/5、4/4 = 100.0%，出口独立验收 PASS）；M5 API 调用治理已完成（6/6：019–024；出口附加项：解析/叙事/角色已接线（M5E-1），裁判待用户授权）；M6 前端体验进行中（3/4：025/026/027 已交付，028 为最后一片；B3 展示层打磨不占编号）；R2 玩家体验批次已完成（范围外，见 [R2](progress/R2-2026-11-10-player-experience.md)）**；M5 决策 D-M5-1..13、D-TEAM-1..7、M6 后端契约 D-M6-1..10、R2 决策 D-R2-1..12 均已定案并落档 `docs/decisions/` 与 PROGRESS §5；M6 后端前置已交付 view/replay/静态托管（M6B-1/2）+ 卡库 7 端点/0003/card_id（M6B-3）+ **generate 端点（M6B-4）**，仅剩**裁判接线（待用户授权）**。**当前 HEAD `708c7ea`（=origin/main，工作树 clean）实测全量 1641 passed、replay 68 passed（旧 golden 61 零改动 + provenance 7）、web 25 files/117 tests passed、四门质量门全绿（ruff format 192 files、mypy 93 files、lint-imports 2 kept、check_docs PASS）**；上一批基线 1417 passed（HEAD `18196a7`）→ R2 批次新增 **224** 例。
+- R2 玩家体验批次证据（2026-11-11，HEAD `708c7ea`，决策 [D-R2-1..12](decisions/2026-11-10-player-experience.md)）：**新剧情场景 story「余烬哨站」**（6 房/7 物品/1 NPC/3 步目标链/胜利+倒下双结局；`story_goal`/`story_ending` 读时纯求值，不新增 EventType/GameState 字段/迁移 → 旧 golden 61 零改动；结局后拒绝新回合）；**道具真实化**（药水/烈酒按 `heal`/`hp_delta` 改 HP 且满血零状态变化、武器/工具不可被 use 销毁、主线材料 quest 保护防软锁、新增只读 `inspect_item`）；**反馈/引导**（失败回合具体中文原因 + 场景化建议、成功回合 `suggested_actions`、story 老兵确定性回话首谈即 briefed）；**离线 NLU**（inspect/同义词/别名/模糊/房间名导航，88 条探测 7 类动作识别率 45%→85%，7 条 golden 输入映射逐字不变）；**API 加法**（`/view` goal/ending_text/suggested_actions/exit_names、`GET /games/{id}` scenario/ending_text、新增 `GET /api/v1/games` 存档列表只读分页）；**Web 对局回路重做**（replay 重建叙事历史、状态面板玩家化、CONFLICT 200-ok=false 自愈、120s 超时、人话错误、服务端存档列表+最近对局续玩、目标面板/结局横幅、375px 无溢出、路由懒加载入口 js 139.7→101.4KB）；**一键入口/分发**（`scripts/play.ps1|sh`、`web/dist` 入库、静态解析 env→CWD→仓库根→包内、hatch build hook 内嵌 wheel 369KB、quickstart UTF-8 BOM、README/FAQ/英文摘要/SECURITY/Issue 模板）；**Agent**（LLM 叙事事实供给 + story cassette/wiring 测试，默认仍离线）。验证：story HTTP 12–14 回合通关（目标 3/3、status=ended、结局后零写入）、heal 12→20、软锁回归、`play.ps1 -Check` PS5.1/PS7 双通、异 CWD 静态托管/wheel/375px 均实测通过；真实 LLM（可选）43 次调用 story 8 回合全 ok。M3 出口证据（合并提交 `a5f2be3` 时点复算，**全量 960 passed**）：
   - 冲突 Demo：两名拾荒者同回合提交冲突提案（turn 2 抢同一瓶药水），Resolver 只让 actor_id 升序靠前者 `applied`、后者 `rejected` 且理由可审计，事件全局 `seq` 连续、`version` 每次提交恰好 +1；
   - 10 回合多角色 golden 回放（`tests/replay/test_m3_golden_replay.py`）：final `state_hash=df58e51d…`、13 条事件、16 行审计；逐回合事件 id/seq/rng_seed/state_hash 精确一致，禁止 snapshot-update；
   - 越权/冲突/CAS 安全用例全绿：124 actor_scope 安全用例（30 格矩阵 + 伪造 scope 零写入）、20 Resolver 安全用例、CAS 过期版本零写入、并发冲突最多 3 次「只重裁决不重解析」；

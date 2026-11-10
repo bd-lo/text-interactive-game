@@ -6,7 +6,15 @@
 
 **默认离线可玩**：不需要 API Key、不需要 Node/pnpm、不需要联网（仅首次安装依赖需联网）。
 
-> 当前状态：M1–M5 已完成，M6 前端体验 3/4（网页版已可用，人物卡导入/回放已交付）；网页版与终端版均为「一条命令」入口。里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)。
+> 当前状态：M1–M5 已完成，M6 前端体验 3/4；**R2 玩家体验批次已完成**（剧情场景「余烬哨站」目标/结局、Web 对局回路重做、一键网页入口、道具/对话/离线 NLU 修复）。网页版与终端版均为「一条命令」入口；里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)，玩家体验批次见 [R2](docs/progress/R2-2026-11-10-player-experience.md)。
+
+![网页版首页：存档续玩 + 场景选择](docs/assets/web-home.png)
+
+| 对局：目标面板 / 冒险记录 / 状态 / 可点建议 | 剧情结局屏 |
+| --- | --- |
+| ![网页版对局](docs/assets/web-game.png) | ![剧情结局](docs/assets/web-ending.png) |
+
+> 手机 375px 单列布局：![手机布局](docs/assets/web-mobile.png)
 
 ## 快速开始（一条命令）
 
@@ -38,8 +46,6 @@ cd text-interactive-game
 - 自检（启动服务 → 校验 `/healthz` 与 `/` 均 200 → 退出）：`.\scripts\play.ps1 -Check`（bash：`./scripts/play.sh --check`）。
 - 首页可直接选场景；**推荐首玩「余烬哨站」剧情（story，有目标与结局）**，其它为 m2 单场景 / m3 多角色 / m4 制造。
 - 想改前端：`pnpm --dir web install --frozen-lockfile && pnpm --dir web build` 后重新运行 `play` 脚本（详见 [web/README.md](web/README.md)）。
-
-> 截图占位：`docs/assets/web.png`（网页版）与 `docs/assets/console.png`（终端版）将在验收轮用真实浏览器/终端截图补齐。
 
 ### 终端版
 

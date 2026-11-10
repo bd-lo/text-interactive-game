@@ -59,6 +59,7 @@
 | 2026-11-10 | 04:50 四角色团队方向决策（D-TEAM-1..7） | 已定案 | M5 + M6 双轨（含 OSS-1 入口轨） | [2026-11-10-0450-team-direction.md](2026-11-10-0450-team-direction.md) |
 | 2026-11-10 | M6 后端前置契约冻结（D-M6-1..6） | 已定案 | M6 025–028 + M6 出口附加项 | [2026-11-10-m6-backend-contract.md](2026-11-10-m6-backend-contract.md) |
 | 2026-11-10 | 022 缩范围与成本记录不做（D-M5-10） | 已定案 | M5 022 + M6 卡库迁移（Alembic 0003） | [2026-11-10-022-scope-and-cost-out.md](2026-11-10-022-scope-and-cost-out.md) |
+| 2026-11-10 | R2 玩家体验批次决策（D-R2-1..12） | 已定案 | 范围外玩家体验批次（story/Web/一键入口/NLU/道具） | [2026-11-10-player-experience.md](2026-11-10-player-experience.md) |
 
 ## 7. 记录模板
 
