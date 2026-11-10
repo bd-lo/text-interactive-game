@@ -1,9 +1,39 @@
 /**
- * 展示层中文标签映射（M6 前端打磨）：回放元数据 event_type/method/actor_id → 中文。
+ * 展示层中文标签映射（M6 前端打磨）：回放元数据 event_type/method/actor_id → 中文；
+ * 卡库 source/属性键与时间格式化也集中在此。
  *
- * 口径：只做**展示**转换，不改 replay 契约与数据；映射表覆盖当前领域枚举/固定场景 ID，
+ * 口径：只做**展示**转换，不改契约与数据；映射表覆盖当前领域枚举/固定场景 ID，
  * **未知值一律回退原值**（便于发现新增枚举，而不是静默吞掉）。
  */
+
+import type { AttributeKey, CardSource } from '@/api/types'
+
+/** 人物卡属性键 → 中文（第 5 章 §5.7，恰好 7 键）。 */
+export const ATTRIBUTE_LABELS: Record<AttributeKey, string> = {
+  str: '力量',
+  dex: '敏捷',
+  con: '体质',
+  int: '智力',
+  wis: '感知',
+  cha: '魅力',
+  max_hp: '生命上限',
+}
+
+/** 人物卡来源 → 中文。 */
+export function labelCardSource(source: CardSource): string {
+  if (source === 'upload') {
+    return '上传'
+  }
+  if (source === 'llm') {
+    return 'LLM 生成'
+  }
+  return '手动'
+}
+
+/** ISO 时间串 → 可读展示（`2026-11-10 13:00:00 UTC`）。 */
+export function formatDateTime(value: string): string {
+  return value.replace('T', ' ').replace('Z', ' UTC').replace(/\.\d+/, '')
+}
 
 /** `EventType`（第 14 章 §14.7；`game_created` 为小写历史值）。 */
 const EVENT_TYPE_LABELS: Record<string, string> = {

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 import type { ReplayEvent } from '@/api/types'
-import { formatEventRef, labelActor, labelEventType, labelMethod } from '@/utils/labels'
+import { formatDateTime, formatEventRef, labelActor, labelEventType, labelMethod } from '@/utils/labels'
 import { narrativeOf } from '@/utils/replay'
 
 const props = defineProps<{
@@ -13,10 +13,6 @@ const narrative = computed<string>(() => narrativeOf(props.event))
 const eventRef = computed<string>(() =>
   props.event === null ? '' : formatEventRef(props.event.seq, props.event.turn_id),
 )
-
-function formatTs(value: string): string {
-  return value.replace('T', ' ').replace('Z', ' UTC').replace(/\.\d+/, '')
-}
 </script>
 
 <template>
@@ -34,7 +30,7 @@ function formatTs(value: string): string {
         <dt>角色</dt>
         <dd>{{ labelActor(event.actor_id) }}</dd>
         <dt>时间</dt>
-        <dd>{{ formatTs(event.ts) }}</dd>
+        <dd>{{ formatDateTime(event.ts) }}</dd>
       </dl>
     </template>
     <p v-else class="muted">未选中事件（时间轴为空或尚未加载）。</p>

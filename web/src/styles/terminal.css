@@ -71,6 +71,85 @@ a {
   font-size: 0.85rem;
 }
 
+.app-nav {
+  display: flex;
+  gap: 12px;
+}
+
+.app-nav a {
+  color: var(--fg-dim);
+  text-decoration: none;
+}
+
+.app-nav a.router-link-active,
+.app-nav a:hover {
+  color: var(--accent);
+}
+
+/* M6-026 卡库：列表/详情/导入 */
+.card-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.card-list-item {
+  margin: 8px 0;
+}
+
+.card-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.card-name {
+  color: var(--accent);
+  font-size: 1.05rem;
+  text-decoration: none;
+}
+
+.card-list-meta {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.cards-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.cards-tools .field {
+  flex: 1 1 240px;
+  margin-bottom: 0;
+}
+
+.card-json-input {
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.attr-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.attr-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.pre-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .app-main {
   flex: 1;
   padding: 16px 0;

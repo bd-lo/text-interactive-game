@@ -11,11 +11,11 @@ import { defineStore } from 'pinia'
 
 import { ApiClientError, createGame, getGame, getPlayerView, submitTurn as submitTurnApi } from '@/api/client'
 import type {
+  CreateGameRequest,
   CreatedGameResponse,
   GamePlayerViewResponse,
   GameStatus,
   GameViewResponse,
-  Scenario,
 } from '@/api/types'
 import { clear as clearIdempotencyKey, getOrCreate } from '@/utils/idempotency'
 
@@ -120,12 +120,12 @@ export const useGameStore = defineStore('game', {
       this.snapshotVersion = view.snapshot_version
       this.status = view.status
     },
-    async createGame(options: { seed?: number; scenario: Scenario }): Promise<string> {
+    async createGame(options: CreateGameRequest): Promise<string> {
       this.busy = true
       this.error = ''
       this.errorCode = ''
       this.canRetry = false
-      const actionKey = `create-game:${options.seed ?? 'default'}:${options.scenario}`
+      const actionKey = `create-game:${options.card_id ?? 'none'}:${options.seed ?? 'default'}:${options.scenario ?? 'm2'}`
       try {
         const created = await createGame(options, actionKey)
         clearIdempotencyKey(actionKey)

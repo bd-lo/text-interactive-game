@@ -10,6 +10,10 @@ import { getOrCreate } from '@/utils/idempotency'
 
 import type {
   ApiErrorEnvelope,
+  CharacterCardDetailResponse,
+  CharacterCardImportResponse,
+  CharacterCardListResponse,
+  CharacterCardValidateResponse,
   CreateGameRequest,
   CreatedGameResponse,
   GamePlayerViewResponse,
@@ -235,4 +239,154 @@ export async function submitTurn(
     throw contractError('TurnResult', 'ok/version/events 类型不符')
   }
   return record as unknown as TurnResult
+}
+
+// ---------------------------------------------------------------------------
+// M6-026 人物卡库（character-cards 7 端点；generate 留 M6-028）
+// ---------------------------------------------------------------------------
+
+const CARD_KEYS = [
+  'schema_version',
+  'name',
+  'attributes',
+  'hp',
+  'starting_items',
+  'background',
+  'appearance',
+  'source',
+  'generated_by',
+] as const
+const CARD_SUMMARY_KEYS = ['card_id', 'name', 'source', 'generated_by', 'updated_at'] as const
+const CARD_LIST_KEYS = ['cards', 'total'] as const
+const CARD_DETAIL_KEYS = ['card'] as const
+const CARD_IMPORT_KEYS = ['card_id', 'card', 'warnings'] as const
+const CARD_VALIDATE_KEYS = ['valid', 'errors'] as const
+const CARD_VALIDATION_ERROR_KEYS = ['loc', 'type', 'msg'] as const
+
+/** 人物卡 9 字段精确校验（`extra="forbid"`；缺失或多字段即契约漂移）。 */
+function assertCardRecord(record: Record<string, unknown>, label: string): void {
+  assertKeys(record, label, CARD_KEYS)
+  if (typeof record.name !== 'string' || typeof record.hp !== 'number') {
+    throw contractError(label, 'name/hp 类型不符')
+  }
+}
+
+export interface CardListQuery {
+  query?: string
+  limit?: number
+  offset?: number
+}
+
+/** `GET /api/v1/character-cards`：卡库列表 `{cards, total}`（只读；limit 1..100、offset≥0）。 */
+export async function listCards(
+  query: CardListQuery = {},
+  signal?: AbortSignal,
+): Promise<CharacterCardListResponse> {
+  const params = new URLSearchParams()
+  if (query.query !== undefined && query.query !== '') {
+    params.set('query', query.query)
+  }
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit))
+  }
+  if (query.offset !== undefined) {
+    params.set('offset', String(query.offset))
+  }
+  const queryString = params.toString()
+  const suffix = queryString === '' ? '' : `?${queryString}`
+  const payload = await request<unknown>(
+    `/api/v1/character-cards${suffix}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'CharacterCardListResponse')
+  assertKeys(record, 'CharacterCardListResponse', CARD_LIST_KEYS)
+  if (!Array.isArray(record.cards) || typeof record.total !== 'number') {
+    throw contractError('CharacterCardListResponse', 'cards/total 类型不符')
+  }
+  for (const item of record.cards) {
+    const summary = assertRecord(item, 'CharacterCardListItemResponse')
+    assertKeys(summary, 'CharacterCardListItemResponse', CARD_SUMMARY_KEYS)
+  }
+  return record as unknown as CharacterCardListResponse
+}
+
+/** `GET /api/v1/character-cards/{card_id}`：卡片详情 `{card}`（未知 404 / ID 非法 422）。 */
+export async function getCard(
+  cardId: string,
+  signal?: AbortSignal,
+): Promise<CharacterCardDetailResponse> {
+  const payload = await request<unknown>(
+    `/api/v1/character-cards/${encodeURIComponent(cardId)}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'CharacterCardDetailResponse')
+  assertKeys(record, 'CharacterCardDetailResponse', CARD_DETAIL_KEYS)
+  assertCardRecord(assertRecord(record.card, 'CharacterCard'), 'CharacterCard')
+  return record as unknown as CharacterCardDetailResponse
+}
+
+/** `GET /api/v1/character-cards/schema`：JSON Schema 对象本身（不套信封；只读）。 */
+export async function getCardSchema(signal?: AbortSignal): Promise<Record<string, unknown>> {
+  const payload = await request<unknown>(
+    '/api/v1/character-cards/schema',
+    { method: 'GET' },
+    { signal },
+  )
+  return assertRecord(payload, 'CharacterCardSchema')
+}
+
+/** `POST /api/v1/character-cards/validate`：查询式校验 `{valid, errors}`（只读无副作用）。 */
+export async function validateCard(
+  payload: unknown,
+  signal?: AbortSignal,
+): Promise<CharacterCardValidateResponse> {
+  const response = await request<unknown>(
+    '/api/v1/character-cards/validate',
+    { method: 'POST', body: JSON.stringify(payload) },
+    { signal },
+  )
+  const record = assertRecord(response, 'CharacterCardValidateResponse')
+  assertKeys(record, 'CharacterCardValidateResponse', CARD_VALIDATE_KEYS)
+  if (typeof record.valid !== 'boolean' || !Array.isArray(record.errors)) {
+    throw contractError('CharacterCardValidateResponse', 'valid/errors 类型不符')
+  }
+  for (const item of record.errors) {
+    const error = assertRecord(item, 'CharacterCardValidationErrorResponse')
+    assertKeys(error, 'CharacterCardValidationErrorResponse', CARD_VALIDATION_ERROR_KEYS)
+  }
+  return record as unknown as CharacterCardValidateResponse
+}
+
+/**
+ * `POST /api/v1/character-cards/import`：multipart（file 部件，≤64KB）+ 幂等键 → 201。
+ * 不手写 `Content-Type`（浏览器/FormData 自动带 boundary；第 23 章 §23.5）。
+ */
+export async function importCard(
+  content: string,
+  actionKey: string,
+  filename = 'card.json',
+  signal?: AbortSignal,
+): Promise<CharacterCardImportResponse> {
+  const form = new FormData()
+  form.append('file', new Blob([content], { type: 'application/json' }), filename)
+  const payload = await request<unknown>(
+    '/api/v1/character-cards/import',
+    { method: 'POST', body: form },
+    { idempotent: true, actionKey, signal },
+  )
+  const record = assertRecord(payload, 'CharacterCardImportResponse')
+  assertKeys(record, 'CharacterCardImportResponse', CARD_IMPORT_KEYS)
+  assertCardRecord(assertRecord(record.card, 'CharacterCard'), 'CharacterCard')
+  if (!Array.isArray(record.warnings)) {
+    throw contractError('CharacterCardImportResponse', 'warnings 不是数组')
+  }
+  for (const item of record.warnings) {
+    const warning = assertRecord(item, 'CharacterCardWarningResponse')
+    if (typeof warning.code !== 'string' || typeof warning.message !== 'string') {
+      throw contractError('CharacterCardWarningResponse', 'code/message 类型不符')
+    }
+  }
+  return record as unknown as CharacterCardImportResponse
 }
