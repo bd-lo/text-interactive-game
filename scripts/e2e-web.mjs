@@ -11,7 +11,10 @@
  * - JSON 非法时「保存」禁用、恢复合法后可用；保存成功区 + 「查看卡片」/「按此卡开局」两个显式入口；
  * - 按此卡开局后对局 `HP/背包` 来自该卡（真实调用链，不是默认卡）；
  * - 提交 1 回合后服务端回合数 +1、页面叙事更新；卡库列表/详情/详情页按卡开局可用；
- * - 375px 视口无横向溢出；**全程无 console 错误/未捕获异常**。
+ * - 375px 视口无横向溢出；**全程无 console 错误/未捕获异常**；
+ * - 玩家可见文本无内部 ID（R3 AC-17）：生成页/保存成功区/对局页/冒险记录/卡库列表/卡详情/回放页；
+ * - S2 体验打磨：新局开场历史（P2-2）、结局通关总结与结局入冒险记录（AC-34/AC-10d）、
+ *   只读回合提示（P2-3）、来源徽章中性化（P2-6）、物品中文名（P1-8）、生产不渲染诊断面板（P2-1）。
  *
  * 依赖约定（与 00-PLAN.md §2.2 一致）：
  * - 零依赖：只用 Node 内置模块 + 全局 `fetch`/`WebSocket`（不装 Playwright/puppeteer）；
@@ -47,6 +50,25 @@ import { setTimeout as sleep } from 'node:timers/promises'
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const MOBILE_VIEWPORT = { width: 375, height: 812 }
 const BRIEF = '一个在旧矿镇长大的拾荒者，沉默但记性极好，随身带着一盏旧提灯。'
+
+/** S2 结局链：story「余烬哨站」12 条胜利脚本（与后端 replay / 玩家验收一致）。 */
+const STORY_FLOW = [
+  '向东走',
+  '对守夜人老兵说信号灯的事',
+  '拿起火把',
+  '向东走进铁匠铺',
+  '拿起铜线',
+  '拿起铜线',
+  '打造信号火把',
+  '向西走',
+  '向北走进地窖',
+  '拿起火石',
+  '向南走',
+  '向上走',
+]
+
+/** 模板兜底草稿的初始物品模板键（P1-8：UI 必须显示中文「火把」而不是内部键）。 */
+const TEMPLATE_ITEM_KEY = 'item.torch'
 
 // ---------------------------------------------------------------------------
 // 参数解析
@@ -466,6 +488,22 @@ async function currentUrl() {
   return String(await evaluate('location.href'))
 }
 
+/**
+ * 玩家可见文本不得出现内部 ID（R3 AC-17；028 遗留 P1-9 / S2 task-12）。
+ *
+ * 只看 `document.body.innerText`（玩家真正看得见的文字；`href`/折叠的 `<details>` 内容不计入）。
+ * 覆盖人物卡/对局/角色/NPC/物品/房间六类内部 ULID（Crockford base32，含 ULID 大写字母）。
+ * **S2 修复落地前该断言预期为红**，修复后必须转绿。
+ */
+const INTERNAL_ID_PATTERN = /\b(?:card|game|char|npc|item|room)_[0-9A-Za-z]{6,}\b/g
+
+async function checkNoInternalIdsVisible(label) {
+  const text = await pageText()
+  const hits = text.match(INTERNAL_ID_PATTERN) ?? []
+  check(`${label}：玩家可见文本无内部 ID`, hits.length === 0, hits.slice(0, 3).join('、'))
+  return text
+}
+
 async function waitVisible(selector, label) {
   return await waitFor(visibleExpr(selector), `${label ?? selector} 可见`)
 }
@@ -639,6 +677,88 @@ async function waitForApiTurn(gameId, expectedTurn, timeoutMs = opts.timeout) {
   throw new Error(
     `等待回合 ${expectedTurn} 超时（最后 turn=${lastView?.turn ?? '未知'}）`,
   )
+}
+
+// ---------------------------------------------------------------------------
+// S2 体验打磨验收：HTTP 预驱动 + 浏览器回合助手
+// ---------------------------------------------------------------------------
+async function postJson(path, body, label = path) {
+  const response = await fetch(`${state.baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': `e2e-s2-${crypto.randomUUID()}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000),
+  })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`POST ${label} → HTTP ${response.status}: ${truncate(text, 200)}`)
+  }
+  return text === '' ? null : JSON.parse(text)
+}
+
+/** HTTP 新建对局（不占浏览器；用于开场历史/结局场景预置）。 */
+async function createGameHttp(scenario) {
+  const payload = await postJson('/api/v1/games', { seed: 42, scenario }, `创建对局(${scenario})`)
+  return { gameId: String(payload.game_id), version: Number(payload.version) }
+}
+
+/** HTTP 顺序提交多个回合（断言每个回合 ok=True）；返回最后版本。 */
+async function playTurnsHttp(gameId, commands, label = '预驱动') {
+  const view = await getJson(`/api/v1/games/${encodeURIComponent(gameId)}/view`)
+  let version = Number(view.version)
+  for (const command of commands) {
+    const payload = await postJson(
+      '/api/v1/turns',
+      { game_id: gameId, input: command, expected_version: version },
+      `${label}回合(${command})`,
+    )
+    if (payload.ok !== true) {
+      throw new Error(`${label}回合失败：${command} → ${truncate(JSON.stringify(payload), 200)}`)
+    }
+    version = Number(payload.version)
+  }
+  return version
+}
+
+/** 浏览器打开对局页并等 /view 状态载入。 */
+async function openGamePage(gameId, label) {
+  await navigate(`/game/${encodeURIComponent(gameId)}`, label, '#command-input')
+  await waitFor(`document.querySelector('.game-meta') !== null`, `${label} 状态加载`)
+}
+
+/** 浏览器内提交一个有事件的回合，等 /view 回合数到达 expectedTurn。 */
+async function submitTurnInBrowser(input, gameId, expectedTurn) {
+  await setValue('#command-input', input, `指令 ${input}`)
+  await waitFor(
+    `document.querySelector('form.command-input button[type="submit"]')?.disabled === false`,
+    `发送按钮可用（${input}）`,
+  )
+  await click('form.command-input button[type="submit"]', `发送「${input}」`)
+  const view = await waitForApiTurn(gameId, expectedTurn)
+  await waitFor(
+    `document.body.innerText.includes(${JSON.stringify(`第 ${expectedTurn} 回合`)})`,
+    `页面回合数更新为 ${expectedTurn}`,
+  )
+  return view
+}
+
+/** 浏览器内提交只读回合（零事件、回合数不增）：以「冒险记录多一行」判定处理完成。 */
+async function submitReadonlyTurnInBrowser(input) {
+  const before = await evaluate(`document.querySelectorAll('.narrative-history li').length`)
+  await setValue('#command-input', input, `只读指令 ${input}`)
+  await waitFor(
+    `document.querySelector('form.command-input button[type="submit"]')?.disabled === false`,
+    `发送按钮可用（${input}）`,
+  )
+  await click('form.command-input button[type="submit"]', `发送「${input}」`)
+  await waitFor(
+    `document.querySelectorAll('.narrative-history li').length === ${Number(before) + 1}`,
+    `「${input}」冒险记录 +1 行`,
+  )
+  await sleep(100)
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +975,16 @@ async function runFlow() {
     check('草稿名非空', typeof draft.name === 'string' && draft.name.trim() !== '', String(draft.name))
     const preview = String(await textOf('[data-testid="draft-preview"]'))
     check('预览展示草稿名', preview.includes(draft.name), truncate(preview, 160))
+    // P1-8：草稿 9 字段「初始物品」必须显示中文名，不能暴露 item.* 模板键。
+    check(
+      '草稿预览初始物品显示中文「火把」',
+      preview.includes('火把') && !preview.includes(TEMPLATE_ITEM_KEY),
+      truncate(preview, 160),
+    )
+    // R3 AC-17：生成页正文（草稿 9 字段/提示）不得出现内部 ID 或 item.* 模板键。
+    const generatePageText = await pageText()
+    check('生成页无 item.* 模板键可见', !generatePageText.includes('item.'), '')
+    await checkNoInternalIdsVisible('生成页草稿区')
     await screenshot('03-draft-template.png')
     return `name=${draft.name}, source=${draft.source}, 9 字段`
   })
@@ -886,6 +1016,8 @@ async function runFlow() {
     check('保存成功区文案含「保存」', saveText.includes('保存'), truncate(saveText, 160))
     check('保存成功区含「查看卡片」入口', saveText.includes('查看卡片'), truncate(saveText, 160))
     check('保存成功区含「按此卡开局」入口', saveText.includes('开局'), truncate(saveText, 160))
+    // S2 起：028 遗留 P1-9「保存成功区展示内部 card_ ID」必须消失（R3 AC-17）。
+    await checkNoInternalIdsVisible('生成页保存成功区')
 
     const href = await attrOf('[data-testid="open-card"]', 'href')
     check(
@@ -930,6 +1062,13 @@ async function runFlow() {
     check('背包含草稿初始物品「火把」', inventoryNames.includes('火把'), inventoryNames.join('、'))
     const errorBanner = await optionalText('.error-banner')
     check('对局页无错误横幅', errorBanner === null || String(errorBanner).trim() === '', truncate(String(errorBanner ?? '（无）'), 120))
+    // P2-1：生产构建不得渲染「诊断信息（开发用）」面板。
+    const diagnostics = await evaluate(`document.querySelector('.diagnostics') === null`)
+    check('生产构建不渲染诊断面板（P2-1）', diagnostics, '')
+    const gamePageText = await pageText()
+    check('对局页无「诊断信息（开发用）」文本', !gamePageText.includes('诊断信息'), '')
+    // S2 起：P2-1「诊断信息（开发用）」在生产构建不渲染，对局页不应再有可见内部 ID。
+    await checkNoInternalIdsVisible('对局页')
     state.initialTurn = view.turn
     await screenshot('05-game-start.png')
     return `game_id=${state.gameId}, turn=${view.turn}, max_hp=${view.max_hp}`
@@ -964,6 +1103,8 @@ async function runFlow() {
     )
     const errorBanner = await optionalText('.error-banner')
     check('回合后无错误横幅', errorBanner === null || String(errorBanner).trim() === '', truncate(String(errorBanner ?? '（无）'), 120))
+    // R3 AC-17：冒险记录（叙事文本）不得出现内部 ID。
+    await checkNoInternalIdsVisible('对局页（回合后冒险记录）')
     await screenshot('06-game-turn.png')
     return `turn=${view.turn}, 文本长度 ${beforeText.length}→${afterText.length}`
   })
@@ -982,6 +1123,8 @@ async function runFlow() {
     const libraryText = await pageText()
     check('卡库列表含新卡名称', libraryText.includes(state.draft.name), `name=${state.draft.name}`)
     check('卡库列表显示卡片总数', /共\s*\d+\s*张/.test(libraryText), '')
+    // task-12：卡库列表不得再展示内部 card_ ID（R3 AC-17）。
+    await checkNoInternalIdsVisible('卡库列表')
     const href = await hrefOfLinkContaining(`/cards/${state.cardId}`)
     check('卡库含该卡详情链接', href === `/cards/${state.cardId}`, String(href))
     await screenshot('08-card-library.png')
@@ -994,6 +1137,14 @@ async function runFlow() {
     for (const label of ['名称', 'HP', '属性', '背景', '来源']) {
       check(`详情页展示「${label}」字段`, detailText.includes(label), '')
     }
+    // P1-8：卡详情的初始物品同样要中文（与生成页草稿预览口径一致）。
+    check(
+      '卡详情初始物品显示中文「火把」',
+      detailText.includes('火把') && !detailText.includes(TEMPLATE_ITEM_KEY),
+      truncate(detailText, 160),
+    )
+    // task-12：卡详情标题/404 文案/提示均不得含内部 card_ ID（R3 AC-17）。
+    await checkNoInternalIdsVisible('人物卡详情')
     await screenshot('09-card-detail.png')
 
     await clickButtonByText('.card-detail-view button', '开始游戏', '详情页开始游戏')
@@ -1012,6 +1163,150 @@ async function runFlow() {
     await screenshot('10-game-from-detail.png')
     return `detail→game_id=${state.gameFromDetailId}, hp=${view.hp}/${view.max_hp}`
   })
+
+  await step(
+    's2.opening-history',
+    'P2-2 新局开场历史：空记录第 1 条「开场」，首回合后不重复',
+    async () => {
+      const created = await createGameHttp('story')
+      state.openingGameId = created.gameId
+      const view = await getJson(`/api/v1/games/${encodeURIComponent(created.gameId)}/view`)
+      const description = String(view.room?.description ?? '')
+      const goalTitle = String(view.goal?.title ?? '')
+      check('HTTP 新局 room.description 非空', description.length > 0, '')
+      check('HTTP 新局 goal 非空', goalTitle.length > 0, '')
+      await openGamePage(created.gameId, '新局对局页（开场历史）')
+      await waitVisible('.history-opening', '开场历史行')
+      const openingCount = await evaluate(`document.querySelectorAll('.history-opening').length`)
+      check('空局冒险记录恰有 1 条「开场」', openingCount === 1, String(openingCount))
+      const openingText = String(await textOf('.history-opening'))
+      check('开场行标签为「开场」', openingText.includes('开场'), truncate(openingText, 120))
+      check(
+        '开场正文含房间描述',
+        openingText.includes(description.slice(0, 12)),
+        truncate(openingText, 160),
+      )
+      check(
+        '开场正文含目标引导',
+        openingText.includes(`目标：${goalTitle}`),
+        truncate(openingText, 160),
+      )
+      await screenshot('12-opening-history-1280.png')
+      await checkNoInternalIdsVisible('对局页（开场历史）')
+      await submitTurnInBrowser('向东走', created.gameId, 2)
+      const openingAfter = await evaluate(`document.querySelectorAll('.history-opening').length`)
+      check('首回合后「开场」行不再出现（不重复）', openingAfter === 0, String(openingAfter))
+      return `opening len=${description.length}, goal=${goalTitle}`
+    },
+  )
+
+  await step('s2.readonly-hint', 'P2-3 只读回合提示（对局页 + 回放页）', async () => {
+    const hint = String(await textOf('.history-readonly-hint'))
+    check('对局页只读提示存在', hint.includes('只读') && hint.includes('冒险记录'), truncate(hint, 120))
+    const gameId = state.openingGameId
+    await navigate(`/game/${encodeURIComponent(gameId)}/replay`, '回放页', '.replay-view')
+    await waitFor(`document.querySelectorAll('.replay-note').length >= 2`, '回放页只读提示')
+    const replayText = await pageText()
+    check(
+      '回放页提示含「不会写入冒险记录」',
+      replayText.includes('不会写入冒险记录'),
+      truncate(replayText, 160),
+    )
+    check(
+      '回放页提示含「不会出现在回放里」',
+      replayText.includes('不会出现在回放里'),
+      truncate(replayText, 160),
+    )
+    // task-12：回放页（标题/事件面板角色行）不得出现内部 game_/npc_/char_ 等 ID。
+    await checkNoInternalIdsVisible('回放页')
+    await screenshot('13-replay-readonly-hint-1280.png')
+    const replayNote = String(await textOf('.replay-note')).trim()
+    return truncate(replayNote, 120)
+  })
+
+  await step(
+    's2.badge.no-event',
+    'P2-6 来源徽章：无事件回合显示中性「来源未知」，事件回合恢复「离线模板」',
+    async () => {
+      const created = await createGameHttp('m2')
+      state.badgeGameId = created.gameId
+      await openGamePage(created.gameId, 'm2 对局页（来源徽章）')
+      await waitVisible('.source-badge', '来源徽章')
+      const initialBadge = String(await textOf('.source-badge')).trim()
+      check('新局空来源徽章为中性「来源未知」', initialBadge === '来源未知', initialBadge)
+      await submitReadonlyTurnInBrowser('环顾四周')
+      const afterLookBadge = String(await textOf('.source-badge')).trim()
+      check('只读回合（零事件）不误标「离线模板」', afterLookBadge === '来源未知', afterLookBadge)
+      await screenshot('14-badge-no-event-1280.png')
+      const view = await getJson(`/api/v1/games/${encodeURIComponent(created.gameId)}/view`)
+      await submitTurnInBrowser('向北走', created.gameId, Number(view.turn) + 1)
+      const afterMoveBadge = String(await textOf('.source-badge')).trim()
+      check('有事件回合恢复「离线模板」徽章', afterMoveBadge === '离线模板', afterMoveBadge)
+      return `空→${initialBadge}；look→${afterLookBadge}；move→${afterMoveBadge}`
+    },
+  )
+
+  await step(
+    's2.ending.summary',
+    'AC-34/AC-10d 结局：通关总结 + 结局进冒险记录（HTTP 预驱动 12 回合）',
+    async () => {
+      const created = await createGameHttp('story')
+      await playTurnsHttp(created.gameId, STORY_FLOW, '结局链')
+      const view = await getJson(`/api/v1/games/${encodeURIComponent(created.gameId)}/view`)
+      check('预驱动 12 回合后状态 ended', view.status === 'ended', String(view.status))
+      check(
+        'ending_text 非空',
+        typeof view.ending_text === 'string' && view.ending_text.length > 0,
+        truncate(String(view.ending_text ?? ''), 80),
+      )
+      const objectives = view.goal?.objectives ?? []
+      check(
+        '目标 3/3 全部完成',
+        objectives.length > 0 && objectives.every((item) => item.done === true),
+        JSON.stringify(objectives.map((item) => item.done)),
+      )
+      state.endingGameId = created.gameId
+      await openGamePage(created.gameId, '结局对局页')
+      await waitVisible('.ending-summary', '结局通关总结')
+      const summary = String(await textOf('.ending-summary')).trim()
+      const doneCount = objectives.filter((item) => item.done).length
+      check(`通关总结含「本局 ${view.turn} 回合」`, summary.includes(`本局 ${view.turn} 回合`), summary)
+      check(
+        `通关总结含「目标 ${doneCount}/${objectives.length}」`,
+        summary.includes(`目标 ${doneCount}/${objectives.length}`),
+        summary,
+      )
+      check(
+        `通关总结含「生命值 ${view.hp}/${view.max_hp}」`,
+        summary.includes(`生命值 ${view.hp}/${view.max_hp}`),
+        summary,
+      )
+      const endingRowCount = await evaluate(`document.querySelectorAll('.history-ending').length`)
+      check('冒险记录恰有 1 条「结局」行（不重复渲染）', endingRowCount === 1, String(endingRowCount))
+      const endingRowText = String(await textOf('.history-ending'))
+      const endingSnippet = String(view.ending_text).slice(0, 12)
+      check(
+        '结局行进冒险记录且含结局正文',
+        endingRowText.includes(endingSnippet),
+        truncate(endingRowText, 160),
+      )
+      check('结局行标签为「结局」', endingRowText.includes('结局'), truncate(endingRowText, 80))
+      const historyEndingOccurrences = await evaluate(`(() => {
+        const history = document.querySelector('.narrative-history');
+        if (history === null) return 0;
+        return history.innerText.split(${JSON.stringify(endingSnippet)}).length - 1;
+      })()`)
+      check('结局正文在冒险记录中只出现 1 次', historyEndingOccurrences === 1, String(historyEndingOccurrences))
+      check('结局页无诊断面板', (await evaluate(`document.querySelector('.diagnostics') === null`)) === true, '')
+      await checkNoInternalIdsVisible('结局页')
+      await screenshot('15-ending-1280.png')
+      await setViewport(MOBILE_VIEWPORT.width, MOBILE_VIEWPORT.height, true)
+      const metrics = await checkNoHorizontalOverflow('结局页 375px')
+      await screenshot('16-ending-375.png')
+      await clearViewport()
+      return `summary=${summary}；${JSON.stringify(metrics)}`
+    },
+  )
 
   await step('generate.rate-limit', '限流提示：超过 5 次/分钟显示可读中文「请 N 秒后重试」', async () => {
     // 限流按「IP（+可选 session）」进程内滑窗；同一 uvicorn 进程内继续生成即可触发。

@@ -28,10 +28,27 @@ describe('CardFields（详情页 9 字段只读渲染）', () => {
     expect(wrapper.text()).toContain('schema 版本')
     expect(wrapper.text()).toContain('1.0')
     expect(wrapper.text()).toContain('上传') // source: upload
-    expect(wrapper.text()).toContain('item.torch、item.potion')
+    expect(wrapper.text()).toContain('火把、治疗药水') // P1：模板键 item.torch/item.potion 中文化
     expect(wrapper.text()).toContain('力量 12')
     expect(wrapper.text()).toContain('生命上限 30')
     expect(wrapper.text()).toContain('在旧矿镇长大的拾荒者。')
+  })
+
+  it('P1 初始物品：模板键中文化（item. 与 item_ 写法等价），未知键回退原值', () => {
+    const wrapper = mount(CardFields, {
+      props: {
+        card: makeCard({
+          starting_items: ['item.torch', 'item_rusty_knife', 'item.custom_future'],
+        }),
+      },
+    })
+
+    expect(wrapper.text()).toContain('火把、锈刀、item.custom_future')
+    expect(wrapper.text()).not.toContain('item.torch')
+    expect(wrapper.text()).not.toContain('item_rusty_knife')
+
+    const empty = mount(CardFields, { props: { card: makeCard({ starting_items: [] }) } })
+    expect(empty.text()).toContain('（无）')
   })
 
   it('可空字段与生成者回退「（无）」', () => {

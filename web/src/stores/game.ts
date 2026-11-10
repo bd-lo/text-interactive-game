@@ -88,7 +88,7 @@ interface GameState {
   historyLoading: boolean
   /** 历史加载失败提示（非致命：不影响继续游戏）。 */
   historyError: string
-  /** 叙事来源徽章：`llm` / `template` / 空（空按「离线模板」展示）。 */
+  /** 叙事来源徽章：`llm` / `template` / 空（空 = 来源未知，如仅做过看/背包等无事件回合，前端显示中性文案）。 */
   narrativeSource: NarrativeSource
   /** 失败回合的结构化提示（`effects[].hint`）与建议动作；只读展示，不改 text。 */
   lastEffects: Array<Record<string, unknown>>

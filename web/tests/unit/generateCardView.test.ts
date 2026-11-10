@@ -210,6 +210,10 @@ describe('GenerateCardView（M6-028 生成人物卡页面）', () => {
     const result = wrapper.find('[data-testid=save-result]')
     expect(result.exists()).toBe(true)
     expect(result.text()).toContain('已保存到卡库')
+    // P1-9：玩家可见文本不露内部 card_ ID（ID 只存在于链接 href/状态，不进入主文案）
+    expect(result.text()).not.toContain(SAVED.card_id)
+    expect(wrapper.text()).not.toContain('人物卡 ID')
+    expect(wrapper.text()).not.toMatch(/card_[0-9A-Z]{8,}/)
     expect(wrapper.find('[data-testid=open-card]').attributes('href')).toBe(
       `/cards/${SAVED.card_id}`,
     )

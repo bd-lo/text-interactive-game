@@ -71,7 +71,8 @@ export function describeCardError(error: unknown): CardErrorInfo {
       return { message: `人物卡不合法（422）：${error.message}`, code: error.code, status: 422 }
     }
     if (error.status === 404) {
-      return { message: `人物卡不存在（404）：${error.message}`, code: error.code, status: 404 }
+      // 玩家可见文案不露内部 card_id（R2 AC-23：服务端 message 可能带 ID，这里只给可读原因）
+      return { message: '人物卡不存在（404）：可能已被删除，或者链接有误。', code: error.code, status: 404 }
     }
     return { message: `${error.code}（${error.status}）：${error.message}`, code: error.code, status: error.status }
   }

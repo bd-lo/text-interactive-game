@@ -6,7 +6,7 @@
  * **未知值一律回退原值**（便于发现新增枚举，而不是静默吞掉）。
  */
 
-import type { AttributeKey, CardSource } from '@/api/types'
+import type { AttributeKey, CardSource, Goal } from '@/api/types'
 
 /** 人物卡属性键 → 中文（第 5 章 §5.7，恰好 7 键）。 */
 export const ATTRIBUTE_LABELS: Record<AttributeKey, string> = {
@@ -28,6 +28,67 @@ export function labelCardSource(source: CardSource): string {
     return 'LLM 生成'
   }
   return '手动'
+}
+
+/**
+ * 内置物品模板键 → 中文名（与后端 `domain/character_card.py` 的 `ITEM_TEMPLATES` 同步）。
+ *
+ * 人物卡 `starting_items` 契约存的是**模板键**（如 `item.torch`）；直接展示会向玩家暴露内部键，
+ * 因此卡库详情/生成草稿预览统一走本映射（未知模板键回退原值，兼容自定义上传卡）。
+ */
+const ITEM_TEMPLATE_LABELS: Record<string, string> = {
+  'item.torch': '火把',
+  'item.potion': '治疗药水',
+  'item.sword': '锈剑',
+  'item.relic': '古物',
+  'item.rusty_sword': '锈剑',
+  'item.rusty_knife': '锈刀',
+  'item.chalk': '粉笔',
+  'item.oak_cane': '橡木手杖',
+  'item.iron_ingot': '铁锭',
+  'item.oak_handle': '橡木柄',
+  'item.forge_hammer': '锻锤',
+  'item.copper_wire': '铜线',
+}
+
+/** 物品模板键 → 中文名；`item_<name>` 写法与 `item.<name>` 等价，未知回退原键。 */
+export function labelItemTemplate(templateId: string): string {
+  const direct = ITEM_TEMPLATE_LABELS[templateId]
+  if (direct !== undefined) {
+    return direct
+  }
+  if (templateId.startsWith('item_')) {
+    return ITEM_TEMPLATE_LABELS[`item.${templateId.slice('item_'.length)}`] ?? templateId
+  }
+  return templateId
+}
+
+/** 初始物品列表 → 中文名列表（不改变数量/顺序）。 */
+export function labelItemTemplates(templateIds: readonly string[]): string[] {
+  return templateIds.map((templateId) => labelItemTemplate(templateId))
+}
+
+/** 结局屏通关总结的数据源（全部来自 `GET /view`，不新增后端字段）。 */
+export interface EndingSummaryInput {
+  turn: number
+  hp: number
+  maxHp: number
+  goal: Goal | null
+}
+
+/**
+ * 结局屏通关总结：「本局 N 回合 · 目标 X/Y · 生命值 HP/MAX」（AC-34）。
+ * 非剧情场景无 goal 时省略目标段（不伪造 0/0）。
+ */
+export function formatEndingSummary(input: EndingSummaryInput): string {
+  const parts = [`本局 ${input.turn} 回合`]
+  const goal = input.goal
+  if (goal !== null) {
+    const done = goal.objectives.filter((objective) => objective.done).length
+    parts.push(`目标 ${done}/${goal.objectives.length}`)
+  }
+  parts.push(`生命值 ${input.hp}/${input.maxHp}`)
+  return parts.join(' · ')
 }
 
 /** ISO 时间串 → 可读展示（`2026-11-10 13:00:00 UTC`）。 */
@@ -83,9 +144,16 @@ export function labelMethod(value: string): string {
   return METHOD_LABELS[value] ?? value
 }
 
-/** 角色 ID 中文标签；未知回退原值。 */
+/** 内部实体 ID 形式（`char_/npc_/item_/room_/game_` + Crockford Base32 ULID）；绝不直接展示给玩家。 */
+const INTERNAL_ENTITY_ID = /^(?:char|npc|item|room|game)_[0-9A-HJKMNP-TV-Z]{6,}$/
+
+/** 角色 ID 中文标签；未知**内部 ULID** 统一显示「其他角色」（不把内部 ID 甩给玩家），其余未知回退原值。 */
 export function labelActor(actorId: string): string {
-  return ACTOR_LABELS[actorId] ?? actorId
+  const known = ACTOR_LABELS[actorId]
+  if (known !== undefined) {
+    return known
+  }
+  return INTERNAL_ENTITY_ID.test(actorId) ? '其他角色' : actorId
 }
 
 /** 对局状态中文标签（服务端 `status`）。 */

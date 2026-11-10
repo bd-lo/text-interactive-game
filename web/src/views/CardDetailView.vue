@@ -52,7 +52,7 @@ watch(cardId, () => {
 <template>
   <section class="card-detail-view">
     <header class="game-head">
-      <h2>人物卡详情 <code>{{ cardId }}</code></h2>
+      <h2>人物卡详情</h2>
       <p class="game-meta">用这张人物卡开始一局新的冒险</p>
     </header>
 
@@ -67,7 +67,7 @@ watch(cardId, () => {
 
     <p v-if="cards.detailLoading" class="muted" role="status">正在加载人物卡…</p>
     <p v-else-if="card === null && cards.detailError === ''" class="muted" role="status">
-      未找到人物卡（ID：{{ cardId }}）。
+      未找到这张人物卡，可能已被删除，或者链接有误。
     </p>
     <CardFields v-else-if="card !== null" :card="card" />
 

@@ -36,6 +36,36 @@ describe('NarrativeHistory（冒险记录日志）', () => {
     expect(empty.find('.narrative-history').exists()).toBe(false)
   })
 
+  it('P2-2/AC-10d 开场与结局行：独立标签/样式，正文照常渲染', () => {
+    const wrapper = mount(NarrativeHistory, {
+      props: {
+        entries: [
+          { id: 'opening', kind: 'opening', text: '墙上的信标还暗着。\n\n目标：余烬哨站（进度 1/2）', turnId: null },
+          { id: 'turn:2', kind: 'narrative', text: '你捡起了火把。', turnId: 2 },
+          { id: 'ending', kind: 'ending', text: '信标在风里亮起。', turnId: null },
+        ],
+      },
+    })
+
+    const items = wrapper.findAll('li')
+    expect(items).toHaveLength(3)
+    expect(items[0]?.classes()).toContain('history-opening')
+    expect(items[0]?.text()).toContain('开场')
+    expect(items[0]?.text()).toContain('墙上的信标还暗着。')
+    expect(items[0]?.text()).toContain('目标：余烬哨站（进度 1/2）')
+    expect(items[1]?.text()).toContain('第 2 回合')
+    expect(items[2]?.classes()).toContain('history-ending')
+    expect(items[2]?.text()).toContain('结局')
+    expect(items[2]?.text()).toContain('信标在风里亮起。')
+  })
+
+  it('P2-3 只读提示：冒险记录页常驻一行「查看/背包等只读指令不会写入冒险记录」', () => {
+    const wrapper = mount(NarrativeHistory, { props: { entries: entries() } })
+    expect(wrapper.find('.history-readonly-hint').text()).toContain(
+      '查看/背包等只读指令不会写入冒险记录',
+    )
+  })
+
   it('追加记录后滚动到最新一屏', async () => {
     const wrapper = mount(NarrativeHistory, { props: { entries: entries() } })
     const scroller = wrapper.find('.narrative-history').element as HTMLElement

@@ -661,6 +661,28 @@ a {
   overflow-wrap: anywhere;
 }
 
+/* AC-34 结局屏通关总结（本局回合/目标/生命值） */
+.ending-summary {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+/* AC-10d 结局行 / P2-2 开场行：与普通回合行区分 */
+.history-ending-text {
+  color: var(--accent);
+}
+
+.history-opening .history-text {
+  color: var(--fg-dim);
+}
+
+/* P2-3 只读指令提示：一行轻提示，不抢叙事 */
+.history-readonly-hint {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+}
+
 /* —— 诊断折叠区（开发信息默认收起） —— */
 .diagnostics {
   color: var(--fg-dim);

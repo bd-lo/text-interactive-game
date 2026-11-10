@@ -51,7 +51,7 @@ watch(gameId, () => {
 <template>
   <section class="replay-view">
     <header class="game-head">
-      <h2>回放 <code>{{ gameId }}</code></h2>
+      <h2>回放</h2>
       <p class="game-meta">
         逐条重看这一局的经历 · 共 {{ store.loadedCount }} 条记录
         <template v-if="store.hasMore"> · 还有更早的记录</template>
@@ -87,5 +87,6 @@ watch(gameId, () => {
     <p class="muted replay-note">
       回放只是重看，不会改变对局。用下方的进度条或按钮前后翻看每一次行动。
     </p>
+    <p class="muted replay-note">查看/背包等只读指令不会写入冒险记录，也不会出现在回放里。</p>
   </section>
 </template>

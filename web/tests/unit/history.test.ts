@@ -1,13 +1,50 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ReplayEvent } from '@/api/types'
+import type { GamePlayerViewResponse, ReplayEvent } from '@/api/types'
 import {
   appendNarrative,
   appendNotice,
+  displayHistory,
+  ENDING_ENTRY_ID,
   historyFromReplay,
   mergeReplayHistory,
   narrativeOfEvent,
+  OPENING_ENTRY_ID,
+  openingTextOf,
+  withEnding,
+  withOpening,
 } from '@/utils/history'
+
+function makeView(overrides: Partial<GamePlayerViewResponse> = {}): GamePlayerViewResponse {
+  return {
+    game_id: 'g1',
+    turn: 1,
+    version: 1,
+    snapshot_version: 1,
+    status: 'active',
+    hp: 18,
+    max_hp: 20,
+    inventory: [],
+    room: {
+      room_id: 'room_entry',
+      title: '哨站地窖',
+      description: '墙上的信标还暗着。',
+      exits: {},
+      items: [],
+      npcs: [],
+    },
+    goal: {
+      title: '余烬哨站',
+      description: '找到失踪的哨兵并点亮信标。',
+      objectives: [
+        { id: 'o1', text: '进入哨站', done: true },
+        { id: 'o2', text: '找到老哨兵', done: false },
+      ],
+    },
+    ending_text: null,
+    ...overrides,
+  }
+}
 
 function event(overrides: Partial<ReplayEvent> & { seq: number; turn_id: number }): ReplayEvent {
   const base: ReplayEvent = {
@@ -84,5 +121,54 @@ describe('冒险记录纯函数（replay → 回合日志）', () => {
     expect(merged.map((entry) => entry.kind)).toEqual(['narrative', 'notice'])
     expect(merged[0]?.text).toBe('重建的叙事')
     expect(merged[1]?.text).toBe('（网络异常，指令状态未知）')
+  })
+
+  it('P2-2 withOpening：空历史插入「开场」= 房间描述 + 目标引导；有历史不插入', () => {
+    const view = makeView()
+    const opened = withOpening([], view)
+
+    expect(opened).toHaveLength(1)
+    expect(opened[0]).toMatchObject({ id: OPENING_ENTRY_ID, kind: 'opening', turnId: null })
+    expect(opened[0]?.text).toContain('墙上的信标还暗着。')
+    expect(opened[0]?.text).toContain('目标：余烬哨站（进度 1/2）')
+
+    const existing = [{ id: 'turn:2', kind: 'narrative' as const, text: '已有一回合', turnId: 2 }]
+    expect(withOpening(existing, view)).toEqual(existing)
+    expect(withOpening([], null)).toEqual([])
+
+    // 无房间描述不伪造开场；无 goal 时只显示描述
+    expect(withOpening([], makeView({ room: { ...view.room, description: '   ' } }))).toEqual([])
+    expect(openingTextOf(makeView({ goal: null }))).toBe('墙上的信标还暗着。')
+  })
+
+  it('AC-10d withEnding：ended 才追加固定 id「结局」行，重复派生幂等', () => {
+    const base = [{ id: 'turn:2', kind: 'narrative' as const, text: '你点亮了信标。', turnId: 2 }]
+    const ended = withEnding(base, { status: 'ended', endingText: ' 信标在风里亮起。 ' })
+
+    expect(ended).toHaveLength(2)
+    expect(ended[1]).toMatchObject({ id: ENDING_ENTRY_ID, kind: 'ending', turnId: null })
+    expect(ended[1]?.text).toBe('信标在风里亮起。')
+    // 重复计算不重复追加
+    expect(withEnding(ended, { status: 'ended', endingText: '信标在风里亮起。' })).toEqual(ended)
+    // 未结束 / 空结局文本：不改日志
+    expect(withEnding(base, { status: 'active', endingText: '信标在风里亮起。' })).toEqual(base)
+    expect(withEnding(base, { status: 'ended', endingText: '   ' })).toEqual(base)
+  })
+
+  it('displayHistory：开场在前、结局在后、重复计算幂等', () => {
+    const endedView = makeView({ status: 'ended', ending_text: '信标在风里亮起。' })
+    const first = displayHistory([], {
+      view: endedView,
+      status: 'ended',
+      endingText: endedView.ending_text,
+    })
+
+    expect(first.map((entry) => entry.kind)).toEqual(['opening', 'ending'])
+    const second = displayHistory(first, {
+      view: endedView,
+      status: 'ended',
+      endingText: endedView.ending_text,
+    })
+    expect(second).toEqual(first)
   })
 })

@@ -11,7 +11,9 @@ import StatusPanel from '@/components/StatusPanel.vue'
 import TurnFeedback from '@/components/TurnFeedback.vue'
 import TurnTextStream from '@/components/TurnTextStream.vue'
 import { useGameStore } from '@/stores/game'
-import { labelGameStatus, labelScenario } from '@/utils/labels'
+import { IS_DEV } from '@/utils/env'
+import { displayHistory } from '@/utils/history'
+import { formatEndingSummary, labelGameStatus, labelScenario } from '@/utils/labels'
 import { isAppAction, suggestActions } from '@/utils/suggestions'
 
 const route = useRoute()
@@ -26,8 +28,39 @@ const retryLabel = computed<string>(() => (store.errorCode === 'CONFLICT' ? '重
 const roomTitle = computed<string>(() => store.view?.room.title ?? '冒险')
 const goal = computed(() => store.view?.goal ?? null)
 const endingText = computed<string>(() => store.view?.ending_text ?? '')
-const sourceLabel = computed<string>(() =>
-  store.narrativeSource === 'llm' ? 'LLM 叙事' : '离线模板',
+/** R3 来源徽章修正：空来源（如仅做过看/背包等无事件回合）不再误标「离线模板」，显示中性文案。 */
+const sourceLabel = computed<string>(() => {
+  if (store.narrativeSource === 'llm') {
+    return 'LLM 叙事'
+  }
+  if (store.narrativeSource === 'template') {
+    return '离线模板'
+  }
+  return '来源未知'
+})
+/** AC-34 结局屏通关总结：「本局 N 回合 · 目标 X/Y · 生命值 HP/MAX」（数据源 /view）。 */
+const endingSummary = computed<string>(() => {
+  const view = store.view
+  if (view === null) {
+    return ''
+  }
+  return formatEndingSummary({
+    turn: view.turn,
+    hp: view.hp,
+    maxHp: view.max_hp,
+    goal: goal.value,
+  })
+})
+/**
+ * R3 冒险记录展示序列：空局插「开场」/ ended 追加「结局」；纯派生、重复计算幂等，
+ * 不改 store（刷新重建 replay 后依然成立）。
+ */
+const historyEntries = computed(() =>
+  displayHistory(store.history, {
+    view: store.view,
+    status: store.status,
+    endingText: store.view?.ending_text,
+  }),
 )
 
 /** 服务端建议里混有「刷新对局视图」这类应用动作，不能当游戏指令提交。 */
@@ -137,6 +170,7 @@ watch(gameId, () => {
 
     <section v-if="ended" class="panel ending-panel" aria-live="polite">
       <h3 class="panel-title">故事结束</h3>
+      <p v-if="endingSummary !== ''" class="ending-summary">{{ endingSummary }}</p>
       <p class="ending-text">{{ endingText === '' ? '这一局已经走到结局。' : endingText }}</p>
       <RouterLink class="btn btn-small" :to="{ name: 'home' }">开始新的冒险</RouterLink>
     </section>
@@ -172,7 +206,7 @@ watch(gameId, () => {
           <ActionChips :actions="suggestionActions" @command="onCommand" />
         </section>
 
-        <NarrativeHistory :entries="store.history" :loading="store.historyLoading" />
+        <NarrativeHistory :entries="historyEntries" :loading="store.historyLoading" />
         <p v-if="store.historyError !== ''" class="muted" role="status">{{ store.historyError }}</p>
 
         <TurnFeedback
@@ -204,7 +238,7 @@ watch(gameId, () => {
       </div>
     </div>
 
-    <details class="panel diagnostics">
+    <details v-if="IS_DEV" class="panel diagnostics">
       <summary>诊断信息（开发用）</summary>
       <dl class="status-grid">
         <dt>对局 ID</dt>

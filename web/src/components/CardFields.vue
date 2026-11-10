@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 import type { CharacterCard } from '@/api/types'
-import { ATTRIBUTE_LABELS, labelCardSource } from '@/utils/labels'
+import { ATTRIBUTE_LABELS, labelCardSource, labelItemTemplates } from '@/utils/labels'
 
 const props = defineProps<{
   card: CharacterCard
@@ -15,6 +15,9 @@ const attributeEntries = computed<Array<{ key: string; label: string; value: num
     value,
   })),
 )
+
+/** 初始物品：模板键（如 `item.torch`）→ 中文名展示，不向玩家暴露内部键。 */
+const startingItemLabels = computed<string[]>(() => labelItemTemplates(props.card.starting_items))
 </script>
 
 <template>
@@ -33,7 +36,7 @@ const attributeEntries = computed<Array<{ key: string; label: string; value: num
       <dt>生成者</dt>
       <dd>{{ card.generated_by === null || card.generated_by === '' ? '（无）' : card.generated_by }}</dd>
       <dt>初始物品</dt>
-      <dd>{{ card.starting_items.length === 0 ? '（无）' : card.starting_items.join('、') }}</dd>
+      <dd>{{ startingItemLabels.length === 0 ? '（无）' : startingItemLabels.join('、') }}</dd>
       <dt>属性</dt>
       <dd class="attr-list">
         <span v-for="entry in attributeEntries" :key="entry.key" class="attr-chip">

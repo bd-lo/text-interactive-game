@@ -97,11 +97,25 @@ describe('GameView（玩家视角：目标/建议/结局/诊断折叠）', () =>
     expect(text).toContain('余烬哨站')
     expect(text).toContain('找到老哨兵')
     expect(text).toContain('进度 1 / 2')
-    expect(text).toContain('离线模板') // narrativeSource 为空时按离线模板展示（2B 契约）
+    expect(text).toContain('来源未知') // 空 narrativeSource = 来源未知（R2 §5-4 修正，不误标离线模板）
+    // AC-23 扩展：对局页/冒险记录可见文本不出现内部实体 ID（ULID）
+    expect(text).not.toMatch(/(?:char|npc|item|room|game)_[0-9A-Z]{6,}/)
     const chips = wrapper.findAll('button.chip').map((chip) => chip.text())
     expect(chips).toContain('向北走')
     expect(chips).toContain('拿起古物')
     expect(chips).toContain('对老哨兵问好')
+  })
+
+  it('R2 §5-4 来源徽章：template→离线模板、llm→LLM 叙事、空（看/背包无事件回合）→来源未知', async () => {
+    const template = await mountGame({ narrativeSource: 'template' })
+    expect(template.wrapper.find('.source-badge').text()).toBe('离线模板')
+
+    const llm = await mountGame({ narrativeSource: 'llm' })
+    expect(llm.wrapper.find('.source-badge').text()).toBe('LLM 叙事')
+
+    const unknown = await mountGame({ narrativeSource: '' })
+    expect(unknown.wrapper.find('.source-badge').text()).toBe('来源未知')
+    expect(unknown.wrapper.find('.source-badge').text()).not.toContain('离线模板')
   })
 
   it('开发信息默认折叠在「诊断信息」里，不打扰玩家', async () => {
@@ -113,7 +127,7 @@ describe('GameView（玩家视角：目标/建议/结局/诊断折叠）', () =>
     expect(diagnostics.text()).toContain('version')
   })
 
-  it('结局：显示结局横幅并禁止继续输入', async () => {
+  it('结局：结局横幅 + AC-34 通关总结 + 禁止继续输入', async () => {
     const endedView: GamePlayerViewResponse = {
       ...VIEW,
       status: 'ended',
@@ -123,8 +137,45 @@ describe('GameView（玩家视角：目标/建议/结局/诊断折叠）', () =>
 
     expect(wrapper.text()).toContain('故事结束')
     expect(wrapper.text()).toContain('信标在风里亮起')
+    // AC-34：本局回合数 / 目标进度 / 生命值（全部来自 /view）
+    expect(wrapper.find('.ending-summary').text()).toContain('本局 3 回合')
+    expect(wrapper.find('.ending-summary').text()).toContain('目标 1/2')
+    expect(wrapper.find('.ending-summary').text()).toContain('生命值 18/20')
     expect(wrapper.find('textarea').attributes('readonly')).toBeDefined()
     expect(wrapper.text()).toContain('开始新的冒险')
+  })
+
+  it('AC-10d 终局叙事：冒险记录追加一条「结局」行，重复渲染不重复', async () => {
+    const endingText = '信标在风里亮起，余烬哨站重新有了光。'
+    const endedView: GamePlayerViewResponse = { ...VIEW, status: 'ended', ending_text: endingText }
+    const history = [{ id: 'turn:2', kind: 'narrative' as const, text: '你点亮了信标。', turnId: 2 }]
+    const { wrapper } = await mountGame({ status: 'ended', history }, { view: endedView })
+
+    const endingRows = wrapper.findAll('.history-ending')
+    expect(endingRows).toHaveLength(1)
+    expect(endingRows[0]?.text()).toContain('结局')
+    expect(endingRows[0]?.text()).toContain(endingText)
+    // 普通回合行仍在，结局只出现一次
+    expect(wrapper.findAll('.history-entry').length).toBe(1)
+    expect(wrapper.text().split(endingText).length - 1).toBe(2) // 结局屏正文 + 冒险记录各一次
+  })
+
+  it('P2-2 开场历史：新局空记录时插入「开场」+ 房间描述 + 目标引导，有记录后不再插入', async () => {
+    const { wrapper } = await mountGame({ history: [] })
+
+    const opening = wrapper.find('.history-opening')
+    expect(opening.exists()).toBe(true)
+    expect(opening.text()).toContain('开场')
+    expect(opening.text()).toContain('墙上的信标还暗着。')
+    expect(opening.text()).toContain('目标：余烬哨站（进度 1/2）')
+    expect(wrapper.findAll('.narrative-history li')).toHaveLength(1)
+
+    const firstTurn = [
+      { id: 'turn:2', kind: 'narrative' as const, text: '你捡起了火把。', turnId: 2 },
+    ]
+    const { wrapper: afterTurn } = await mountGame({ history: firstTurn })
+    expect(afterTurn.find('.history-opening').exists()).toBe(false)
+    expect(afterTurn.findAll('.narrative-history li')).toHaveLength(1)
   })
 
   it('新手引导：首个回合前给出「从这里开始」与可点动作', async () => {

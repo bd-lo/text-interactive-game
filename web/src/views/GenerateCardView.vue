@@ -90,9 +90,7 @@ async function onStartGame(): Promise<void> {
       role="status"
     >
       <h3 class="panel-title">已保存到卡库</h3>
-      <p class="muted">
-        人物卡 ID：{{ store.savedCardId }} · 保存后不会自动开局，请选择下一步。
-      </p>
+      <p class="muted">保存后不会自动开局，请选择下一步。</p>
       <div class="game-tools">
         <RouterLink
           class="btn btn-small"

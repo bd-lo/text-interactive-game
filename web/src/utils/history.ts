@@ -1,5 +1,5 @@
 /**
- * 叙事历史纯函数（R2 包 A）：把 replay 事件还原成玩家可读的「冒险记录」。
+ * 叙事历史纯函数（R2 包 A + R3 开场/结局派生行）：把 replay 事件还原成玩家可读的「冒险记录」。
  *
  * 口径（第 23 章 §23.3「不据前端推演权威状态」）：
  * - 数据源只用只读的 `GET /games/{id}/replay`（`result.narrative` 为叙事文本源）；
@@ -7,21 +7,24 @@
  *   （`turn_orchestrator` 多角色渲染实测 m3 同回合多事件文本相同），按 `seq` 升序取首个；
  * - 只收非空 `result.narrative`：`game_created`、失败回合不产生日志行；
  * - 失败回合用 `notice` 行追加（如「（该指令未生效）」），**绝不覆盖**已有叙事；
+ * - R3 派生行只做展示：空局插「开场」（`withOpening`）、`ended` 追加「结局」（`withEnding`），
+ *   固定 id 幂等（重复计算/刷新不重复渲染），不改 store；
  * - 纯函数、不触网、不写状态，可被 vitest 直接单测。
  */
 
-import type { ReplayEvent } from '@/api/types'
+import type { GamePlayerViewResponse, GameStatus, ReplayEvent } from '@/api/types'
 
-/** 日志行类型：`narrative` 回合叙事 / `notice` 系统提示。 */
-export type HistoryEntryKind = 'narrative' | 'notice'
+/** 日志行类型：`narrative` 回合叙事 / `notice` 系统提示 / `opening` 开场 / `ending` 结局。 */
+export type HistoryEntryKind = 'narrative' | 'notice' | 'opening' | 'ending'
 
 /** 一条冒险记录（渲染层只读展示）。 */
 export interface HistoryEntry {
-  /** 稳定 id：replay 重建行 `turn:<turnId>`，本会话行 `local:<n>`，系统行 `notice:<n>`。 */
+  /** 稳定 id：replay 重建行 `turn:<turnId>`，本会话行 `local:<n>`，系统行 `notice:<n>`，
+   *  派生行 `opening` / `ending`（幂等，重复派生不重复渲染）。 */
   id: string
   kind: HistoryEntryKind
   text: string
-  /** 回合号（系统行为 null）。 */
+  /** 回合号（系统行/开场行/结局行为 null）。 */
   turnId: number | null
 }
 
@@ -89,4 +92,81 @@ export function mergeReplayHistory(
 ): HistoryEntry[] {
   const notices = current.filter((entry) => entry.kind === 'notice')
   return [...rebuilt, ...notices]
+}
+
+// ---------------------------------------------------------------------------
+// R3 派生日志行（开场 / 结局）：纯展示层派生，不写 store、幂等、刷新后自动恢复
+// ---------------------------------------------------------------------------
+
+/** 开场派生行 id（固定 → 重复派生不重复渲染）。 */
+export const OPENING_ENTRY_ID = 'opening'
+/** 结局派生行 id（固定 → 重复派生不重复渲染）。 */
+export const ENDING_ENTRY_ID = 'ending'
+
+/**
+ * 新局开场文本（P2-2）：`/view.room.description` + 目标引导（有 goal 时附标题与进度）。
+ * 无房间描述时返回空串（不伪造开场内容）。
+ */
+export function openingTextOf(view: GamePlayerViewResponse): string {
+  const description = view.room.description.trim()
+  if (description === '') {
+    return ''
+  }
+  const goal = view.goal ?? null
+  if (goal === null) {
+    return description
+  }
+  const done = goal.objectives.filter((objective) => objective.done).length
+  return `${description}\n\n目标：${goal.title}（进度 ${done}/${goal.objectives.length}）`
+}
+
+/**
+ * 新局开场行（P2-2）：**仅当冒险记录为空**时插入第 1 条「开场」；有记录后不再插入（首回合后不重复）。
+ */
+export function withOpening(
+  history: readonly HistoryEntry[],
+  view: GamePlayerViewResponse | null,
+): HistoryEntry[] {
+  if (history.length > 0 || view === null) {
+    return [...history]
+  }
+  const text = openingTextOf(view)
+  if (text === '') {
+    return []
+  }
+  return [
+    { id: OPENING_ENTRY_ID, kind: 'opening', text, turnId: null },
+    ...history,
+  ]
+}
+
+/**
+ * 终局「结局」行（AC-10d）：`status=ended` 且有 `ending_text` 时追加到日志末尾，
+ * 让玩家在冒险记录里也看到结局（不只底部横幅）。固定 id → 重复调用不重复渲染。
+ */
+export function withEnding(
+  history: readonly HistoryEntry[],
+  options: { status: GameStatus; endingText: string | null | undefined },
+): HistoryEntry[] {
+  const text = (options.endingText ?? '').trim()
+  if (options.status !== 'ended' || text === '') {
+    return [...history]
+  }
+  const withoutEnding = history.filter((entry) => entry.id !== ENDING_ENTRY_ID)
+  return [
+    ...withoutEnding,
+    { id: ENDING_ENTRY_ID, kind: 'ending', text, turnId: null },
+  ]
+}
+
+/**
+ * 冒险记录展示序列：开场（空局才插）→ 回合叙事 → 结局（ended 才追加）。
+ * 纯派生（不改 store），刷新/重载同样成立；重复计算幂等。
+ */
+export function displayHistory(
+  history: readonly HistoryEntry[],
+  options: { view: GamePlayerViewResponse | null; status: GameStatus; endingText: string | null | undefined },
+): HistoryEntry[] {
+  const withOpeningEntries = withOpening(history, options.view)
+  return withEnding(withOpeningEntries, { status: options.status, endingText: options.endingText })
 }

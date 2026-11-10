@@ -42,6 +42,19 @@ describe('卡库导入客户端预检（不引 Ajv，服务端 validate 为准�
     expect(describeCardError(new Error('network down')).message).toBe('network down')
   })
 
+  it('describeCardError 404：玩家可见文案不转发服务端 message 里的内部 card ID（AC-23）', () => {
+    const info = describeCardError(
+      new ApiClientError(
+        404,
+        'NOT_FOUND',
+        '人物卡不存在: card_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK',
+      ),
+    )
+    expect(info.status).toBe(404)
+    expect(info.message).toContain('可能已被删除')
+    expect(info.message).not.toMatch(/card_[0-9A-Z]{8,}/)
+  })
+
   it('formatViolations：把 [{loc,type,msg}] 转成 «loc：msg» 行', () => {
     expect(
       formatViolations([

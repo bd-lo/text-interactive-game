@@ -93,7 +93,7 @@ onMounted(() => {
         </div>
         <p class="card-list-meta muted">
           生成者：{{ card.generated_by === null || card.generated_by === '' ? '（无）' : card.generated_by }} ·
-          更新：{{ formatDateTime(card.updated_at) }} · ID：{{ card.card_id }}
+          更新：{{ formatDateTime(card.updated_at) }}
         </p>
       </li>
     </ul>
