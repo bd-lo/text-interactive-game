@@ -51,6 +51,16 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const MOBILE_VIEWPORT = { width: 375, height: 812 }
 const BRIEF = '一个在旧矿镇长大的拾荒者，沉默但记性极好，随身带着一盏旧提灯。'
 
+/**
+ * CDP 就绪等待时间：CI runner（ubuntu-latest/容器）上 Chrome 首次启动会探测 session dbus，
+ * 连接重试可能拖慢 20–30s 才输出 "DevTools listening"；给足 90s（可用
+ * TEXTGAME_E2E_CDP_TIMEOUT_MS 覆盖），本地默认 25s 保持快速失败。
+ */
+const CDP_READY_TIMEOUT_MS = Number(
+  process.env.TEXTGAME_E2E_CDP_TIMEOUT_MS ??
+    (process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true' ? 90000 : 25000),
+)
+
 /** S2 结局链：story「余烬哨站」12 条胜利脚本（与后端 replay / 玩家验收一致）。 */
 const STORY_FLOW = [
   '向东走',
@@ -294,7 +304,7 @@ async function launchBrowser({ browserPath, port, profileDir, headless, width, h
     stderrTail = (stderrTail + String(chunk)).slice(-4000)
   })
   try {
-    const version = await waitForCdp(port, 25000)
+    const version = await waitForCdp(port, CDP_READY_TIMEOUT_MS)
     return { child, version, stderrTail }
   } catch (error) {
     try {

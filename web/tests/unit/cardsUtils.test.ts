@@ -42,6 +42,19 @@ describe('卡库导入客户端预检（不引 Ajv，服务端 validate 为准�
     expect(describeCardError(new Error('network down')).message).toBe('network down')
   })
 
+  it('describeCardError：角色卡 V2 包装被卡库拒绝时引导到世界书导入（H4 WB-03b）', () => {
+    const info = describeCardError(
+      new ApiClientError(422, 'SCHEMA_VIOLATION', 'character card schema violation', [
+        { loc: ['body', 'spec'], type: 'extra_forbidden', msg: 'Extra inputs are not permitted' },
+        { loc: ['body', 'data', 'character_book'], type: 'extra_forbidden', msg: 'Extra inputs are not permitted' },
+      ]),
+    )
+    expect(info.status).toBe(422)
+    expect(info.message).toContain('世界书文件')
+    expect(info.message).toContain('导入世界书')
+    expect(info.message).toContain('9 字段')
+  })
+
   it('describeCardError 404：玩家可见文案不转发服务端 message 里的内部 card ID（AC-23）', () => {
     const info = describeCardError(
       new ApiClientError(

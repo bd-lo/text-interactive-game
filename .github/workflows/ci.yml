@@ -183,6 +183,10 @@ jobs:
           mkdir -p artifacts/e2e-web
           export TEXTGAME_DB_URL="sqlite:///$PWD/artifacts/e2e-web/e2e.db"
           export TEXTGAME_LLM_ENABLED=false
+          # Chromium 在容器类 runner 上探测 session dbus 会重试（本次 CI 实测拖慢首启 ~25s）；
+          # 指向不存在的 unix socket 让其立即失败回退，并把 CDP 就绪等待放宽到 90s。
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent-dbus"
+          export TEXTGAME_E2E_CDP_TIMEOUT_MS=90000
           uv run --no-dev uvicorn textgame.main:app --host 127.0.0.1 --port 8794 \
             > artifacts/e2e-web/server.log 2>&1 &
           SERVER_PID=$!

@@ -68,6 +68,18 @@ export function describeCardError(error: unknown): CardErrorInfo {
       }
     }
     if (error.status === 422) {
+      // 世界书引导（H4 WB-03b）：卡库只收 9 字段纯人物卡；角色卡 V2 包装（含
+      // data.character_book / spec_version）被服务端拒绝时，要明确告诉玩家去世界书导入。
+      const violationText = formatViolations(error.violations).join('；')
+      const combined = `${error.message} ${violationText}`
+      if (/character_book|spec_version|character card v2/i.test(combined)) {
+        return {
+          message:
+            '这看起来是世界书文件（422）：卡库只收 9 字段纯人物卡；含 data.character_book 的角色卡 V2 请到「世界书 → 导入世界书」。',
+          code: error.code,
+          status: 422,
+        }
+      }
       return { message: `人物卡不合法（422）：${error.message}`, code: error.code, status: 422 }
     }
     if (error.status === 404) {
