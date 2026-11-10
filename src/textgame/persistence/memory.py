@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 from textgame.domain.events import Event
 from textgame.domain.reducers import apply_events
@@ -39,6 +40,8 @@ class InMemoryRepository:
         self._idempotency: dict[str, IdempotencyRecord] = {}
         self._audit: dict[str, list[AuditRecord]] = {}
         self._audit_keys: set[tuple[str, int, int, str]] = set()
+        # 最近提交时间（只读列表排序用；不参与事件溯源/state_hash）。
+        self._updated_at: dict[str, datetime] = {}
         # current 行被删除后重建时仍需 last_seq（契约 §6 的“空档重建”）。
         self._last_seqs: dict[str, int] = {}
 
@@ -67,7 +70,29 @@ class InMemoryRepository:
             state=state,
             version=version,
             last_seq=last_seq,
+            updated_at=self._updated_at.get(game_id),
         )
+
+    def list_games(self, *, limit: int, offset: int) -> list[GameRecord]:
+        """按最近更新时间倒序返回存档摘要（同一时间按 game_id 稳定排序）。"""
+        game_ids = sorted(
+            self._current,
+            key=lambda game_id: (
+                self._updated_at.get(game_id) or datetime.min.replace(tzinfo=timezone.utc),
+                game_id,
+            ),
+            reverse=True,
+        )
+        records: list[GameRecord] = []
+        for game_id in game_ids[offset : offset + limit]:
+            record = self.load(game_id)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def count_games(self) -> int:
+        """返回当前存档数（只读）。"""
+        return len(self._current)
 
     def read_events(self, game_id: str, *, after_seq: int = 0) -> list[Event]:
         """按 ``seq`` 升序返回 ``seq > after_seq`` 的事件。"""
@@ -109,13 +134,16 @@ class InMemoryRepository:
                 return False
 
         stored = [*history, *incoming]
+        updated_at = datetime.now(timezone.utc)
         # 全部校验通过后才修改内存，保证失败不部分写入。
         self._current[payload.game_id] = GameRecord(
             game_id=payload.game_id,
             state=payload.new_state,
             version=payload.new_version,
             last_seq=payload.last_seq,
+            updated_at=updated_at,
         )
+        self._updated_at[payload.game_id] = updated_at
         self._events[payload.game_id] = stored
         self._last_seqs[payload.game_id] = payload.last_seq
         return True

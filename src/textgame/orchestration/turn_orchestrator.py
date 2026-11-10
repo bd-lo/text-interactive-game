@@ -14,6 +14,7 @@ CAS 提交 → 审计」的多角色链路（第 11 章 §11.1–§11.3、契约
 
 from __future__ import annotations
 
+import re
 import threading
 import zlib
 from collections.abc import Mapping, Sequence
@@ -35,6 +36,8 @@ from textgame.domain.models import (
 )
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.scenario import DIRECTION_NAMES, PLAYER_ID
+from textgame.domain.scenario_story import is_story_state, story_ending
+from textgame.domain.suggestions import failure_feedback, suggest_actions
 from textgame.orchestration.direct_gate import ToolGateLike
 from textgame.orchestration.dto import TurnRequest
 from textgame.orchestration.proposal_queue import (
@@ -67,6 +70,7 @@ _UNKNOWN_ACTION_TEXT = (
 _IDEMPOTENCY_CONFLICT_TEXT = "这个幂等键已经用在不同参数的回合请求上，请换一个新的键重试。"
 _VERSION_CONFLICT_TEXT = "你的对局版本已经过期，请刷新对局视图后重试。"
 _GAME_NOT_FOUND_TEXT = "存档不存在，请先创建一个新的游戏。"
+_STORY_ENDED_TEXT = "故事已经结束了。回到首页可以开新的一局。"
 _ACTION_REJECTED_TEXT = "这个动作没有生效，你停下了脚步。"
 _INTERNAL_ERROR_TEXT = "回合处理发生内部错误，本回合没有写入任何状态。"
 _SUBMIT_CONFLICT_TEXT = "对局状态被并发修改，本回合未能提交，请刷新后重试。"
@@ -176,7 +180,8 @@ class AuditRecorderLike(Protocol):
 class CreateGameRequest(BaseModel):
     """``POST /api/v1/games`` 的编排层请求（``seed`` 可省略，缺省用组合根默认种子）。
 
-    ``scenario`` 支持 ``m2``/``m3``/``m4``（M4 制造场景，D-M4-11），缺省 ``m2``
+    ``scenario`` 支持 ``m2``/``m3``/``m4``（M4 制造场景，D-M4-11）与 ``story``
+    （剧情场景「余烬哨站」，D1/T10；旧场景行为/事件逐字不变），缺省 ``m2``
     保持 M2 契约与固定种子回放不变。D-M6-2 加法：``card_id`` + ``card``（人物卡 9 字段
     JSON，接入层已按卡库校验/加载）指定按卡建局；与 ``seed``/``scenario`` 互斥，
     同时提供 → ``INVALID_INPUT``。不提供 ``card_id`` 时行为与 M2–M4 完全一致。
@@ -186,7 +191,7 @@ class CreateGameRequest(BaseModel):
 
     seed: int | None = None
     idempotency_key: str = Field(min_length=8, max_length=128)
-    scenario: Literal["m2", "m3", "m4"] = "m2"
+    scenario: Literal["m2", "m3", "m4", "story"] = "m2"
     card_id: str | None = Field(default=None, min_length=1, max_length=64)
     card: dict[str, Any] | None = None
 
@@ -396,21 +401,133 @@ _DEFAULT_FAILURE_HINT: tuple[str, tuple[str, ...]] = (
 )
 
 
-def _with_failure_hints(result: TurnResult) -> TurnResult:
-    """给失败 ``TurnResult`` 填 ``effects``/``suggested_actions``（纯加法）。
+#: 玩家可见失败原因的保守过滤：只展示中文（含中文标点），ASCII 字母/数字/下划线一律视为
+#: 内部诊断（工具名、ULID、英文规则消息）不展示，避免把实现细节漏到玩家屏幕。
+_FORBIDDEN_REASON_RE = re.compile(r"[A-Za-z0-9_]")
+_MAX_REASON_CHARS = 60
 
-    只读取已有 ``error_code`` 映射固定中文提示，不拼接内部错误消息、不改 ``text``、
-    不产生事件，因此对 golden/回放零影响（字段原本恒空、回放不比对）。
+
+def _safe_player_reason(reason: str | None) -> str | None:
+    """把服务层拒绝原因收敛为可展示给玩家的中文短句；不安全/过长/为空返回 ``None``。"""
+    if not isinstance(reason, str):
+        return None
+    text = " ".join(reason.split())
+    if not text or len(text) > _MAX_REASON_CHARS:
+        return None
+    if _FORBIDDEN_REASON_RE.search(text):
+        return None
+    return text
+
+
+def _scene_failure_feedback(
+    state: GameState, code: ErrorCode | None, reason: str | None
+) -> tuple[str, list[str]]:
+    """场景化失败反馈：把已过滤的具体原因交给 ``failure_feedback``（R2 加法参数）。
+
+    ``reason`` 在本层再做一次保守过滤后传入；算法侧 ``failure_feedback`` 负责把它与
+    当前房间/行囊合成「为什么 + 下一步」。
     """
+    return failure_feedback(state, code, reason=_safe_player_reason(reason))
+
+
+def _context_reason(state: GameState, action: ParseOutcome) -> str | None:
+    """从「当前状态 + 被拒绝的意图」推一条玩家可读的中文失败原因（D12）。
+
+    Resolver/规则层的 ``reason`` 多为英文内部诊断（含工具名/物品 ID），不能直接展示；
+    这里对最常见的世界内失败做确定性重述，宁可不说也不泄漏实现细节。返回 ``None`` 时由
+    编排层走通用文案。
+    """
+    character = state.characters.get(PLAYER_ID)
+    if character is None:
+        return None
+    room = state.rooms.get(character.location)
+    if room is None:
+        return None
+    tool = action.tool
+    args = action.args
+    if tool == "move_to":
+        direction = args.get("direction")
+        if isinstance(direction, str) and direction not in room.exits:
+            return f"这里没有往{_direction_name(direction)}的路。"
+        return None
+    if tool == "take_item":
+        item_id = args.get("item_id")
+        if not isinstance(item_id, str):
+            return None
+        item = state.items.get(item_id)
+        if item is not None and item_id not in room.item_ids:
+            return f"这里没有{item.name}可以拿。"
+        return None
+    if tool == "talk_to":
+        npc_id = args.get("npc_id")
+        npc = state.npcs.get(npc_id) if isinstance(npc_id, str) else None
+        if npc is None or npc.room_id != character.location:
+            return "这里没有可以说话的人。"
+        return None
+    if tool == "use_item":
+        item_id = args.get("item_id")
+        if not isinstance(item_id, str):
+            return None
+        item = state.items.get(item_id)
+        if item_id in character.inventory:
+            return None
+        # 同名物品歧义（玩家实测）：解析可能匹配到「地上的铜线」而不是行囊里的，
+        # 提示必须说真话，不能笼统说「行囊里没有」。
+        same_name_held = any(
+            isinstance(held, str)
+            and (state.items.get(held) is not None)
+            and state.items[held].name == (item.name if item is not None else "")
+            for held in character.inventory
+        )
+        if item is not None and same_name_held:
+            return f"行囊里的{item.name}不能这样直接用。"
+        if item is not None:
+            return f"地上的{item.name}得先拿起来才能用。"
+        return "行囊里没有这件东西。"
+    return None
+
+
+def _with_failure_hints(
+    result: TurnResult,
+    state: GameState | None = None,
+    reason: str | None = None,
+) -> TurnResult:
+    """给失败 ``TurnResult`` 填 ``effects``/``suggested_actions``（纯加法，D7/D12）。
+
+    - 协议级失败（幂等冲突/事件 schema 等）沿用 ``_FAILURE_HINTS`` 固定文案：玩家在客户端
+      层面即可处理；
+    - 世界内失败（解析失败/门禁拒绝/前置不满足等）：``reason`` 为服务层给出的具体原因
+      （仅中文短句会被展示，英文诊断/内部 ID 被过滤），由
+      ``domain.suggestions.failure_feedback`` 合成「为什么 + 下一步」；
+    - 不改 ``text`` 原文、不产生事件、不写状态；已填过 ``effects`` 的结果原样返回（幂等）。
+    """
+    if result.effects:
+        return result
     code = result.error_code
     hint, actions = (
         _FAILURE_HINTS.get(code, _DEFAULT_FAILURE_HINT)
         if code is not None
         else _DEFAULT_FAILURE_HINT
     )
+    # 协议级错误码保留固定文案（与既有测试/玩家预期一致）：只有世界内失败用场景化反馈。
+    if (
+        state is not None
+        and code is not None
+        and code not in {ErrorCode.CONFLICT, ErrorCode.SCHEMA_VIOLATION}
+    ):
+        scene_hint, scene_actions = _scene_failure_feedback(state, code, reason)
+        if scene_hint:
+            hint = scene_hint
+        # 场景反馈的 actions 是权威值（结局后为空列表 = 不再引导行动）
+        actions = tuple(scene_actions)
     return result.model_copy(
         update={"effects": [{"hint": hint}], "suggested_actions": list(actions)}
     )
+
+
+def _success_suggestions(state: GameState) -> list[str]:
+    """成功回合的「下一步」建议（D7）：当前状态可直接提交的中文指令，≤4 条、确定性。"""
+    return suggest_actions(state, limit=4)
 
 
 class TurnOrchestrator:
@@ -562,7 +679,14 @@ class TurnOrchestrator:
             replayed = self._replay_idempotent(store_key, request_hash, result)
             if replayed.ok:
                 return replayed
-            return _with_failure_hints(result)
+            state = None
+            try:
+                record = self._repo.load(request.game_id)
+            except Exception:  # 读状态失败按「无场景信息」降级，不掩盖原始业务失败
+                record = None
+            if record is not None:
+                state = record.state
+            return _with_failure_hints(result, state)
         finally:
             lock.release()
 
@@ -585,6 +709,14 @@ class TurnOrchestrator:
         if record.version != request.expected_version:
             return TurnResult.failed(
                 ErrorCode.CONFLICT, version=record.version, text=_VERSION_CONFLICT_TEXT
+            )
+        # D3：剧情场景已到结局（读时求值，不写状态）后拒绝新回合；旧三场景恒不触发。
+        if is_story_state(record.state) and story_ending(record.state) is not None:
+            return TurnResult.failed(
+                ErrorCode.INVALID_INPUT,
+                version=record.version,
+                turn_id=record.state.turn,
+                text=_STORY_ENDED_TEXT,
             )
         try:
             if self.multi_actor_enabled:
@@ -637,11 +769,15 @@ class TurnOrchestrator:
             tool=outcome.tool, args=outcome.args, ctx=ctx, state=state
         )
         if not gate_result.ok:
-            return TurnResult.failed(
-                gate_result.error_code or ErrorCode.INTERNAL,
-                version=record.version,
-                turn_id=state.turn,
-                text=gate_result.message or _ACTION_REJECTED_TEXT,
+            return _with_failure_hints(
+                TurnResult.failed(
+                    gate_result.error_code or ErrorCode.INTERNAL,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=gate_result.message or _ACTION_REJECTED_TEXT,
+                ),
+                state,
+                _safe_player_reason(gate_result.message) or _context_reason(state, outcome),
             )
 
         drafts = list(gate_result.events)
@@ -655,11 +791,15 @@ class TurnOrchestrator:
                 state=state,
             )
             if not preconditions.ok:
-                return TurnResult.failed(
-                    preconditions.error_code or ErrorCode.INTERNAL,
-                    version=record.version,
-                    turn_id=state.turn,
-                    text=preconditions.message or _ACTION_REJECTED_TEXT,
+                return _with_failure_hints(
+                    TurnResult.failed(
+                        preconditions.error_code or ErrorCode.INTERNAL,
+                        version=record.version,
+                        turn_id=state.turn,
+                        text=preconditions.message or _ACTION_REJECTED_TEXT,
+                    ),
+                    state,
+                    _safe_player_reason(preconditions.message) or _context_reason(state, outcome),
                 )
         result_data = dict(gate_result.data or {})
         text, narrative_source = self._render_with_source(
@@ -667,7 +807,12 @@ class TurnOrchestrator:
         )
 
         if not drafts:
-            response = TurnResult.success(turn_id=state.turn, version=record.version, text=text)
+            response = TurnResult.success(
+                turn_id=state.turn,
+                version=record.version,
+                text=text,
+                suggested_actions=_success_suggestions(state),
+            )
             self._save_idempotent(store_key, request_hash, response.model_dump(mode="json"))
             return response
 
@@ -690,11 +835,15 @@ class TurnOrchestrator:
             idempotency_key=request.idempotency_key,
         )
         if not engine_result.ok:
-            return TurnResult.failed(
-                engine_result.error_code or ErrorCode.INTERNAL,
-                version=record.version,
-                turn_id=state.turn,
-                text=engine_result.message or _ACTION_REJECTED_TEXT,
+            return _with_failure_hints(
+                TurnResult.failed(
+                    engine_result.error_code or ErrorCode.INTERNAL,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=engine_result.message or _ACTION_REJECTED_TEXT,
+                ),
+                state,
+                _safe_player_reason(engine_result.message) or _context_reason(state, outcome),
             )
         data = engine_result.data or {}
         committed_turn = data.get("turn_id")
@@ -706,11 +855,13 @@ class TurnOrchestrator:
                 turn_id=state.turn,
                 text=_INTERNAL_ERROR_TEXT,
             )
+        state_after = state.apply(narrated)
         response = TurnResult.success(
             turn_id=committed_turn,
             version=committed_version,
             text=text,
             events=engine_result.events,
+            suggested_actions=_success_suggestions(state_after),
         )
         self._save_idempotent(
             store_key,
@@ -888,11 +1039,23 @@ class TurnOrchestrator:
                         attempt=audit_base + attempt - 1,
                     )
                 )
-                return TurnResult.failed(
-                    error_code,
-                    version=current.version,
-                    turn_id=state.turn,
-                    text=_ACTION_REJECTED_TEXT,
+                # 对外文案保持中文（2G 文字风格）；裁决理由（可能为规则层英文诊断）只进审计；
+                # 其中 ActionService 给出的中文具体原因（如「「北」边没有出口」）经
+                # ``_safe_player_reason`` 过滤后作为失败 hint 展示，玩家能看到「为什么」。
+                rejected_reason = (
+                    _safe_player_reason(player_resolution.reason)
+                    if player_resolution is not None
+                    else None
+                ) or _context_reason(state, outcome)
+                return _with_failure_hints(
+                    TurnResult.failed(
+                        error_code,
+                        version=current.version,
+                        turn_id=state.turn,
+                        text=_ACTION_REJECTED_TEXT,
+                    ),
+                    state,
+                    rejected_reason,
                 )
 
             entry_by_id = {entry.proposal_id: entry for entry in entries}
@@ -926,7 +1089,10 @@ class TurnOrchestrator:
                     )
                 )
                 response = TurnResult.success(
-                    turn_id=state.turn, version=current.version, text=text
+                    turn_id=state.turn,
+                    version=current.version,
+                    text=text,
+                    suggested_actions=_success_suggestions(state),
                 )
                 self._save_idempotent(store_key, request_hash, response.model_dump(mode="json"))
                 return response
@@ -969,11 +1135,13 @@ class TurnOrchestrator:
                         turn_id=state.turn,
                         text=_INTERNAL_ERROR_TEXT,
                     )
+                state_after = current.state.apply(narrated)
                 response = TurnResult.success(
                     turn_id=committed_turn,
                     version=committed_version,
                     text=text,
                     events=engine_result.events,
+                    suggested_actions=_success_suggestions(state_after),
                 )
                 self._save_idempotent(
                     store_key,
@@ -995,11 +1163,15 @@ class TurnOrchestrator:
                 )
             )
             if engine_result.error_code is not ErrorCode.CONFLICT:
-                return TurnResult.failed(
-                    engine_result.error_code or ErrorCode.INTERNAL,
-                    version=current.version,
-                    turn_id=state.turn,
-                    text=engine_result.message or _ACTION_REJECTED_TEXT,
+                return _with_failure_hints(
+                    TurnResult.failed(
+                        engine_result.error_code or ErrorCode.INTERNAL,
+                        version=current.version,
+                        turn_id=state.turn,
+                        text=engine_result.message or _ACTION_REJECTED_TEXT,
+                    ),
+                    state,
+                    _safe_player_reason(engine_result.message) or _context_reason(state, outcome),
                 )
             reloaded = self._repo.load(request.game_id)
             if reloaded is None:

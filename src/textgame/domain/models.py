@@ -254,6 +254,10 @@ class PerceptionSlice(BaseModel):
     local_events: list[Event] = Field(default_factory=list)
     private_memory: list[str] = Field(default_factory=list)
     plan_hint: str | None = Field(default=None, max_length=200)
+    #: R2 加法字段（D6/离线 NLU 房间名导航）：当前房间每个出口一条 ``EntityRef``，
+    #: ``kind="room"``、``id``=方向英文值（north/south/east/west/up/down）、``name``=目标房间展示名。
+    #: 默认空列表：旧构造/回放/LLM 提示词不受影响（只由 ``QueryService`` 的确定性解析路径消费）。
+    exit_refs: list[EntityRef] = Field(default_factory=list)
 
 
 class SideEffect(str, Enum):

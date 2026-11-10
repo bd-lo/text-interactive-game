@@ -95,8 +95,32 @@ def _reduce_item_taken(state: GameState | None, event: Event) -> GameState:
     return current.model_copy(update={"characters": characters, "rooms": rooms})
 
 
+def _item_hp_delta(item: Item | None) -> int:
+    """物品 ``stats`` 的 HP 变动量（D4）：``heal`` 正数加血，``hp_delta`` 有符号增减。
+
+    - ``heal`` 只接受正数（治疗药水 ``{"heal": 8}``）；``hp_delta`` 可正可负
+      （story 的「结霜的烈酒」``{"hp_delta": -4}``）；两者同时出现时 ``heal`` 优先。
+    - 缺失/非数值/非整数语义一律按 0 处理（旧场景物品无 stats，行为不变）；
+      ``bool`` 是 ``int`` 子类，必须显式排除，避免 ``True`` 被当成 1 点治疗。
+    """
+    if item is None:
+        return 0
+    heal = item.stats.get("heal")
+    if isinstance(heal, (int, float)) and not isinstance(heal, bool) and heal > 0:
+        return int(heal)
+    delta = item.stats.get("hp_delta")
+    if isinstance(delta, (int, float)) and not isinstance(delta, bool):
+        return int(delta)
+    return 0
+
+
 def _reduce_item_consumed(state: GameState | None, event: Event) -> GameState:
-    """``ITEM_CONSUMED``：角色背包移除该物品（物品定义保留在 ``state.items``）。"""
+    """``ITEM_CONSUMED``：角色背包移除该物品，并按物品 ``stats`` 应用 HP 变动（D4）。
+
+    ``heal``/``hp_delta`` 从 ``state.items`` 的物品定义读取（不新增事件 result 字段）：
+    残血喝药回血、烈酒扣血，两者都 clamp 到 ``0..max_hp``；**HP 实际不变时返回原状态**
+    （m2 golden 满血用治疗药水、m3 golden 用无 stats 火把 → ``state_hash`` 逐字不变）。
+    """
     current = _require_state(state, event)
     character = current.characters.get(event.actor_id)
     if character is None:
@@ -105,8 +129,14 @@ def _reduce_item_consumed(state: GameState | None, event: Event) -> GameState:
     if not isinstance(item_id, str) or item_id not in character.inventory:
         raise ValueError(f"ITEM_CONSUMED item {item_id!r} not in inventory")
     inventory = [existing for existing in character.inventory if existing != item_id]
+    hp_delta = _item_hp_delta(current.items.get(item_id))
+    max_hp = character.attributes.get("max_hp", character.hp)
+    new_hp = max(0, min(max_hp, character.hp + hp_delta))
+    update: dict[str, object] = {"inventory": inventory}
+    if new_hp != character.hp:
+        update["hp"] = new_hp
     characters = dict(current.characters)
-    characters[event.actor_id] = character.model_copy(update={"inventory": inventory})
+    characters[event.actor_id] = character.model_copy(update=update)
     return current.model_copy(update={"characters": characters})
 
 

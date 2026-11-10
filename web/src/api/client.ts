@@ -16,6 +16,7 @@ import type {
   CharacterCardValidateResponse,
   CreateGameRequest,
   CreatedGameResponse,
+  GameListResponse,
   GamePlayerViewResponse,
   GameViewResponse,
   ReplayResponse,
@@ -24,6 +25,9 @@ import type {
 } from './types'
 
 export const API_BASE: string = import.meta.env.VITE_API_BASE ?? ''
+
+/** 单请求默认超时（毫秒）：LLM 叙事回合可能较慢，给足时间但避免永久卡死 busy。 */
+export const DEFAULT_TIMEOUT_MS = 120_000
 
 export class ApiClientError extends Error {
   readonly status: number
@@ -49,6 +53,8 @@ export interface RequestOptions {
   /** 逻辑动作标识；与 sessionStorage 中的键一一对应。 */
   actionKey?: string
   signal?: AbortSignal
+  /** 单请求超时毫秒数（缺省 `DEFAULT_TIMEOUT_MS`）。 */
+  timeoutMs?: number
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,26 +100,74 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
   if (options.idempotent === true && options.actionKey !== undefined) {
     headers.set('Idempotency-Key', getOrCreate(options.actionKey))
   }
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: options.signal })
-  const body: unknown = response.status === 204 ? null : await response.json()
-  if (!response.ok) {
-    throw parseErrorEnvelope(body, response.status)
+  // 超时 + 外部取消：任一触发都 abort；避免网络挂起导致 busy 永久为 true（R2 包 C）。
+  const controller = new AbortController()
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const forwardAbort = (): void => controller.abort()
+  options.signal?.addEventListener('abort', forwardAbort, { once: true })
+  try {
+    let response: Response
+    try {
+      response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal })
+    } catch (error) {
+      if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        throw new ApiClientError(0, 'TIMEOUT', '请求超时或已取消，请重试')
+      }
+      throw error
+    }
+    let body: unknown
+    try {
+      body = response.status === 204 ? null : await response.json()
+    } catch {
+      throw new ApiClientError(response.status, 'INTERNAL', `HTTP ${response.status}：响应不是合法 JSON`)
+    }
+    if (!response.ok) {
+      throw parseErrorEnvelope(body, response.status)
+    }
+    return body as T
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', forwardAbort)
   }
-  return body as T
 }
 
 const CREATED_GAME_KEYS = ['game_id', 'turn', 'version', 'snapshot_version', 'save_seed'] as const
-const GAME_VIEW_KEYS = ['game_id', 'turn', 'version', 'snapshot_version', 'status', 'last_text'] as const
+const GAME_VIEW_KEYS = [
+  'game_id',
+  'turn',
+  'version',
+  'snapshot_version',
+  'status',
+  'last_text',
+  'scenario',
+  'ending_text',
+] as const
 const PLAYER_VIEW_KEYS = [
   'game_id',
   'turn',
   'version',
   'snapshot_version',
   'status',
+  'scenario',
   'hp',
   'max_hp',
   'inventory',
   'room',
+  'goal',
+  'ending_text',
+  'suggested_actions',
+] as const
+const GAME_LIST_KEYS = ['games', 'total'] as const
+const GAME_LIST_ITEM_KEYS = [
+  'game_id',
+  'turn',
+  'version',
+  'snapshot_version',
+  'status',
+  'scenario',
+  'last_text',
+  'updated_at',
 ] as const
 const TURN_RESULT_KEYS = [
   'ok',
@@ -141,6 +195,42 @@ export async function createGame(
   const record = assertRecord(payload, 'CreatedGameResponse')
   assertKeys(record, 'CreatedGameResponse', CREATED_GAME_KEYS)
   return record as unknown as CreatedGameResponse
+}
+
+/** `GET /api/v1/games` 查询参数：`limit` 1..50（默认 10）、`offset` ≥0。 */
+export interface GameListQuery {
+  limit?: number
+  offset?: number
+}
+
+/** `GET /api/v1/games`：存档列表（只读；D9 续玩 UI 数据源，按最近更新时间倒序）。 */
+export async function listGames(
+  query: GameListQuery = {},
+  signal?: AbortSignal,
+): Promise<GameListResponse> {
+  const params = new URLSearchParams()
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit))
+  }
+  if (query.offset !== undefined) {
+    params.set('offset', String(query.offset))
+  }
+  const queryString = params.toString()
+  const suffix = queryString === '' ? '' : `?${queryString}`
+  const payload = await request<unknown>(`/api/v1/games${suffix}`, { method: 'GET' }, { signal })
+  const record = assertRecord(payload, 'GameListResponse')
+  assertKeys(record, 'GameListResponse', GAME_LIST_KEYS)
+  if (!Array.isArray(record.games) || typeof record.total !== 'number') {
+    throw contractError('GameListResponse', 'games/total 类型不符')
+  }
+  for (const item of record.games) {
+    const game = assertRecord(item, 'GameListItemResponse')
+    assertKeys(game, 'GameListItemResponse', GAME_LIST_ITEM_KEYS)
+    if (typeof game.game_id !== 'string' || typeof game.scenario !== 'string') {
+      throw contractError('GameListItemResponse', 'game_id/scenario 类型不符')
+    }
+  }
+  return record as unknown as GameListResponse
 }
 
 /** `GET /api/v1/games/{game_id}`：刷新/断线恢复版本链（只读）。 */

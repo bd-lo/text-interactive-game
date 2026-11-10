@@ -10,6 +10,7 @@
 /** 前端实际调用的端点（必须是 live OpenAPI 的子集，契约测试逐项断言）。 */
 export const API_PATHS = {
   createGame: '/api/v1/games',
+  listGames: '/api/v1/games',
   getGame: '/api/v1/games/{game_id}',
   getPlayerView: '/api/v1/games/{game_id}/view',
   getReplay: '/api/v1/games/{game_id}/replay',
@@ -24,7 +25,7 @@ export const API_PATHS = {
   deleteCard: '/api/v1/character-cards/{card_id}',
 } as const
 
-export type Scenario = 'm2' | 'm3' | 'm4'
+export type Scenario = 'm2' | 'm3' | 'm4' | 'story'
 export type GameStatus = 'active' | 'ended'
 
 /** 人物卡来源（第 5 章 §5.7；import 端点强制为 upload）。 */
@@ -61,7 +62,9 @@ export interface CreatedGameResponse {
   save_seed: string
 }
 
-/** `GET /api/v1/games/{game_id}` 200 响应（`GameViewResponse`，刷新/断线恢复）。 */
+/** `GET /api/v1/games/{game_id}` 200 响应（`GameViewResponse`，刷新/断线恢复）。
+ *  D9 加法字段：`scenario` 场景名；`ending_text` 结局正文（旧场景/未结束为 `null`）。
+ */
 export interface GameViewResponse {
   game_id: string
   turn: number
@@ -69,12 +72,21 @@ export interface GameViewResponse {
   snapshot_version: number
   status: GameStatus
   last_text: string | null
+  scenario?: string
+  ending_text?: string | null
 }
 
 /** 实体引用（`ItemRefResponse`）。 */
 export interface ItemRef {
   item_id: string
   name: string
+}
+
+/** 玩家背包物品（`InventoryItemResponse`）：同模板实例聚合计数 `qty`（M6 加法字段）。 */
+export interface InventoryItem {
+  item_id: string
+  name: string
+  qty: number
 }
 
 /** NPC 引用（`NpcRefResponse`）。 */
@@ -89,21 +101,62 @@ export interface RoomView {
   title: string
   description: string
   exits: Record<string, string>
+  /** D9 加法字段：方向 → 目标房间展示名（前端渲染「北 → 地窖」，不暴露 ID）。 */
+  exit_names?: Record<string, string>
   items: ItemRef[]
   npcs: NpcRef[]
 }
 
-/** `GET /api/v1/games/{game_id}/view` 200 响应（`GamePlayerViewResponse`，StatusPanel 唯一数据源）。 */
+/** 剧情目标的一条子目标（`GoalObjectiveResponse`，D9 加法字段）。 */
+export interface GoalObjective {
+  id: string
+  text: string
+  done: boolean
+}
+
+/** 剧情目标视图（`GoalResponse`；仅 story 场景非空，旧场景 `goal = null`）。 */
+export interface Goal {
+  title: string
+  description: string
+  objectives: GoalObjective[]
+}
+
+/** `GET /api/v1/games/{game_id}/view` 200 响应（`GamePlayerViewResponse`，StatusPanel 唯一数据源）。
+ *  D9 加法字段：`scenario` 场景名、`goal` 剧情目标、`ending_text` 结局正文、
+ *  `suggested_actions` 当前可执行的下一步指令（成功回合也给，供新手引导/可点建议）。
+ */
 export interface GamePlayerViewResponse {
   game_id: string
   turn: number
   version: number
   snapshot_version: number
   status: GameStatus
+  scenario?: string
   hp: number
   max_hp: number
-  inventory: ItemRef[]
+  inventory: InventoryItem[]
   room: RoomView
+  goal?: Goal | null
+  ending_text?: string | null
+  suggested_actions?: string[]
+}
+
+/** `GET /api/v1/games` 列表项（`GameListItemResponse`，D9 存档列表/续玩）。 */
+export interface GameListItem {
+  game_id: string
+  turn: number
+  version: number
+  snapshot_version: number
+  status: GameStatus
+  scenario: string
+  last_text?: string | null
+  updated_at?: string | null
+}
+
+/** `GET /api/v1/games` 200 响应 `{games, total}`（按最近更新时间倒序）。 */
+export interface GameListResponse {
+  games: GameListItem[]
+  total: number
 }
 
 /** 事件记录（`Event`；M6-025 只读展示用，前端不据此推演权威状态）。 */

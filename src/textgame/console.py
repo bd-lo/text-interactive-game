@@ -8,19 +8,25 @@
 - **不伪造数据**：状态行只消费 ``GET /api/v1/games/{id}/view``（并行任务提供的只读契约）；
   端点暂不可用时显示降级提示，绝不编造 HP/背包/位置。
 - **OSS-2 安全包**（R1 玩家实测 P0/P1；零文案改动、零 golden 重钉）：``--scenario`` 切换
-  m2/m3/m4 场景；默认自动继续同库最近存档（``--new`` 显式新开、``--continue`` 强制继续）；
-  首屏按只读视图给「可做动作」引导（真实数据，不编造剧情）；失败回合渲染编排层提供的
+  m2/m3/m4/story 场景；默认自动继续同库最近存档（``--new`` 显式新开、``--continue`` 强制继续）；
+  首屏按只读视图给「目标进度 + 可做动作」引导（真实数据，不编造剧情）；失败回合渲染编排层提供的
   ``suggested_actions``/``effects``（字段缺失/为空时保持原输出，16 字失败文案原样保留）。
+- **R2 开源入口轨**：``story`` 剧情场景（首屏展示 ``/view.goal`` 标题 + 3 条子目标完成态与
+  ``suggested_actions``；``status=ended`` 时打印 ``ending_text`` 结局屏并停止接收行动输入）；
+  ``--list`` 列出同库最近存档；``--db`` 支持 ``sqlite:///`` DSN 与中文报错；``ensure_utf8_stdio``
+  同时修复管道输入中文的编码崩溃；显式 ``--scenario`` 与旧存档不一致时提示 ``--new``/``--continue``。
 
 模块结构：``GameSession`` 封装回合推进（内部维护版本链与幂等键，不对外暴露）；
 ``run_check``/``run_interactive`` 分别承载自动验收与交互循环；``build_app`` 负责进程内装配；
-``latest_saved_game_id``/``prepare_session`` 负责同库存档发现与继续/新开。
+``latest_saved_game_id``/``saved_scenario``/``prepare_session`` 负责同库存档发现、场景识别与
+继续/新开决策。
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import sqlite3
 import sys
@@ -32,6 +38,13 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from textgame.domain.scenario import (
+    M3_NPC_SCAVENGER_A,
+    M3_NPC_SCAVENGER_B,
+    M4_ROOM_FORGE,
+)
+from textgame.domain.scenario_story import STORY_ENTRY_ROOM_ID
 
 #: 只读对局视图端点（并行任务交付；404 时降级）。
 VIEW_PATH_TEMPLATE = "/api/v1/games/{game_id}/view"
@@ -52,7 +65,18 @@ FORBIDDEN_OUTPUT_TERMS: tuple[str, ...] = (
 )
 
 #: 已支持场景（``POST /api/v1/games`` 的 ``scenario`` 取值；缺省 m2 保持 M2 契约）。
-SUPPORTED_SCENARIOS: tuple[str, ...] = ("m2", "m3", "m4")
+SUPPORTED_SCENARIOS: tuple[str, ...] = ("m2", "m3", "m4", "story")
+
+#: 场景 → 玩家可读名称（帮助、引导、存档列表用；story 为推荐首玩剧情）。
+SCENARIO_LABELS: dict[str, str] = {
+    "m2": "m2 · 废弃哨站（单场景）",
+    "m3": "m3 · 多角色冲突",
+    "m4": "m4 · 制造",
+    "story": "story · 余烬哨站（剧情，推荐）",
+}
+
+#: 结局屏提示（status=ended 后不再接收行动输入，只允许退出/查看）。
+ENDING_HINT = "故事结束，输入 :quit 退出。"
 
 #: SQLite DSN 前缀；``:memory:`` / ``file:`` 等 URI 形式不做存档发现（降级为新开）。
 _SQLITE_URL_PREFIX = "sqlite:///"
@@ -61,6 +85,13 @@ _SQLITE_URL_PREFIX = "sqlite:///"
 #: （``persistence/tables.py``），每次成功提交刷新 ``updated_at``；表缺失/空库时 read 失败，
 #: 一律降级为「没有可继续的存档」，不影响新开。
 _LATEST_GAME_SQL = "SELECT game_id FROM game_state_current ORDER BY updated_at DESC LIMIT 1"
+
+#: 读取指定存档当前状态（只读）：用于从状态内固定 ID 推断存档场景（场景不落事件/快照标签）。
+_GAME_STATE_SQL = "SELECT state_json FROM game_state_current WHERE game_id = ? LIMIT 1"
+
+#: 场景识别标记：M3 状态含两名固定拾荒者；M4 状态含固定铸造间；其余（含人物卡开局 m2）按 m2。
+_M3_ACTOR_IDS: tuple[str, ...] = (M3_NPC_SCAVENGER_A, M3_NPC_SCAVENGER_B)
+_M4_ROOM_IDS: tuple[str, ...] = (M4_ROOM_FORGE,)
 
 #: 方向英文枚举值 → 中文（首屏引导用；与叙事口径一致）。
 _DIRECTION_LABELS: dict[str, str] = {
@@ -115,12 +146,27 @@ def build_app(db_url: str | None = None) -> FastAPI:
     return main_module._build_app()
 
 
-def ensure_utf8_stdout() -> None:
-    """把标准输出切到 UTF-8：Windows 控制台/管道下中文屏文本不乱码。"""
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if callable(reconfigure):
+def ensure_utf8_stdio() -> None:
+    """把标准输入/输出切到 UTF-8：Windows 控制台与**管道/重定向**下中文不乱码、不崩。
+
+    R2 修复：此前只 reconfigure ``stdout``，管道输入中文（脚本/CI/Git Bash）会按本地代码页
+    GBK 解出代理字符，回合提交 JSON 编码时抛 ``UnicodeEncodeError``。stdin 用
+    ``errors="replace"``（坏字节降级为替换符而不是崩溃），stdout/stderr 保持严格 UTF-8。
+    """
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        kwargs: dict[str, str] = {"encoding": "utf-8"}
+        if stream is sys.stdin:
+            kwargs["errors"] = "replace"
         with contextlib.suppress(LookupError, ValueError, OSError):
-            reconfigure(encoding="utf-8")
+            reconfigure(**kwargs)
+
+
+def ensure_utf8_stdout() -> None:
+    """兼容旧名（OSS-1 起内部调用）：等价于 :func:`ensure_utf8_stdio`。"""
+    ensure_utf8_stdio()
 
 
 def assert_clean_output(text: str) -> None:
@@ -222,8 +268,120 @@ def _configured_db_url() -> str:
     return get_settings().db_url
 
 
+def saved_scenario(db_url: str, game_id: str) -> str | None:
+    """从同库当前状态推断最近存档的场景（``m2``/``m3``/``m4``/``story``）；不可用返回 ``None``。
+
+    场景不是事件/快照里的独立字段，但各场景初始状态含**固定 ID**：M3 有两名拾荒者、
+    story 有固定断桥入口、M4 有固定铸造间。只读查询 ``game_state_current``，不产生写操作；
+    旧库/表缺失/JSON 损坏一律降级 ``None``（调用方按「不知道」处理，不阻塞开局）。
+    """
+    path = _sqlite_path(db_url)
+    if path is None:
+        return None
+    try:
+        connection = sqlite3.connect(str(path))
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute(_GAME_STATE_SQL, (game_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    if row is None or not isinstance(row[0], str):
+        return None
+    try:
+        state = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    characters = state.get("characters")
+    rooms = state.get("rooms")
+    if isinstance(characters, dict) and any(actor in characters for actor in _M3_ACTOR_IDS):
+        return "m3"
+    if isinstance(rooms, dict) and STORY_ENTRY_ROOM_ID in rooms:
+        return "story"
+    if isinstance(rooms, dict) and any(room in rooms for room in _M4_ROOM_IDS):
+        return "m4"
+    if isinstance(characters, dict) or isinstance(rooms, dict):
+        return "m2"
+    return None
+
+
+def _parse_db_target(raw: str | None) -> Path | str | None:
+    """``--db`` 参数解析：本地文件路径 → ``Path``；``sqlite:///`` DSN → ``str``。
+
+    用户常把 ``TEXTGAME_DB_URL`` 的写法直接传给 ``--db``；此前会被当成本地路径拼进
+    ``sqlite:///...`` 变成垃圾文件名。这里做自动转换 + 中文友好报错（不支持的 DSN、内存库）。
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        raise ConsoleError("--db 不能为空：请给 SQLite 文件路径（如 data/textgame.db）")
+    if value.startswith(_SQLITE_URL_PREFIX):
+        rest = value[len(_SQLITE_URL_PREFIX) :]
+        if not rest or rest.startswith(":memory:") or rest.startswith("file:"):
+            raise ConsoleError(
+                "--db 的内存库/URI 存档无法在重启后继续；请用文件路径（如 data/textgame.db）"
+            )
+        return value
+    if "://" in value:
+        scheme = value.split("://", 1)[0] or "未知"
+        raise ConsoleError(
+            f"--db 目前只支持 SQLite 文件路径或 sqlite:/// DSN（收到 {scheme}://…）；"
+            "数据库连接串请改用环境变量 TEXTGAME_DB_URL"
+        )
+    return Path(value)
+
+
+def goal_guidance(view: dict[str, Any] | None) -> list[str]:
+    """渲染 ``/view.goal``（story 剧情目标）：标题 + 进度 + 每条子目标完成态。
+
+    旧场景（m2/m3/m4）``goal=None`` → 返回空列表（输出与 OSS-1 逐字一致）。
+    """
+    goal = view.get("goal") if isinstance(view, dict) else None
+    if not isinstance(goal, dict):
+        return []
+    objectives = goal.get("objectives")
+    items = (
+        [item for item in objectives if isinstance(item, dict)]
+        if isinstance(objectives, list)
+        else []
+    )
+    done = sum(1 for item in items if item.get("done") is True)
+    title = goal.get("title") if isinstance(goal.get("title"), str) else ""
+    if not title:
+        return []
+    lines = [f"【目标】{title} · {done}/{len(items)}"]
+    for item in items:
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        mark = "[x]" if item.get("done") is True else "[ ]"
+        lines.append(f"  {mark} {text.strip()}")
+    return lines
+
+
 def scene_guidance(view: dict[str, Any] | None) -> list[str]:
-    """首屏引导：只列只读视图里真实可做的事情（不编造剧情/目标）。"""
+    """首屏引导：目标进度 + 只读视图里真实可做的动作（不编造剧情/目标）。
+
+    - story 场景（``/view.goal`` 非空）：先列目标与子目标完成态，再优先用服务端
+      ``suggested_actions`` 生成「可以试试」；
+    - 旧场景（m2/m3/m4）：保持 OSS-1/OSS-2 行为（按房间出口/物品/NPC 推导），输出逐字不变。
+    """
+    goal_lines = goal_guidance(view)
+    suggestions = view.get("suggested_actions") if isinstance(view, dict) else None
+    story_actions = (
+        [text for text in (_safe_player_text(item) for item in suggestions or []) if text]
+        if isinstance(suggestions, list)
+        else []
+    )
+    if goal_lines and story_actions:
+        lines = [*goal_lines, "【引导】可以试试：" + " / ".join(story_actions[:5])]
+        lines.append("【提示】" + _GUIDE_COMMANDS)
+        return lines
     actions: list[str] = []
     room = view.get("room") if isinstance(view, dict) else None
     if isinstance(room, dict):
@@ -246,7 +404,7 @@ def scene_guidance(view: dict[str, Any] | None) -> list[str]:
                     actions.append(f"对{name}问好")
                     break
     actions.append("查看背包")
-    lines = ["【引导】可以试试：" + " / ".join(actions)]
+    lines = [*goal_lines, "【引导】可以试试：" + " / ".join(actions)]
     lines.append("【提示】" + _GUIDE_COMMANDS)
     return lines
 
@@ -412,12 +570,16 @@ def prepare_session(
     db_url: str,
     continue_save: bool = False,
     new_game: bool = False,
+    requested_scenario: str | None = None,
 ) -> str:
     """决定「继续同库最近存档」还是「新开一局」，返回首屏提示（不打印协议字段）。
 
     - 默认：同库有存档 → 自动继续（避免每次启动丢进度）；无存档 → 新开。
     - ``--continue``：强制尝试继续；没有可继续存档时明确提示后新开。
     - ``--new``：强制新开（与 ``--continue`` 同给时以 ``--new`` 为准）。
+    - ``requested_scenario``：**显式** ``--scenario`` 值（未显式给时为 ``None``）。与同库旧
+      存档场景不一致时不再静默继续：``--continue`` 下继续旧档并提示换 ``--new``，否则按显式
+      场景新开一局并说明旧存档保留（R2：避免「选了 m3 却在玩 m2」的困惑）。
     """
     if new_game:
         session.create()
@@ -427,6 +589,19 @@ def prepare_session(
         session.create()
         return "【存档】没有找到可继续的存档，已新开一局。"
     if latest is not None:
+        saved = saved_scenario(db_url, latest) if requested_scenario is not None else None
+        if requested_scenario is not None and saved is not None and saved != requested_scenario:
+            if continue_save:
+                notice = _resume_notice(session, latest)
+                return (
+                    f"{notice}\n【提示】上次存档是 {saved} 场景，不是 --scenario "
+                    f"{requested_scenario}；想按 {requested_scenario} 玩请用 --new。"
+                )
+            session.create()
+            return (
+                f"【存档】同库上次存档是 {saved} 场景，与 --scenario {requested_scenario} 不一致；"
+                f"已按 {requested_scenario} 新开一局（旧存档保留，想继续旧档请用 --continue）。"
+            )
         return _resume_notice(session, latest)
     session.create()
     return "【存档】已新开一局。"
@@ -468,20 +643,56 @@ def run_check(client: TestClient, *, out: Callable[[str], None] = print) -> int:
 _HELP_LINES: tuple[str, ...] = (
     "直接输入自然语言行动，例如：环顾四周 / 拿起火把 / 向北走进地窖",
     "命令：:help 帮助 ｜ :look 环顾四周 ｜ :inv 查看行囊 ｜ :status 状态行 ｜ :quit 退出",
-    "存档：默认自动继续同库最近存档；新开用 --new，强制继续用 --continue ｜ 场景：--scenario m2|m3|m4",
+    "场景：--scenario m2|m3|m4|story（story「余烬哨站」剧情，推荐首玩）",
+    "存档：默认自动继续同库最近存档；--new 新开，--continue 强制继续，--list 列出最近存档",
     "当前为默认离线确定性叙事（不联网、无需 API Key）",
 )
 
 
-def _print_help(out: Callable[[str], None]) -> None:
+def _print_help(out: Callable[[str], None], view: dict[str, Any] | None = None) -> None:
+    """打印帮助；给出 ``/view`` 时追加剧情目标进度（story 场景）。"""
     for line in _HELP_LINES:
+        out(line)
+    for line in goal_guidance(view):
         out(line)
 
 
-def _show_turn(session: GameSession, text: str, out: Callable[[str], None]) -> None:
-    result = session.act(text)
-    out(render_turn(result, session.view()))
+def ending_lines(view: dict[str, Any] | None) -> list[str] | None:
+    """``/view.status == "ended"`` 时的结局屏文本；未结局返回 ``None``。
+
+    结局正文来自服务端只读视图 ``ending_text``（不伪造），随后固定提示退出方式；
+    旧场景（m2/m3/m4）恒 ``active``，输出与 OSS-1 一致。
+    """
+    if not isinstance(view, dict) or view.get("status") != "ended":
+        return None
+    lines: list[str] = []
+    ending_text = view.get("ending_text")
+    if isinstance(ending_text, str) and ending_text.strip():
+        lines.append(ending_text.strip())
+    lines.append(ENDING_HINT)
+    return lines
+
+
+def _print_ending(view: dict[str, Any] | None, out: Callable[[str], None]) -> bool:
+    """打印结局屏（若已结局）并返回是否结束；未结束不打印任何内容。"""
+    lines = ending_lines(view)
+    if lines is None:
+        return False
+    for line in lines:
+        out(line)
     out("")
+    return True
+
+
+def _show_turn(
+    session: GameSession, text: str, out: Callable[[str], None]
+) -> dict[str, Any] | None:
+    """提交一个回合并渲染；返回本回合之后的只读视图（供目标/结局判断）。"""
+    result = session.act(text)
+    view = session.view()
+    out(render_turn(result, view))
+    out("")
+    return view
 
 
 def _show_inventory(session: GameSession, out: Callable[[str], None]) -> None:
@@ -509,7 +720,8 @@ def run_interactive(
     """交互循环：自然语言输入直接推进回合；``:help/:look/:inv/:status/:quit`` 为本地命令。
 
     ``start_notice`` 为首屏「存档：继续/新开」提示（默认不打印，保持原有输出）；
-    首屏环顾之后按只读视图给一行「当前可做」引导（真实数据，不编造剧情）。
+    首屏环顾之后按只读视图给「目标进度 + 当前可做」引导（真实数据，不编造剧情）。
+    story 场景走到结局（``status=ended``）时打印结局屏并停止接收行动输入（只允许 :quit 等）。
     """
     out("=== 文字交互游戏 · 终端可玩入口（2G 文字 MUD）===")
     out("")
@@ -518,11 +730,13 @@ def run_interactive(
     if start_notice:
         out(start_notice)
         out("")
-    _show_turn(session, "环顾四周", out)
-    guidance = scene_guidance(session.view())
-    if guidance:
-        out("\n".join(guidance))
-        out("")
+    view = _show_turn(session, "环顾四周", out)
+    ended = _print_ending(view, out)
+    if not ended:
+        guidance = scene_guidance(view)
+        if guidance:
+            out("\n".join(guidance))
+            out("")
     while True:
         try:
             line = read_line("> ")
@@ -537,22 +751,31 @@ def run_interactive(
             out("再见。")
             return
         if command == ":help":
-            _print_help(out)
+            _print_help(out, view)
             continue
         if command == ":look":
-            _show_turn(session, "环顾四周", out)
+            view = _show_turn(session, "环顾四周", out)
+            ended = _print_ending(view, out) or ended
             continue
         if command == ":inv":
             _show_inventory(session, out)
             continue
         if command == ":status":
             out(status_line(session.view()))
+            for goal_line in goal_guidance(session.view()):
+                out(goal_line)
             out("")
             continue
         if command.startswith(":"):
             out("未知命令；输入 :help 查看可用命令。")
             continue
-        _show_turn(session, command, out)
+        if ended:
+            out(ENDING_HINT)
+            out("")
+            continue
+        view = _show_turn(session, command, out)
+        if _print_ending(view, out):
+            ended = True
 
 
 def _run_check_app() -> int:
@@ -567,19 +790,79 @@ def _run_check_app() -> int:
             dispose_app_engine(app)
 
 
+def _run_list_app(db_target: Path | str | None = None) -> int:
+    """``--list``：列出同库最近存档（``GET /api/v1/games``，按最近更新倒序）后退出。
+
+    只读：不建局、不写库；``--db`` 与交互模式同口径（文件路径 / sqlite:/// DSN）。
+    旧后端缺该端点时降级为提示（不阻塞其它入口）。
+    """
+    if isinstance(db_target, str):
+        db_url = db_target
+    elif db_target is not None:
+        db_url = f"sqlite:///{db_target.resolve().as_posix()}"
+    else:
+        db_url = _configured_db_url()
+    app = build_app(db_url if db_target is not None else None)
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/games", params={"limit": 10})
+            if response.status_code != 200:
+                raise ConsoleError(
+                    "存档列表暂不可用（后端未提供 /api/v1/games）；可先用 --continue 继续最近存档。"
+                )
+            payload = response.json()
+        games = payload.get("games") if isinstance(payload, dict) else None
+        rows = [row for row in games if isinstance(row, dict)] if isinstance(games, list) else []
+        total = payload.get("total") if isinstance(payload, dict) else None
+        if not rows:
+            print("还没有存档：运行 .\\scripts\\play.ps1（或 python -m textgame.console）开一局。")
+            return 0
+        shown_total = total if isinstance(total, int) and total > 0 else len(rows)
+        print(f"最近存档（共 {shown_total} 个，按最近更新排序；最多显示 10 个）：")
+        for index, row in enumerate(rows, start=1):
+            raw_scenario = row.get("scenario")
+            scenario = raw_scenario if isinstance(raw_scenario, str) and raw_scenario else "m2"
+            label = SCENARIO_LABELS.get(scenario, scenario)
+            turn = row.get("turn")
+            turn_part = f"第 {turn} 回合" if isinstance(turn, int) else "回合未知"
+            status_part = "已结局" if row.get("status") == "ended" else "进行中"
+            raw_game_id = row.get("game_id")
+            short_id = raw_game_id[:8] if isinstance(raw_game_id, str) else "未知"
+            print(f"{index}. [{label}] {turn_part} · {status_part} · 存档 {short_id}")
+        print("")
+        print("续玩最近存档：python -m textgame.console --continue")
+        print("开新一局：python -m textgame.console --new --scenario story")
+        return 0
+    finally:
+        dispose_app_engine(app)
+
+
 def _run_interactive_app(
-    db_path: Path | None,
+    db_target: Path | str | None,
     seed: int,
     *,
     scenario: str = "m2",
+    requested_scenario: str | None = None,
     continue_save: bool = False,
     new_game: bool = False,
 ) -> int:
-    """交互入口：装配组合根 → 决定继续/新开 → 进入回合循环。"""
-    db_url = (
-        f"sqlite:///{db_path.resolve().as_posix()}" if db_path is not None else _configured_db_url()
-    )
-    app = build_app(db_url if db_path is not None else None)
+    """交互入口：装配组合根 → 决定继续/新开 → 进入回合循环。
+
+    ``db_target``：``None``=用配置默认库；``Path``=本地 SQLite 文件；``str``=``sqlite:///`` DSN
+    （``--db`` 的 DSN 自动转换结果）。
+    """
+    if isinstance(db_target, str):
+        db_url = db_target
+    elif db_target is not None:
+        db_url = f"sqlite:///{db_target.resolve().as_posix()}"
+    else:
+        db_url = _configured_db_url()
+    try:
+        app = build_app(db_url if db_target is not None else None)
+    except Exception as exc:  # 存档路径不可用时转成玩家可读提示
+        raise ConsoleError(
+            f"无法打开或创建存档（请检查 --db 路径与目录权限）：{exc.__class__.__name__}"
+        ) from exc
     try:
         with TestClient(app) as client:
             session = GameSession(client, seed=seed, scenario=scenario)
@@ -588,6 +871,7 @@ def _run_interactive_app(
                 db_url=db_url,
                 continue_save=continue_save,
                 new_game=new_game,
+                requested_scenario=requested_scenario,
             )
             run_interactive(session, start_notice=notice)
     finally:
@@ -605,14 +889,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--check", action="store_true", help="脚本化 4 回合自检后退出（固定 m2，输出与 OSS-1 一致）"
     )
     parser.add_argument(
-        "--db", type=Path, default=None, help="SQLite 存档路径（默认 data/textgame.db）"
+        "--db",
+        type=str,
+        default=None,
+        help="SQLite 存档路径或 sqlite:/// DSN（默认 data/textgame.db）",
+    )
+    parser.add_argument(
+        "--list",
+        dest="list_games",
+        action="store_true",
+        help="列出同库最近存档（按最近更新排序）后退出",
     )
     parser.add_argument("--seed", type=int, default=42, help="新存档随机种子（默认 42）")
     parser.add_argument(
         "--scenario",
         choices=SUPPORTED_SCENARIOS,
         default="m2",
-        help="新开存档的场景：m2 单场景 / m3 多角色 / m4 制造（默认 m2）",
+        help=(
+            "新开存档的场景：m2 单场景 / m3 多角色 / m4 制造 / "
+            "story「余烬哨站」剧情（推荐首玩）；默认 m2"
+        ),
     )
     parser.add_argument(
         "--continue",
@@ -630,18 +926,37 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _explicit_scenario(argv: Sequence[str]) -> str | None:
+    """从原始 argv 判断用户是否**显式**给了 ``--scenario``（argparse 默认值无法区分）。
+
+    未显式给时返回 ``None``（自动继续旧存档不提示场景差异）；显式给时返回其值
+    （``--scenario m3`` 或 ``--scenario=m3``），供 :func:`prepare_session` 做场景一致性检查。
+    """
+    tokens = list(argv)
+    for index, token in enumerate(tokens):
+        if token == "--scenario" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith("--scenario="):
+            return token.split("=", 1)[1]
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """终端入口：``python -m textgame.console [--check] [--db PATH] [--seed N]
-    [--scenario m2|m3|m4] [--continue|--resume] [--new]``。"""
-    args = _build_parser().parse_args(argv)
-    ensure_utf8_stdout()
+    """终端入口：``python -m textgame.console [--check|--list] [--db PATH|DSN] [--seed N]
+    [--scenario m2|m3|m4|story] [--continue|--resume] [--new]``。"""
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
+    args = _build_parser().parse_args(raw_args)
+    ensure_utf8_stdio()
     try:
         if args.check:
             return _run_check_app()
+        if args.list_games:
+            return _run_list_app(_parse_db_target(args.db))
         return _run_interactive_app(
-            args.db,
+            _parse_db_target(args.db),
             int(args.seed),
             scenario=str(args.scenario),
+            requested_scenario=_explicit_scenario(raw_args),
             continue_save=bool(args.continue_save),
             new_game=bool(args.new_game),
         )

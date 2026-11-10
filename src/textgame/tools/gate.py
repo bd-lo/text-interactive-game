@@ -34,9 +34,18 @@ class QueryServicePort(Protocol):
 
 
 class ActionServicePort(Protocol):
-    """gate 用到的服务方法 (契约 §4.3)：``look`` 只读；其余写方法只产草稿 ``Event``。"""
+    """gate 用到的服务方法 (契约 §4.3)：``look``/``inspect`` 只读；其余写方法只产草稿 ``Event``。"""
 
     def look(self, ctx: ToolContext, state: GameState) -> Result: ...
+
+    def inspect(
+        self,
+        ctx: ToolContext,
+        state: GameState,
+        *,
+        item_id: str | None = None,
+        npc_id: str | None = None,
+    ) -> Result: ...
 
     def move_to(self, ctx: ToolContext, state: GameState, *, direction: Direction) -> Result: ...
 
@@ -100,20 +109,30 @@ class ToolGate:
             return validated
         params = cast(dict[str, Any], validated.data["args"])
         if spec.side_effect is SideEffect.READ_ONLY:
-            return self._dispatch_read(tool, ctx, state)
+            return self._dispatch_read(tool, params, ctx, state)
         return self._dispatch_write(tool, params, ctx, state)
 
-    def _dispatch_read(self, tool: str, ctx: ToolContext, state: GameState) -> Result:
+    def _dispatch_read(
+        self, tool: str, params: dict[str, Any], ctx: ToolContext, state: GameState
+    ) -> Result:
         """只读路由：返回 ``Result.success(data=...)``、零事件。
 
         ``get_room_view`` 走 ``ActionService.look`` 拿一屏房间文本（``data={"text": ...}``，
-        编排层只读叙事可直接使用）；``get_inventory`` 走 ``QueryService.get_inventory``。
+        编排层只读叙事可直接使用）；``get_inventory`` 走 ``QueryService.get_inventory``；
+        ``inspect_item`` 走 ``ActionService.inspect`` 拿物品/NPC 描述（D6，零事件）。
         """
         try:
             if tool == "get_room_view":
                 return self._action.look(ctx, state)
             if tool == "get_inventory":
                 return Result.success(data=self._query.get_inventory(state, ctx.actor_id))
+            if tool == "inspect_item":
+                return self._action.inspect(
+                    ctx,
+                    state,
+                    item_id=cast(str | None, params.get("item_id")),
+                    npc_id=cast(str | None, params.get("npc_id")),
+                )
         except Exception:  # 不向调用方暴露内部异常细节 (第 7 章 7.5)
             return Result.fail(ErrorCode.INTERNAL, "tool dispatch failed")
         return Result.fail(ErrorCode.NOT_ALLOWED, f"unsupported read tool: {tool}")

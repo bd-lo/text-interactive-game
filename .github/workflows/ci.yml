@@ -146,5 +146,18 @@ jobs:
         run: pnpm --dir web build
       - name: 构建产物校验（SPA 入口存在）
         run: test -f web/dist/index.html && ls -lh web/dist/assets
+      - name: dist 漂移门禁（web/dist 入库产物必须与 pnpm build 输出一致，D10）
+        # web/dist 由 Lead 在集成时统一入库（fresh clone 无 Node 可玩网页版）。
+        # 本门禁防止「改了 web/src 但忘记重建/提交 dist」；.gitattributes 的
+        # `web/dist/** -text -diff`（OSS 任务同批提交）避免换行/二进制误判。
+        # 过渡期：dist 尚未入库时本步骤通过；入库后构建产物与提交内容不一致即失败。
+        run: |
+          echo "== web/dist 相对 HEAD 的变化 =="
+          git status --porcelain -- web/dist
+          if [ -n "$(git status --porcelain -- web/dist)" ]; then
+            echo "::error::web/dist 与 pnpm build 输出不一致：请本地重建并提交构建产物（D10）。"
+            exit 1
+          fi
+          git diff --exit-code -- web/dist
       - name: 单元测试（vitest：幂等键/版本链/错误契约/安全静态扫描）
         run: pnpm --dir web test

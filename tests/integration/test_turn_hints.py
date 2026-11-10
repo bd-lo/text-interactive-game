@@ -1,8 +1,8 @@
-"""M6 加法字段：失败回合的 ``effects``/``suggested_actions``（A4，零文案/零 golden 改动）。
+"""M6 加法字段：失败回合 ``effects``/``suggested_actions`` 与成功回合 ``suggested_actions``（A4/D7）。
 
-验证点：失败 ``TurnResult`` 追加结构化 ``hint`` + 3–4 条可行动作建议；**``text`` 原文、
-``version``、事件与零写入语义完全不变**；成功回合两字段保持空列表；失败结果不进入幂等
-缓存（重复请求提示稳定且仍零写入）。
+验证点：失败 ``TurnResult`` 追加结构化 ``hint`` + 3–4 条可行动作建议；成功回合填 1–4 条当前
+可提交的下一步指令（``effects`` 仍空）；**``text`` 原文、``version``、事件与零写入语义完全不变**；
+失败结果不进入幂等缓存（重复请求提示稳定且仍零写入）。
 """
 
 from __future__ import annotations
@@ -119,8 +119,11 @@ def test_rejected_action_still_gets_hints_zero_writes(game_harness) -> None:
     assert len(repo.read_events(game_id)) == 1
 
 
-def test_successful_turn_keeps_hint_fields_empty(game_harness) -> None:
-    """成功回合：两字段保持空列表（首版只在失败时填充），其余契约不变。"""
+def test_successful_turn_fills_suggested_actions_but_keeps_effects_empty(game_harness) -> None:
+    """成功回合（D7）：``suggested_actions`` 填 1–4 条当前可提交的中文指令，``effects`` 仍空。
+
+    ``text`` 原文不变（既有 80–150 字叙事口径）、无内部 ID/英文诊断；失败提示只在失败回合出现。
+    """
     client = game_harness.client
     game_id = _create_game(client)["game_id"]
 
@@ -134,7 +137,13 @@ def test_successful_turn_keeps_hint_fields_empty(game_harness) -> None:
 
     assert body["ok"] is True
     assert body["effects"] == []
-    assert body["suggested_actions"] == []
+    actions = body["suggested_actions"]
+    assert 1 <= len(actions) <= 4
+    assert all(isinstance(action, str) and action for action in actions)
+    # 玩家可读：不出现内部 ID/协议术语
+    joined = "".join(actions)
+    assert "_" not in joined
+    assert "item" not in joined.lower() and "npc" not in joined.lower()
     assert body["events"]
     assert body["version"] == 2
 

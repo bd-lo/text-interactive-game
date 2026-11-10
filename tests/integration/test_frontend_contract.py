@@ -54,8 +54,13 @@ RESPONSE_INTERFACES = {
     "GameViewResponse": "GameViewResponse",
     "GamePlayerViewResponse": "GamePlayerViewResponse",
     "ItemRef": "ItemRefResponse",
+    "InventoryItem": "InventoryItemResponse",
     "NpcRef": "NpcRefResponse",
     "RoomView": "RoomViewResponse",
+    "GoalObjective": "GoalObjectiveResponse",
+    "Goal": "GoalResponse",
+    "GameListItem": "GameListItemResponse",
+    "GameListResponse": "GameListResponse",
     "EventRecord": "Event",
     "ReplayEvent": "ReplayEventResponse",
     "ReplayResponse": "ReplayResponse",
@@ -104,6 +109,12 @@ def _frontend_paths() -> set[str]:
     """types.ts 中 `API_PATHS` 常量声明的端点路径集合。"""
     source = TYPES_TS.read_text(encoding="utf-8")
     return set(dict(_API_PATH_RE.findall(source)).values())
+
+
+def _frontend_api_paths() -> dict[str, str]:
+    """types.ts 中 `API_PATHS` 常量：名字 → 路径（用于断言方法级契约）。"""
+    source = TYPES_TS.read_text(encoding="utf-8")
+    return dict(_API_PATH_RE.findall(source))
 
 
 #: 一份合法人物卡（9 字段；第 5 章 §5.7）。
@@ -389,6 +400,30 @@ def test_replay_openapi_query_contract() -> None:
     assert limit_schema["default"] == 200
     assert limit_schema["minimum"] == 1
     assert limit_schema["maximum"] == 500
+
+
+def test_game_list_endpoint_consistency() -> None:
+    """D9 存档列表契约：前端 `listGames` 映射到 `GET /api/v1/games`（与建局同路径不同方法）。
+
+    `API_PATHS` 只有路径集合，无法区分 GET/POST；这里补方法级断言，防止把列表端点
+    误接成建局（同一路径）或只声明不接。
+    """
+    api_paths = _frontend_api_paths()
+    assert api_paths["listGames"] == "/api/v1/games"
+    assert api_paths["createGame"] == "/api/v1/games"
+    operations = _openapi()["paths"]["/api/v1/games"]
+    assert {"get", "post"} <= set(operations), "GET（列表）与 POST（建局）都必须存在"
+    assert "200" in operations["get"]["responses"], "GET /games 应返回 200 列表"
+    assert "201" in operations["post"]["responses"], "POST /games 应返回 201 建局"
+    # 列表端点分页口径：limit 默认 10（1..50）、offset ≥0
+    params = {
+        parameter["name"]: parameter
+        for parameter in operations["get"].get("parameters", [])
+        if parameter.get("in") == "query"
+    }
+    assert params["limit"]["schema"]["default"] == 10
+    assert params["limit"]["schema"]["maximum"] == 50
+    assert params["offset"]["schema"]["minimum"] == 0
 
 
 def test_frontend_source_has_no_forbidden_patterns() -> None:

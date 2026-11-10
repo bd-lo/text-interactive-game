@@ -53,13 +53,13 @@ onMounted(() => {
     <header class="game-head">
       <h2>人物卡库</h2>
       <p class="game-meta">
-        共 {{ store.total }} 张 · 第 {{ store.page }} / {{ store.totalPages }} 页 · 每页 {{ store.limit }} 张（服务端 limit 上限 100）
+        共 {{ store.total }} 张 · 第 {{ store.page }} / {{ store.totalPages }} 页
       </p>
     </header>
 
     <div class="game-tools">
       <RouterLink class="btn btn-small" :to="{ name: 'card-import' }">导入卡片</RouterLink>
-      <span class="muted">只读列表：GET /api/v1/character-cards?query=&limit=&offset=</span>
+      <span class="muted">挑一张卡开始冒险，或从 JSON 导入自己的角色。</span>
     </div>
 
     <form class="panel cards-tools" @submit.prevent="onSearch">

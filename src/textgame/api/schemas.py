@@ -28,9 +28,10 @@ class TurnRequestBody(BaseModel):
 class CreateGameBody(BaseModel):
     """``POST /api/v1/games`` 请求体；可省略，``seed`` 缺省用服务端默认种子。
 
-    可选 ``scenario``（``m2`` 单场景 / ``m3`` 多角色场景 / ``m4`` 制造场景），缺省
-    ``m2`` 保持 M2 契约与回放不变（D-M3-3/D-M4-11）。D-M6-2 加法：``card_id`` 指定人物卡
-    建局（与 ``seed``/``scenario`` 互斥，同给 → 422 ``INVALID_INPUT``）；不提供时行为与
+    可选 ``scenario``（``m2`` 单场景 / ``m3`` 多角色场景 / ``m4`` 制造场景 /
+    ``story`` 剧情场景「余烬哨站」，推荐首玩），缺省 ``m2`` 保持 M2 契约与回放不变
+    （D-M3-3/D-M4-11/D-TEAM-D1）。D-M6-2 加法：``card_id`` 指定人物卡建局（与
+    ``seed``/``scenario`` 互斥，同给 → 422 ``INVALID_INPUT``）；不提供时行为与
     M2–M4 完全一致。
     """
 
@@ -38,7 +39,7 @@ class CreateGameBody(BaseModel):
 
     card_id: str | None = Field(default=None, min_length=1, max_length=64)
     seed: int | None = Field(default=None, ge=0)
-    scenario: Literal["m2", "m3", "m4"] = "m2"
+    scenario: Literal["m2", "m3", "m4", "story"] = "m2"
 
 
 class CreatedGameResponse(BaseModel):
@@ -54,7 +55,11 @@ class CreatedGameResponse(BaseModel):
 
 
 class GameViewResponse(BaseModel):
-    """``GET /api/v1/games/{game_id}`` 200 响应（刷新/重连恢复用）。"""
+    """``GET /api/v1/games/{game_id}`` 200 响应（刷新/重连恢复用）。
+
+    加法字段（D9）：``scenario`` 为场景名；``ending_text`` 为故事结局正文（旧场景/未结束
+    为 ``None``）；``status=ended`` 由结局读时求值得出（不写状态、不加事件）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -64,6 +69,8 @@ class GameViewResponse(BaseModel):
     snapshot_version: int
     status: Literal["active", "ended"]
     last_text: str | None = None
+    scenario: str = "m2"
+    ending_text: str | None = None
 
 
 class ItemRefResponse(BaseModel):
@@ -85,7 +92,11 @@ class NpcRefResponse(BaseModel):
 
 
 class RoomViewResponse(BaseModel):
-    """玩家所在房间视图（只读；与 ``QueryService.get_room_view`` 同口径）。"""
+    """玩家所在房间视图（只读；与 ``QueryService.get_room_view`` 同口径）。
+
+    ``exit_names``（加法字段，D9）：方向 → 目标房间展示名，前端据此渲染「北 → 地窖」
+    而不是内部房间 ID；``exits`` 保留方向 → 房间 ID 的既有契约不变。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -93,6 +104,7 @@ class RoomViewResponse(BaseModel):
     title: str
     description: str
     exits: dict[str, str]
+    exit_names: dict[str, str] = Field(default_factory=dict)
     items: list[ItemRefResponse]
     npcs: list[NpcRefResponse]
 
@@ -112,10 +124,34 @@ class InventoryItemResponse(BaseModel):
     qty: int = Field(default=1, ge=1)
 
 
+class GoalObjectiveResponse(BaseModel):
+    """剧情目标的一条子目标（``/view.goal.objectives[]``，D9 加法字段）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str
+    done: bool
+
+
+class GoalResponse(BaseModel):
+    """剧情目标视图（仅 story 场景非空；旧场景 ``goal=None``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    description: str
+    objectives: list[GoalObjectiveResponse]
+
+
 class GamePlayerViewResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/view`` 200 响应（M6 状态面板/终端客户端契约）。
 
     只读：不产生事件、``version`` 不变；``version`` 语义与 ``GameViewResponse`` 一致。
+
+    加法字段（D9）：``scenario`` 场景名、``goal`` 剧情目标（旧场景 ``None``）、
+    ``ending_text`` 结局正文（未结束 ``None``）、``suggested_actions`` 当前可执行的下一步
+    指令（成功回合也给，供前端「可点建议 / 新手引导」使用）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -125,10 +161,38 @@ class GamePlayerViewResponse(BaseModel):
     version: int
     snapshot_version: int
     status: Literal["active", "ended"]
+    scenario: str = "m2"
     hp: int
     max_hp: int
     inventory: list[InventoryItemResponse]
     room: RoomViewResponse
+    goal: GoalResponse | None = None
+    ending_text: str | None = None
+    suggested_actions: list[str] = Field(default_factory=list)
+
+
+class GameListItemResponse(BaseModel):
+    """``GET /api/v1/games`` 列表项（M6 存档列表/续玩；只读，按最近更新时间倒序）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    game_id: str
+    turn: int
+    version: int
+    snapshot_version: int
+    status: Literal["active", "ended"]
+    scenario: str
+    last_text: str | None = None
+    updated_at: datetime | None = None
+
+
+class GameListResponse(BaseModel):
+    """``GET /api/v1/games`` 200 响应 ``{games, total}``（分页：``limit``≤50、``offset``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    games: list[GameListItemResponse]
+    total: int
 
 
 class ReplayEventResponse(BaseModel):
@@ -283,8 +347,12 @@ __all__ = [
     "CharacterCardWarningResponse",
     "CreateGameBody",
     "CreatedGameResponse",
+    "GameListItemResponse",
+    "GameListResponse",
     "GamePlayerViewResponse",
     "GameViewResponse",
+    "GoalObjectiveResponse",
+    "GoalResponse",
     "InventoryItemResponse",
     "ItemRefResponse",
     "NpcRefResponse",

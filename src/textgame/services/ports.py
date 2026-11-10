@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from textgame.domain.crafting import CraftView
@@ -19,12 +20,17 @@ from textgame.domain.results import Result
 
 @dataclass(frozen=True)
 class GameRecord:
-    """存档当前状态投影；``version`` 是下一次提交的 expected_version。"""
+    """存档当前状态投影；``version`` 是下一次提交的 expected_version。
+
+    ``updated_at``（加法字段，默认 ``None``）：最近一次提交的 UTC 时间，供
+    ``GET /api/v1/games`` 存档列表按最近更新倒序；不参与事件溯源与 ``state_hash``。
+    """
 
     game_id: str
     state: GameState
     version: int
     last_seq: int
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,17 @@ class GameRepository(Protocol):
 
     def load(self, game_id: str) -> GameRecord | None:
         """读当前状态；current 行缺失时用「最新快照 + 之后事件」重建 (第 14 章 14.4)。"""
+        ...
+
+    def list_games(self, *, limit: int, offset: int) -> list[GameRecord]:
+        """按最近更新时间倒序返回存档摘要（只读、零写入；M6 存档列表/续玩 UI 用）。
+
+        ``limit`` 由调用方限制在 1..50；无存档返回空列表。
+        """
+        ...
+
+    def count_games(self) -> int:
+        """返回存档总数（只读；列表分页 ``total`` 用）。"""
         ...
 
     def read_events(self, game_id: str, *, after_seq: int = 0) -> list[Event]:

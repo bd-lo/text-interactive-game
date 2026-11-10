@@ -13,11 +13,43 @@ from typing import Any, Literal
 from textgame.domain.events import Event
 from textgame.domain.models import Character, EntityRef, GameState, PerceptionSlice
 from textgame.domain.perception import filter_local_events
-from textgame.domain.scenario import PLAYER_ID
+from textgame.domain.scenario import (
+    M3_NPC_SCAVENGER_A,
+    M3_NPC_SCAVENGER_B,
+    M4_ROOM_FORGE,
+    PLAYER_ID,
+)
+from textgame.domain.scenario_story import (
+    STORY_SCENARIO,
+    is_story_state,
+    story_ending,
+    story_goal,
+)
+from textgame.domain.suggestions import suggest_actions
 from textgame.services.ports import GameRepository
 
 #: 感知切片实体种类（与 ``EntityRef.kind`` 的 Literal 对齐）。
 EntityKind = Literal["character", "room", "item", "npc", "quest"]
+
+
+def scenario_name_of_state(state: GameState) -> str:
+    """从状态事实推导场景名（不新增 GameState 字段、不改事件/快照）。
+
+    判定顺序：story 独有房间 → m4 铁匠铺房间 → m3 拾荒者角色槽位 → 缺省 m2。
+    「按卡建局」等自定义初始状态没有场景标记，按缺省 ``m2`` 处理（与建局契约一致）。
+    """
+    if is_story_state(state):
+        return STORY_SCENARIO
+    if M4_ROOM_FORGE in state.rooms:
+        return "m4"
+    if M3_NPC_SCAVENGER_A in state.characters or M3_NPC_SCAVENGER_B in state.characters:
+        return "m3"
+    return "m2"
+
+
+def game_ending_of_state(state: GameState) -> dict[str, Any] | None:
+    """当前状态的结局视图（仅 story 场景；未结束/旧场景返回 ``None``）。"""
+    return story_ending(state)
 
 
 class GameNotFoundError(LookupError):
@@ -37,7 +69,10 @@ class QueryService:
         self._repo = repo
 
     def get_room_view(self, state: GameState, actor_id: str) -> dict[str, Any]:
-        """返回 ``{room_id, title, description, exits, items[], npcs[]}``（契约 §4.2）。
+        """返回 ``{room_id, title, description, exits, exit_names, items[], npcs[]}``。
+
+        ``exit_names``（加法字段）：方向 → 目标房间展示名，供前端/终端把「北 → 地窖」
+        渲染成玩家可读的出口，而不是内部房间 ID；``exits`` 保留 ID 映射不变（契约兼容）。
 
         角色不存在时抛 ``ValueError``（内部调用方须保证 actor 合法）。
         """
@@ -58,6 +93,10 @@ class QueryService:
             "title": room.name,
             "description": room.description,
             "exits": dict(room.exits),
+            "exit_names": {
+                direction: state.rooms[target].name if target in state.rooms else direction
+                for direction, target in room.exits.items()
+            },
             "items": items,
             "npcs": npcs,
         }
@@ -172,12 +211,25 @@ class QueryService:
             local_events=filter_local_events(events, actor_id),
             private_memory=private_memory,
             plan_hint=plan_hint,
+            # R2 加法（D6 离线 NLU 房间名导航）：「去地窖」类输入靠相邻房间名 → 方向。
+            # 编码契约：kind="room"、id=方向英文值、name=目标房间展示名（不含内部 ID）。
+            exit_refs=[
+                EntityRef(
+                    kind="room",
+                    id=direction,
+                    name=state.rooms[target].name if target in state.rooms else direction,
+                )
+                for direction, target in room.exits.items()
+            ],
         )
 
     def get_game_view(self, game_id: str) -> dict[str, Any]:
-        """返回对局视图 ``{game_id, turn, version, snapshot_version, status, last_text}``。
+        """返回对局视图 ``{game_id, turn, version, snapshot_version, status, last_text,
+        scenario, ending_text}``。
 
         ``last_text`` 取最近一条事件 ``result["narrative"]``（M2 模板叙事落库口径）；
+        ``status`` 由 ``story_ending`` 读时纯求值（story 胜利/倒下 → ``ended``，旧场景恒
+        ``active``）；``ending_text`` 为结局正文（未结束为 ``None``）。只读、零写入。
         存档不存在抛 ``GameNotFoundError``，接入层映射 404。
         """
         record = self._repo.load(game_id)
@@ -190,13 +242,16 @@ class QueryService:
                 last_text = narrative
                 break
         snapshot = self._repo.latest_snapshot(game_id)
+        ending = game_ending_of_state(record.state)
         return {
             "game_id": game_id,
             "turn": record.state.turn,
             "version": record.version,
             "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
-            "status": "active",
+            "status": "ended" if ending is not None else "active",
             "last_text": last_text,
+            "scenario": scenario_name_of_state(record.state),
+            "ending_text": str(ending["text"]) if ending is not None else None,
         }
 
     def get_player_view(self, game_id: str) -> dict[str, Any]:
@@ -204,14 +259,16 @@ class QueryService:
 
         契约（M6 前端 StatusPanel / 终端客户端共用）：
 
-        ``{game_id, turn, version, snapshot_version, status, hp, max_hp,
-        inventory:[{item_id,name}], room:{room_id,title,description,exits,items,npcs}}``。
+        ``{game_id, turn, version, snapshot_version, status, scenario, hp, max_hp,
+        inventory:[{item_id,name,qty}], room:{room_id,title,description,exits,exit_names,
+        items,npcs}, goal, ending_text, suggested_actions}``。
 
         ``turn``/``version``/``snapshot_version``/``status`` 与 ``get_game_view`` 同口径
         （``version`` 仍是下一次提交的 ``expected_version``；本方法不产生任何事件）；
         ``hp``/``max_hp``/``inventory`` 取玩家角色（``PLAYER_ID``）当前状态，
-        ``room`` 复用 :meth:`get_room_view` 的可见性口径。存档不存在抛
-        :class:`GameNotFoundError`（接入层映射 404 ``NOT_FOUND`` 信封）。
+        ``room`` 复用 :meth:`get_room_view` 的可见性口径；``goal``/``ending_text`` 仅
+        story 场景有值（旧场景 ``None``），``suggested_actions`` 为当前可执行的下一步
+        指令（成功回合也给，D7）。存档不存在抛 :class:`GameNotFoundError`。
         """
         record = self._repo.load(game_id)
         if record is None:
@@ -220,17 +277,54 @@ class QueryService:
         character = self._require_character(state, PLAYER_ID)
         max_hp = character.attributes.get("max_hp")
         snapshot = self._repo.latest_snapshot(game_id)
+        ending = game_ending_of_state(state)
         return {
             "game_id": game_id,
             "turn": state.turn,
             "version": record.version,
             "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
-            "status": "active",
+            "status": "ended" if ending is not None else "active",
+            "scenario": scenario_name_of_state(state),
             "hp": character.hp,
             "max_hp": max_hp if max_hp is not None else character.hp,
             "inventory": self.get_inventory(state, PLAYER_ID)["items"],
             "room": self.get_room_view(state, PLAYER_ID),
+            "goal": story_goal(state),
+            "ending_text": str(ending["text"]) if ending is not None else None,
+            "suggested_actions": suggest_actions(state),
         }
+
+    def list_games(self, *, limit: int = 10, offset: int = 0) -> dict[str, Any]:
+        """返回存档列表 ``{games:[...], total}``（只读、零写入；M6 续玩 UI 用）。
+
+        列表项：``{game_id, turn, version, snapshot_version, status, scenario, last_text,
+        updated_at}``，按最近提交时间倒序；``total`` 为存档总数。``limit`` 由调用方校验
+        （1..50）。不存在的列表为空。
+        """
+        records = self._repo.list_games(limit=limit, offset=offset)
+        games: list[dict[str, Any]] = []
+        for record in records:
+            last_text: str | None = None
+            for event in reversed(self._repo.read_events(record.game_id)):
+                narrative = event.result.get("narrative")
+                if isinstance(narrative, str) and narrative:
+                    last_text = narrative
+                    break
+            snapshot = self._repo.latest_snapshot(record.game_id)
+            ending = game_ending_of_state(record.state)
+            games.append(
+                {
+                    "game_id": record.game_id,
+                    "turn": record.state.turn,
+                    "version": record.version,
+                    "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
+                    "status": "ended" if ending is not None else "active",
+                    "scenario": scenario_name_of_state(record.state),
+                    "last_text": last_text,
+                    "updated_at": record.updated_at,
+                }
+            )
+        return {"games": games, "total": self._repo.count_games()}
 
     def read_events(self, game_id: str) -> list[Event]:
         """按 ``seq`` 升序返回存档全部已盖章事件（只读、零写入；M6 回放端点用）。

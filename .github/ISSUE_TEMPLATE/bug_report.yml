@@ -1,0 +1,71 @@
+name: Bug 报告（网页/终端/API）
+description: 报告可复现的问题（游戏玩法、网页版、终端版、HTTP API）
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先搜索是否已有相同 Issue。
+        **安全漏洞请勿公开报告**，按 [SECURITY.md](https://github.com/bd-lo/text-interactive-game/blob/main/SECURITY.md) 私下提交。
+
+  - type: dropdown
+    id: entry
+    attributes:
+      label: 使用入口
+      options:
+        - 网页版（scripts/play.ps1 或 play.sh）
+        - 终端版（console / play -Terminal）
+        - HTTP API（curl / 自建客户端）
+        - 开发/测试（pytest、pnpm build 等）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请给可复制的命令或操作顺序
+      placeholder: |
+        1. git clone ...
+        2. .\scripts\play.ps1
+        3. 输入「拿起火把」
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 报错原文/截图/HTTP 响应；存档相关请说明用的场景（m2/m3/m4）与 seed
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux
+        - WSL / Git Bash
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: 版本信息
+      description: 输出 `uv --version` 与 `uv run python -VV`（网页问题另加 `node --version`、`pnpm --version`）
+      placeholder: uv 0.13.7 / Python 3.12.x
+    validations:
+      required: false

@@ -17,10 +17,17 @@ uv sync --frozen --no-dev        # 仅运行时依赖（只想试玩时更快，
 ## 2. 先跑起来（提交前自测）
 
 ```bash
+.\scripts\play.ps1 -Check                  # 网页版自检：启动服务 → /healthz 与 / 均 200 → 退出（Windows）
+./scripts/play.sh --check                  # 同上（bash）
+.\scripts\play.ps1 -Terminal               # 终端版（等价旧 quickstart）
 uv run python -m textgame.demo --check      # 固定 seed 七屏离线自检（exit 0）
 uv run python -m textgame.console --check   # 终端入口四回合自检（exit 0）
 uv run pytest -q tests/integration/test_console_walkthrough.py
 ```
+
+> 仓库已入库预构建的 `web/dist`（R2 分发方案 A）：玩家 fresh clone 无需 Node 即可玩网页版。
+> 因此**改了 `web/src/**` 或 `web/index.html` 就必须** `pnpm --dir web build` 并提交产物
+> `web/dist`（否则玩家拿到旧页面）；CI/集成阶段会校验产物与源码一致。
 
 ## 3. 四门质量门（与 CI 同命令，PR 必须全绿）
 
@@ -28,8 +35,8 @@ uv run pytest -q tests/integration/test_console_walkthrough.py
 uv run ruff format --check . && uv run ruff check .
 uv run mypy src/textgame            # strict，源码保持 3.10 语法
 uv run lint-imports                 # 分层依赖契约（domain 零框架依赖）
-uv run pytest -q                    # 全量（当前基线 1179 passed）
-uv run pytest tests/replay -q       # 回放（当前基线 61 passed）
+uv run pytest -q                    # 全量（数字以当前 HEAD 实际输出为准，不写死基线）
+uv run pytest tests/replay -q       # 回放（golden 61 例冻结，禁止改断言/--snapshot-update）
 ```
 
 - 测试默认禁网（`tests/conftest.py` 的 socket guard 只放行本机回环）；真实 LLM 一律 FakeLLM/cassette，**PR 不得引入真实网络调用或密钥**。
@@ -41,6 +48,8 @@ uv run pytest tests/replay -q       # 回放（当前基线 61 passed）
 - **唯一写入者/事件溯源/`actor_scope`/工具白名单**：不得绕过 `GameEngine`、`EventLog`/CAS、`Resolver`，不放宽权限矩阵。
 - **密钥与数据**：真实密钥只写 `.env`（不入库），`.env*`、`*.db`、`data/`、`artifacts/` 不得提交；`service_role`/API Key/玩家私有数据不得进测试或文档。
 - **依赖与许可证**：不新增依赖（先在 Issue 讨论并通过第 19 章「依赖方向 + 许可证 + 3.10 兼容」三道门）；GPL/AGPL 只能参考设计，不得拷贝代码；`uv.lock`/`pnpm-lock.yaml` 变更单独提交。
+- **分发产物**：`web/dist` 已入库（分发给玩家的预构建网页版）。改前端必须重建并提交该产物；禁止手改 `web/dist` 内容（由 `pnpm --dir web build` 生成）。
+- **安全**：真实密钥只写 `.env`；安全问题不要公开 Issue，按 [SECURITY.md](SECURITY.md) 私下报告。
 - **契约变更**：先查 `docs/decisions/`（ADR 是决策单一权威源）。推翻既有决策 = 新增 ADR（`supersedes: D-x`）→ 回写对应章节 → 重跑全量 + 回放 → 更新 `docs/PROGRESS.md` §5。
 
 ## 5. 提交与文档制度

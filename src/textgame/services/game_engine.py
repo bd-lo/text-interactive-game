@@ -25,13 +25,14 @@ from textgame.domain.scenario import (
     build_m3_state,
     build_m4_state,
 )
+from textgame.domain.scenario_story import build_story_state
 from textgame.services.ports import CommitPayload, GameRepository, SnapshotRecord
 
-Scenario = Literal["m2", "m3", "m4"]
+Scenario = Literal["m2", "m3", "m4", "story"]
 
 _INITIAL_SNAPSHOT_VERSION = 1
 _GAME_ID_PREFIX = "game_"
-_SCENARIOS: frozenset[str] = frozenset({"m2", "m3", "m4"})
+_SCENARIOS: frozenset[str] = frozenset({"m2", "m3", "m4", "story"})
 
 
 class GameEngine:
@@ -64,7 +65,9 @@ class GameEngine:
         """创建存档：``game_created`` 首事件（seq=1）+ 当前状态 + 初始快照（契约 §3.2）。
 
         ``scenario``：``m2``=M2 单场景（默认，保证 M2 golden 不回归）；``m3``=多角色
-        场景（``build_m3_state``）；``m4``=M4 制造场景（``build_m4_state``，D-M4-11）。
+        场景（``build_m3_state``）；``m4``=M4 制造场景（``build_m4_state``，D-M4-11）；
+        ``story``=剧情场景「余烬哨站」（``build_story_state``，D1/T10；旧三场景行为与事件
+        逐字不变）。
 
         D-M6-2 加法（默认 ``None`` 行为与事件/哈希完全不变）：``initial_state`` 为预先构造
         好的初始状态 JSON（人物卡建局时由 ``CardService`` 映射，玩家槽位仍是 ``PLAYER_ID``），
@@ -92,6 +95,8 @@ class GameEngine:
             base_state = build_m3_state(save_seed=save_seed)
         elif scenario == "m4":
             base_state = build_m4_state(save_seed=save_seed)
+        elif scenario == "story":
+            base_state = build_story_state(save_seed=save_seed)
         else:
             base_state = build_initial_state(save_seed=save_seed)
         game_created = Event(

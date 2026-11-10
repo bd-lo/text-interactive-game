@@ -232,7 +232,6 @@ def test_service_rejects_story_tag_prefixes(tags: list[str]) -> None:
     [
         ["consumable"],
         ["light"],
-        ["weapon"],
         ["item.iron_ingot", "material"],
         ["item.potion", "consumable"],
     ],
@@ -251,6 +250,39 @@ def test_service_allows_non_story_items(tags: list[str]) -> None:
     result = service.use_item(_context(), state, item_id=ITEM_RELIC)
     assert result.ok is True
     assert [event.event_type for event in result.events] == [EventType.ITEM_CONSUMED]
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        ["weapon"],
+        ["tool"],
+        ["item.forge_hammer", "tool"],
+        ["item.sword", "weapon"],
+    ],
+)
+def test_service_rejects_weapon_and_tool_as_consumable(tags: list[str]) -> None:
+    """D5：武器/工具标签物品不可被「使用」消耗：INVALID_INPUT、零事件、背包不变。
+
+    世界内说法（不含标签名/内部 ID）；治疗药水（consumable）与 m3 golden 火把（light）不受影响。
+    """
+    service = ActionService(QueryService(InMemoryRepository()))
+    state = build_initial_state(save_seed="save-42")
+    character = state.characters[PLAYER_ID]
+    relic = state.items[ITEM_RELIC].model_copy(update={"tags": tags})
+    items = dict(state.items)
+    items[ITEM_RELIC] = relic
+    characters = dict(state.characters)
+    characters[PLAYER_ID] = character.model_copy(update={"inventory": [ITEM_RELIC]})
+    state = state.model_copy(update={"items": items, "characters": characters})
+
+    result = service.use_item(_context(), state, item_id=ITEM_RELIC)
+
+    assert result.ok is False
+    assert result.error_code is ErrorCode.INVALID_INPUT
+    assert result.events == []
+    assert result.message and result.message.isascii() is False
+    assert "_" not in result.message
 
 
 def test_potion_and_torch_tags_are_not_story() -> None:

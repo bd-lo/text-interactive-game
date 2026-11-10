@@ -93,6 +93,40 @@ export function labelGameStatus(status: 'active' | 'ended'): string {
   return status === 'active' ? '进行中' : '已结束'
 }
 
+/** 场景 ID → 玩家可读名称（`POST /games` 的 `scenario`）。 */
+const SCENARIO_LABELS: Record<string, string> = {
+  story: '余烬哨站（剧情）',
+  m2: '废弃哨站（入门）',
+  m3: '拾荒者营地（多角色）',
+  m4: '工坊（制造）',
+}
+
+/** 场景中文标签；未知值回退原值。 */
+export function labelScenario(scenario: string): string {
+  return SCENARIO_LABELS[scenario] ?? scenario
+}
+
+/** 出口方向键（服务端 `room.exits` 的英文方位）→ 中文。 */
+const DIRECTION_LABELS: Record<string, string> = {
+  north: '北',
+  south: '南',
+  east: '东',
+  west: '西',
+  northeast: '东北',
+  northwest: '西北',
+  southeast: '东南',
+  southwest: '西南',
+  up: '上',
+  down: '下',
+  in: '里',
+  out: '外',
+}
+
+/** 方位中文标签；未知值回退原值（便于发现新增方向而不是静默吞掉）。 */
+export function directionLabel(direction: string): string {
+  return DIRECTION_LABELS[direction] ?? direction
+}
+
 /** 事件序号可读展示：`事件 #12`。 */
 export function formatEventSeq(seq: number): string {
   return `事件 #${seq}`

@@ -72,8 +72,16 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/textgame"]
 
+# R2 分发方案 A：网页构建产物随 wheel 内嵌 → `pip install` 后无需 Node/pnpm 也有网页版。
+# 用自定义 build hook（hatch_build.py）而不是静态 force-include：产物缺失时构建不失败，
+# editable 开发/源码运行读仓库根 `web/dist`（或 TEXTGAME_STATIC_DIR），不要求安装时构建前端。
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.sdist]
-include = ["src/textgame", "tests", "pyproject.toml", "README.md"]
+# sdist 只放源码/测试/构建钩子；网页产物由 hatch_build.py 在构建时强制映射进包源码树
+# （src/textgame/web_dist），因此这里不需要显式列 web/dist。
+include = ["src/textgame", "tests", "hatch_build.py", "pyproject.toml", "README.md"]
 
 # ---------------------------------------------------------------------------
 # ruff：lint + format 一体化（第16章 16.5、第19章 19.3）

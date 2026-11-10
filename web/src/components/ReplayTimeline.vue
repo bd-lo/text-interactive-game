@@ -50,8 +50,8 @@ function onRangeInput(event: Event): void {
 </script>
 
 <template>
-  <section class="panel replay-timeline" aria-label="回放时间轴">
-    <h3 class="panel-title">时间轴（全局 seq）</h3>
+  <section class="panel replay-timeline" aria-label="回放进度">
+    <h3 class="panel-title">回放进度</h3>
     <div class="timeline-controls">
       <button class="btn btn-small btn-secondary" type="button" :disabled="!hasEvents || busy" @click="goFirst">
         ⏮ 首
@@ -83,7 +83,6 @@ function onRangeInput(event: Event): void {
         {{ selectedTurn !== undefined && selectedTurn > 0 ? formatTurn(selectedTurn) + ' · ' : ''
         }}{{ formatEventSeq(selectedSeq) }}
       </span>
-      <span>已加载末事件 #{{ lastSeq }}（共 {{ count }} 条）</span>
       <span>第 {{ hasEvents ? current + 1 : 0 }} / {{ count }} 条</span>
     </p>
     <p v-if="count === 0" class="muted">暂无已加载事件。</p>

@@ -1,0 +1,44 @@
+name: 功能建议
+description: 建议新玩法、新场景、体验改进或工程改进
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索是否已有相同 Issue；也欢迎在 Issue 里先讨论方案，再提 PR。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到/想解决的问题
+      description: 尽量从玩家体验出发（哪里卡住、哪里不好玩、哪里不清楚）
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的方案
+      description: 可给多个备选；涉及引擎/契约变更请说明影响面
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案（可选）
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - 玩法/内容（场景、目标、叙事）
+        - 网页版体验
+        - 终端版体验
+        - API / 引擎 / 持久化
+        - 文档 / 分发 / 工程
+    validations:
+      required: true

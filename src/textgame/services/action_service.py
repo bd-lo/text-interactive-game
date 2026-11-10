@@ -12,9 +12,10 @@ from collections.abc import Sequence
 from typing import Any
 
 from textgame.domain.events import Event, EventType
-from textgame.domain.models import GameState
+from textgame.domain.models import NPC, GameState
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.scenario import DIRECTION_NAMES
+from textgame.domain.scenario_story import story_reply
 from textgame.domain.types import Direction, ItemId, NpcId
 from textgame.services.query_service import QueryService
 from textgame.services.tool_context import ToolContext
@@ -28,6 +29,18 @@ _INVENTORY_LIMIT = 64
 #: 普通消耗品（如 ``consumable``）与一般物品标签（``light``/``weapon``/``item.*``）不受影响。
 _STORY_TAG_PREFIXES: tuple[str, ...] = ("quest", "story")
 
+#: D5：武器/工具标签的物品不可被「使用」消耗（world-internal 说法见 :func:`_use_reject_text`）。
+#: 第 7 章工具矩阵语义内的安全前置：`weapon`/`tool` 是「拿在手里使」的东西，不是消耗品；
+#: m2/m3/m4 golden 的 use_item 输入（m2 治疗药水 consumable、m3 火把 light）均不受影响。
+_NON_CONSUMABLE_TAGS: tuple[str, ...] = ("weapon", "tool")
+
+#: D5 世界内拒绝文案（不出现标签名/内部 ID）；按命中标签给不同说法。
+_USE_REJECT_TEXT: dict[str, str] = {
+    "weapon": "这东西要握在手里才有用，不能这样用掉。",
+    "tool": "这工具要拿在手里使，不能这样用掉。",
+}
+_USE_REJECT_DEFAULT = "这件东西不能这样用掉。"
+
 
 def _is_story_item(tags: Sequence[str]) -> bool:
     """物品是否带剧情/任务标签（前缀匹配；仅供 ``use_item`` 的前置保护使用）。"""
@@ -36,6 +49,15 @@ def _is_story_item(tags: Sequence[str]) -> bool:
             if tag == prefix or tag.startswith(f"{prefix}_") or tag.startswith(f"{prefix}."):
                 return True
     return False
+
+
+def _non_consumable_tag(tags: Sequence[str]) -> str | None:
+    """返回命中的武器/工具标签（``weapon``/``tool`` 或带前缀变体）；未命中返回 ``None``。"""
+    for tag in tags:
+        for blocked in _NON_CONSUMABLE_TAGS:
+            if tag == blocked or tag.startswith(f"{blocked}.") or tag.startswith(f"{blocked}_"):
+                return blocked
+    return None
 
 
 def _direction_name(direction: str) -> str:
@@ -57,6 +79,16 @@ def _room_text(view: dict[str, Any]) -> str:
         parts.append("可以往" + "、".join(_direction_name(str(key)) for key in exits) + "走。")
     else:
         parts.append("四下没有明显的出口。")
+    return "".join(parts)
+
+
+def _npc_inspect_text(npc: NPC) -> str:
+    """NPC 模型无描述字段：按固定规则拼一段确定性「细看」描述（不出现 ID/英文）。"""
+    parts = [f"{npc.name}就在近前，你能看清对方脸上被风霜磨出的纹路。"]
+    if npc.faction:
+        faction = "".join(ch for ch in npc.faction if ch.isprintable())[:12] or "旧日"
+        parts.append(f"衣领上留着{faction}的旧记号。")
+    parts.append("你没有出声，只把这份印象记在心里。")
     return "".join(parts)
 
 
@@ -128,6 +160,8 @@ class ActionService:
 
         剧情/任务物品禁止被「使用」销毁（R1 实测：古物曾可被 use 永久消耗）：
         前置拒绝且零事件、背包不变；普通消耗品的既有行为与事件结构完全不变。
+        D5：``weapon``/``tool`` 标签同样拒绝（世界内说法），避免把武器/工具当消耗品烧掉；
+        治疗药水（``consumable``）与 m3 golden 的火把（``light``）路径不变。
         """
         character = state.characters.get(ctx.actor_id)
         if character is None:
@@ -137,6 +171,12 @@ class ActionService:
             return Result.fail(ErrorCode.NOT_FOUND, "背包里没有这件物品")
         if _is_story_item(item.tags):
             return Result.fail(ErrorCode.INVALID_INPUT, "这件东西不能这样用")
+        blocked = _non_consumable_tag(item.tags)
+        if blocked is not None:
+            return Result.fail(
+                ErrorCode.INVALID_INPUT,
+                _USE_REJECT_TEXT.get(blocked, _USE_REJECT_DEFAULT),
+            )
         draft = Event(
             turn_id=ctx.turn_id,
             actor_id=ctx.actor_id,
@@ -151,13 +191,46 @@ class ActionService:
         )
 
     def talk_to(self, ctx: ToolContext, state: GameState, *, npc_id: NpcId, topic: str) -> Result:
-        """与同房间 NPC 对话；NPC 不存在或不同房间 → ``NOT_FOUND``。"""
+        """与同房间 NPC 对话；NPC 不存在或不同房间 → ``NOT_FOUND``。
+
+        D8：story 的守夜人老兵由 ``domain.scenario_story.story_reply`` 给确定性回话，
+        事件 ``result`` 增 ``reply`` 与剧情化 ``dialogue_state``（``briefed``/``talked``）；
+        其它场景/其它 NPC 的 ``story_reply`` 返回 ``None``，事件结构与旧场景逐字不变。
+        """
         character = state.characters.get(ctx.actor_id)
         if character is None:
             return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
         npc = state.npcs.get(npc_id)
         if npc is None or npc.room_id != character.location:
             return Result.fail(ErrorCode.NOT_FOUND, "这里没有可以交谈的人")
+        reply = story_reply(npc_id, topic)
+        if reply is not None:
+            dialogue_state = str(reply["dialogue_state"])
+            reply_text = str(reply["reply"])
+            if dialogue_state != "briefed" and npc.dialogue_state != "briefed":
+                # 玩家第一次和守夜人搭话（且 LLM 解析出的 topic 没命中任务关键词）时，
+                # 仍给任务说明：否则「和守夜人老兵说话」这类最自然的开局会永远完不成目标 1。
+                directed = story_reply(npc_id, "任务")
+                if directed is not None and directed["dialogue_state"] == "briefed":
+                    reply_text = str(directed["reply"])
+                    dialogue_state = "briefed"
+            draft = Event(
+                turn_id=ctx.turn_id,
+                actor_id=ctx.actor_id,
+                method="talk_to",
+                event_type=EventType.DIALOGUE_EXCHANGED,
+                params={"npc_id": npc_id, "topic": topic},
+                result={"dialogue_state": dialogue_state, "reply": reply_text},
+            )
+            return Result.success(
+                data={
+                    "npc_id": npc_id,
+                    "npc_name": npc.name,
+                    "dialogue_state": dialogue_state,
+                    "reply": reply_text,
+                },
+                events=[draft],
+            )
         draft = Event(
             turn_id=ctx.turn_id,
             actor_id=ctx.actor_id,
@@ -169,6 +242,44 @@ class ActionService:
         return Result.success(
             data={"npc_id": npc_id, "npc_name": npc.name, "dialogue_state": "greeted"},
             events=[draft],
+        )
+
+    def inspect(
+        self,
+        ctx: ToolContext,
+        state: GameState,
+        *,
+        item_id: str | None = None,
+        npc_id: str | None = None,
+    ) -> Result:
+        """细看当前环境里的一件物品或一个人（``READ_ONLY``，零事件、不改状态）。
+
+        - 参数只允许 ``item_id`` / ``npc_id`` 二选一（同时/都缺 → ``INVALID_INPUT``）；
+        - 物品必须在玩家背包或当前房间可见，NPC 必须与玩家同房间，否则 ``NOT_FOUND``；
+        - 返回 ``data={"kind": "item"|"npc", "name": str, "description": str}`` 供叙事器
+          渲染一屏「细看」文本；不产生事件、不触发任何写路径。
+        """
+        if (item_id is None) == (npc_id is None):
+            return Result.fail(ErrorCode.INVALID_INPUT, "要细看什么呢？可以指定一件物品或一个人。")
+        character = state.characters.get(ctx.actor_id)
+        if character is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
+        room = state.rooms.get(character.location)
+        if room is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色所在地点不存在: {character.location}")
+        if item_id is not None:
+            item = state.items.get(item_id)
+            visible = item_id in room.item_ids or item_id in character.inventory
+            if item is None or not visible:
+                return Result.fail(ErrorCode.NOT_FOUND, "这里没有可以细看的东西")
+            return Result.success(
+                data={"kind": "item", "name": item.name, "description": item.description}
+            )
+        npc = state.npcs.get(npc_id) if npc_id is not None else None
+        if npc is None or npc.room_id != character.location:
+            return Result.fail(ErrorCode.NOT_FOUND, "这里没有可以细看的人")
+        return Result.success(
+            data={"kind": "npc", "name": npc.name, "description": _npc_inspect_text(npc)}
         )
 
 

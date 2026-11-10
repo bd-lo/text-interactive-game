@@ -53,7 +53,7 @@ watch(cardId, () => {
   <section class="card-detail-view">
     <header class="game-head">
       <h2>人物卡详情 <code>{{ cardId }}</code></h2>
-      <p class="game-meta">只读 9 字段 · 以「开始游戏」按此卡建局（POST /api/v1/games，body 带 card_id）</p>
+      <p class="game-meta">用这张人物卡开始一局新的冒险</p>
     </header>
 
     <div class="game-tools">
@@ -61,7 +61,6 @@ watch(cardId, () => {
       <button class="btn" type="button" :disabled="startBusy || card === null" @click="onStartGame">
         {{ startBusy ? '创建中…' : '开始游戏' }}
       </button>
-      <span class="muted">幂等键：createGame 每次逻辑动作一个 UUID；CONFLICT 刷新后换新键。</span>
     </div>
 
     <ErrorBanner :message="errorMessage" :retryable="showRetry" @retry="load" />
@@ -73,7 +72,7 @@ watch(cardId, () => {
     <CardFields v-else-if="card !== null" :card="card" />
 
     <p v-if="card !== null" class="muted">
-      提示：9 字段由服务端 Pydantic 权威校验；前端仅展示，不本地改写（第 23 章 §23.5）。
+      人物卡由服务端校验后保存；这里只做只读展示。
     </p>
   </section>
 </template>

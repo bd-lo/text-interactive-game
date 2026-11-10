@@ -39,6 +39,7 @@ from textgame.tools.registry import ToolRegistry
 M2_TOOL_NAMES: tuple[str, ...] = (
     "get_room_view",
     "get_inventory",
+    "inspect_item",
     "move_to",
     "take_item",
     "use_item",
@@ -76,6 +77,16 @@ def get_inventory(ctx: ToolContext) -> Result:
     return _declarative()
 
 
+@tool(actor_scope=_NPC_VISIBLE_SCOPE, side_effect=SideEffect.READ_ONLY)
+def inspect_item(
+    ctx: ToolContext,
+    item_id: _IdArg | None = None,
+    npc_id: _IdArg | None = None,
+) -> Result:
+    """细看此处的一件物品或一个人（零事件只读；item_id/npc_id 二选一）。"""
+    return _declarative()
+
+
 @tool(actor_scope=_NPC_VISIBLE_SCOPE, side_effect=SideEffect.DESTRUCTIVE)
 def move_to(ctx: ToolContext, direction: Direction) -> Result:
     """向一个方向移动。"""
@@ -104,11 +115,19 @@ def talk_to(
     return _declarative()
 
 
-_M2_TOOLS = (get_room_view, get_inventory, move_to, take_item, use_item, talk_to)
+_M2_TOOLS = (
+    get_room_view,
+    get_inventory,
+    inspect_item,
+    move_to,
+    take_item,
+    use_item,
+    talk_to,
+)
 
 
 def build_m2_tool_registry() -> ToolRegistry:
-    """构建并返回注册了 M2 六工具声明的 ``ToolRegistry`` (执行由 ``ToolGate`` 路由)。"""
+    """构建并返回注册了 M2 七工具声明的 ``ToolRegistry`` (执行由 ``ToolGate`` 路由)。"""
     registry = ToolRegistry()
     for fn in _M2_TOOLS:
         registry.register(fn)

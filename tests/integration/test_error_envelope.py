@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,22 @@ from textgame.persistence.database import create_engine_and_session
 from textgame.persistence.sqlite_repository import SqliteRepository
 
 pytestmark = [pytest.mark.integration]
+
+#: 500/409 信封不得出现的实现细节（第 15 章不向客户端暴露实现信息）。
+_INTERNAL_ENVELOPE_TERMS = (
+    "traceback",
+    "sqlalchemy",
+    "sqlite",
+    "select ",
+    "params_hash",
+    "insert into",
+)
+#: 内部实体标识（ULID = 26 位 Crockford Base32）；玩家可见文案不得泄漏。
+_ULID_RE = re.compile(r"(?:room|item|npc|char|game)_[0-9A-HJKMNP-TV-Z]{26}")
+#: 协议内部字段名（玩家可见文案不得出现）。
+_INTERNAL_ENTITY_MARKERS = re.compile(
+    r"(event_type|error_code|turn_id|snapshot_version|room_id|item_id|npc_id)"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -191,5 +208,114 @@ def test_duplicate_game_id_still_conflicts(monkeypatch: pytest.MonkeyPatch, tmp_
             assert duplicate.error_code is not None
             # 同一 game_id 的存档只有一份事件流
             assert [event.seq for event in orchestrator._repo.read_events(game_id)] == [1]
+    finally:
+        _dispose_app_engine(app)
+
+
+# ---------------------------------------------------------------------------
+# 3. R2 QA-1：409 冲突信封（同 Idempotency-Key 异参）
+# ---------------------------------------------------------------------------
+def test_conflict_same_key_different_body_returns_409_envelope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """创建请求同键异参 → 409 CONFLICT 统一 JSON 信封；不泄漏实现细节。"""
+    db_path = tmp_path / "conflict-envelope.db"
+    app, _db_url = _build_app_with_db(monkeypatch, db_path)
+    try:
+        with TestClient(app) as client:
+            first = client.post(
+                "/api/v1/games",
+                headers={"Idempotency-Key": "qa-conflict-game-0001"},
+                json={"seed": 42},
+            )
+            assert first.status_code == 201, first.text
+            conflict = client.post(
+                "/api/v1/games",
+                headers={"Idempotency-Key": "qa-conflict-game-0001"},
+                json={"seed": 7},
+            )
+            assert conflict.status_code == 409
+            assert conflict.headers["content-type"].startswith("application/json")
+            body = conflict.json()
+            assert body["ok"] is False
+            assert body["error_code"] == "CONFLICT"
+            assert isinstance(body["message"], str) and body["message"]
+            lowered = conflict.text.lower()
+            for term in _INTERNAL_ENVELOPE_TERMS:
+                assert term not in lowered, f"409 信封泄漏实现细节: {term!r}"
+            # 换新键仍可正常创建（冲突不污染幂等表）
+            other = client.post(
+                "/api/v1/games",
+                headers={"Idempotency-Key": "qa-conflict-game-0002"},
+                json={"seed": 7},
+            )
+            assert other.status_code == 201 and other.json()["save_seed"] == "save-7"
+    finally:
+        _dispose_app_engine(app)
+
+
+# ---------------------------------------------------------------------------
+# 4. R2 QA-1：500 信封隐藏堆栈/路径/领域内部词（第 15 章）
+# ---------------------------------------------------------------------------
+def test_internal_error_envelope_hides_stack_paths_and_domain_terms(
+    game_harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """损坏存档 → 500 INTERNAL：响应文本不得出现异常类型、文件路径、SQL/哈希内部词。"""
+    sensitive = (
+        "ValueError: snapshot state_hash mismatch at /home/runner/work/textgame/db.py:42; "
+        'Traceback (most recent call last): File "sqlite_repository.py", line 7, SELECT * FROM events'
+    )
+
+    def _corrupted(_game_id: str) -> None:
+        raise ValueError(sensitive)
+
+    monkeypatch.setattr(game_harness.repo, "load", _corrupted)
+    response = game_harness.client.get("/api/v1/games/game_corrupted_0002")
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error_code"] == "INTERNAL"
+    assert "服务内部错误" in body["message"]
+    lowered = response.text.lower()
+    for term in (*_INTERNAL_ENVELOPE_TERMS, "valueerror", "traceback", "state_hash", "select "):
+        assert term not in lowered, f"500 信封泄漏实现细节: {term!r}"
+    assert "D:\\" not in response.text and "/home/" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# 5. R2 QA-1：玩家可见失败文案不泄漏协议/内部标识
+# ---------------------------------------------------------------------------
+def test_turn_failure_copy_hides_internal_identifiers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """回合失败文案（text + hints + 建议）是玩家可读中文，不含 json/game_id/ULID 等内部字段。"""
+    db_path = tmp_path / "failure-copy.db"
+    app, _db_url = _build_app_with_db(monkeypatch, db_path)
+    try:
+        with TestClient(app) as client:
+            game_id = _create_game(client, key="qa-copy-game-0001")["game_id"]
+            failure = _post_turn(
+                client,
+                game_id=game_id,
+                text="跳一支舞",
+                expected_version=1,
+                key="qa-copy-turn-0001",
+            )
+            assert failure["ok"] is False
+            effects = failure.get("effects") or []
+            hints = [item.get("hint", "") for item in effects if isinstance(item, dict)]
+            visible = "\n".join(
+                [failure["text"], *hints, *(failure.get("suggested_actions") or [])]
+            )
+            # console 的禁词表 = 终端口径（json/game_id/version/idempotency）；玩家文案同口径
+            from textgame.console import assert_clean_output
+
+            assert_clean_output(visible)
+            assert _ULID_RE.search(visible) is None
+            assert _INTERNAL_ENTITY_MARKERS.search(visible) is None
+            assert hints and all(isinstance(hint, str) and hint for hint in hints)
+            assert 1 <= len(failure.get("suggested_actions") or []) <= 4
     finally:
         _dispose_app_engine(app)

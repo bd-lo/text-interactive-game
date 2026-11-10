@@ -128,6 +128,13 @@ _VISIBILITY_MATRIX: dict[str, dict[str, bool]] = {
         "npc:scavenger": True,
         "system": True,
     },
+    "inspect_item": {
+        "player": True,
+        "npc": True,
+        "npc:blacksmith": True,
+        "npc:scavenger": True,
+        "system": True,
+    },
     "move_to": {
         "player": True,
         "npc": True,
@@ -159,7 +166,9 @@ _VISIBILITY_MATRIX: dict[str, dict[str, bool]] = {
 }
 
 _ALL_TOOLS: frozenset[str] = frozenset(M2_TOOL_NAMES)
-_READ_AND_MOVE: frozenset[str] = frozenset({"get_room_view", "get_inventory", "move_to"})
+_READ_AND_MOVE: frozenset[str] = frozenset(
+    {"get_room_view", "get_inventory", "inspect_item", "move_to"}
+)
 _NPC_VISIBLE: frozenset[str] = _READ_AND_MOVE
 _SCAVENGER_VISIBLE: frozenset[str] = _READ_AND_MOVE | {"take_item"}
 _EXPECTED_VISIBLE: dict[str, frozenset[str]] = {
@@ -174,6 +183,7 @@ _EXPECTED_VISIBLE: dict[str, frozenset[str]] = {
 _DOCUMENTED_SIDE_EFFECT: dict[str, SideEffect] = {
     "get_room_view": SideEffect.READ_ONLY,
     "get_inventory": SideEffect.READ_ONLY,
+    "inspect_item": SideEffect.READ_ONLY,
     "move_to": SideEffect.DESTRUCTIVE,
     "take_item": SideEffect.DESTRUCTIVE,
     "use_item": SideEffect.DESTRUCTIVE,
@@ -194,6 +204,7 @@ _ACTOR_SCOPE_LABELS: dict[str, frozenset[str]] = {
 _EXPECTED_ACTOR_SCOPE: dict[str, frozenset[str]] = {
     "get_room_view": frozenset({"player", "npc", "system"}),
     "get_inventory": frozenset({"player", "npc", "system"}),
+    "inspect_item": frozenset({"player", "npc", "system"}),
     "move_to": frozenset({"player", "npc", "system"}),
     "take_item": frozenset({"player", "system", "npc:scavenger"}),
     "use_item": frozenset({"player", "system"}),
@@ -252,6 +263,17 @@ class _RecordingAction:
     def look(self, ctx: ToolContext, state: GameState) -> Result:
         self.calls.append(("look", {"actor": ctx.actor_id}))
         return Result.success(data={"text": "废弃哨站·入口。风从断裂的门楣间穿过。"})
+
+    def inspect(
+        self,
+        ctx: ToolContext,
+        state: GameState,
+        *,
+        item_id: str | None = None,
+        npc_id: str | None = None,
+    ) -> Result:
+        self.calls.append(("inspect", {"item_id": item_id, "npc_id": npc_id}))
+        return Result.success(data={"kind": "item", "name": "火把", "description": "受潮的火把。"})
 
     def move_to(self, ctx: ToolContext, state: GameState, *, direction: Direction) -> Result:
         self.calls.append(("move_to", {"direction": direction}))
@@ -416,7 +438,7 @@ def test_actor_scope_scavenger_extension_only_adds_take_item() -> None:
     """
     visible = _visible_names(*_ACTORS["npc:scavenger"])
 
-    assert visible == {"get_room_view", "get_inventory", "move_to", "take_item"}
+    assert visible == {"get_room_view", "get_inventory", "inspect_item", "move_to", "take_item"}
     assert "use_item" not in visible
     assert "talk_to" not in visible
     assert "transfer_item" not in visible
@@ -577,6 +599,7 @@ def test_actor_scope_gate_denial_precedes_argument_validation() -> None:
 _ALLOWED_CALLS: list[tuple[str, str, dict[str, Any], str]] = [
     ("player", "get_room_view", {}, "look"),
     ("player", "get_inventory", {}, "get_inventory"),
+    ("player", "inspect_item", {"item_id": ITEM_TORCH}, "inspect"),
     ("player", "move_to", {"direction": "north"}, "move_to"),
     ("player", "take_item", {"item_id": ITEM_TORCH}, "take_item"),
     ("player", "use_item", {"item_id": ITEM_TORCH}, "use_item"),

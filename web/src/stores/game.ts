@@ -1,23 +1,76 @@
 /**
- * 对局状态 store（M6-025）。
+ * 对局状态 store（M6-025 / R2 包 A/B/C）。
  *
  * 一致性口径（第 23 章 §23.3、D-M6-6⑤）：`version` 只来自服务端响应；本地永不递增。
- * - 回合成功：用 `TurnResult.version` 覆盖，再以 `GET /view` 拉权威 turn/version；
- * - 网络/未知失败：保留幂等键，`canRetry=true`，由用户**手动**重试（禁自动重试，D-M6-6④）；
- * - `CONFLICT`：清键 → 刷新 `GET /games/{id}` 的版本链 → 用户重提时用新键（新逻辑动作）。
+ * - 回合成功：用 `TurnResult.version` 覆盖，再以 `GET /view` 拉权威 turn/version/目标/结局；
+ *   若刷新失败，**视为回合已提交**（不提示重试、不重复执行，包 C F3）；
+ * - 网络/未知失败：保留幂等键，`canRetry=true`，由用户**手动**重试（禁自动重试）；
+ * - 业务失败 `ok=false`：`CONFLICT` 用响应里的最新 `version` 自愈并刷新版本链/历史（包 C F2），
+ *   其余失败把可读原因写进 `error*` 并在冒险记录追加系统行（包 A）；
+ * - 冒险记录（history）来自只读 replay 重建 + 本会话即时追加（包 A）；
+ * - 错误只存**玩家可读**三段（title/message/detail），detail 仅在「诊断」折叠区展示（包 C）。
  */
 
 import { defineStore } from 'pinia'
 
-import { ApiClientError, createGame, getGame, getPlayerView, submitTurn as submitTurnApi } from '@/api/client'
+import {
+  ApiClientError,
+  createGame,
+  getGame,
+  getPlayerView,
+  getReplay,
+  submitTurn as submitTurnApi,
+} from '@/api/client'
 import type {
   CreateGameRequest,
   CreatedGameResponse,
+  EventRecord,
   GamePlayerViewResponse,
   GameStatus,
   GameViewResponse,
+  ReplayEvent,
 } from '@/api/types'
+import { describeError, describeTurnFailure } from '@/utils/errors'
+import {
+  appendNarrative,
+  appendNotice,
+  historyFromReplay,
+  mergeReplayHistory,
+  type HistoryEntry,
+} from '@/utils/history'
 import { clear as clearIdempotencyKey, getOrCreate } from '@/utils/idempotency'
+import { rememberRecentGame } from '@/utils/recentGames'
+
+/** replay 分页上限（服务端 `limit` 1..500）；历史重建按页拉满后继续。 */
+const HISTORY_PAGE_SIZE = 500
+/** 历史重建最多翻页数（500×10 条事件足够覆盖长时间存档，防御恶意大档）。 */
+const HISTORY_MAX_PAGES = 10
+
+/** 叙事来源（与 `TurnResult.events[].result.narrative_source` 契约一致）。 */
+export type NarrativeSource = 'llm' | 'template' | ''
+
+/** 从事件里取最近一条 `narrative_source`；没有则返回空串（沿用调用方默认）。 */
+function narrativeSourceFromEvents(events: readonly EventRecord[]): NarrativeSource {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const value = events[index]?.result.narrative_source
+    if (value === 'llm' || value === 'template') {
+      return value
+    }
+  }
+  return ''
+}
+
+/** 从 replay 事件里取最近一条 `narrative_source`（刷新/深链后恢复徽章用）。 */
+function narrativeSourceFromReplay(events: readonly ReplayEvent[]): NarrativeSource {
+  const ordered = [...events].sort((left, right) => left.seq - right.seq)
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const value = ordered[index]?.result.narrative_source
+    if (value === 'llm' || value === 'template') {
+      return value
+    }
+  }
+  return ''
+}
 
 interface GameState {
   gameId: string
@@ -25,13 +78,27 @@ interface GameState {
   version: number
   snapshotVersion: number
   status: GameStatus
+  scenario: string
+  /** 建局种子（仅创建时已知；继续已有对局时从本机最近记录兜底）。 */
+  seed: number | null
+  cardId: string | null
   lastText: string
+  /** 冒险记录（回合日志）：replay 重建 + 本会话即时追加；失败回合追加系统行。 */
+  history: HistoryEntry[]
+  historyLoading: boolean
+  /** 历史加载失败提示（非致命：不影响继续游戏）。 */
+  historyError: string
+  /** 叙事来源徽章：`llm` / `template` / 空（空按「离线模板」展示）。 */
+  narrativeSource: NarrativeSource
   /** 失败回合的结构化提示（`effects[].hint`）与建议动作；只读展示，不改 text。 */
   lastEffects: Array<Record<string, unknown>>
   lastSuggestedActions: string[]
   view: GamePlayerViewResponse | null
   busy: boolean
+  /** 玩家可读错误（标题/正文/技术细节分开；detail 只在诊断折叠区展示）。 */
+  errorTitle: string
   error: string
+  errorDetail: string
   errorCode: string
   canRetry: boolean
   lastInput: string
@@ -45,12 +112,21 @@ function initialState(): GameState {
     version: 0,
     snapshotVersion: 0,
     status: 'active',
+    scenario: 'm2',
+    seed: null,
+    cardId: null,
     lastText: '',
+    history: [],
+    historyLoading: false,
+    historyError: '',
+    narrativeSource: '',
     lastEffects: [],
     lastSuggestedActions: [],
     view: null,
     busy: false,
+    errorTitle: '',
     error: '',
+    errorDetail: '',
     errorCode: '',
     canRetry: false,
     lastInput: '',
@@ -65,18 +141,50 @@ export const useGameStore = defineStore('game', {
       return state.view === null ? '-' : `${state.view.hp}/${state.view.max_hp}`
     },
     canSubmit(state): boolean {
-      return !state.busy && state.gameId !== '' && state.status === 'active'
+      return !state.busy && state.gameId !== '' && state.status === 'active' && state.view !== null
+    },
+    hasError(state): boolean {
+      return state.error !== ''
     },
   },
   actions: {
+    /** 清空错误三件套（新动作/刷新时调用）。 */
+    clearError(): void {
+      this.errorTitle = ''
+      this.error = ''
+      this.errorDetail = ''
+      this.errorCode = ''
+      this.canRetry = false
+    },
+    /** 网络/协议异常 → 玩家可读三段（包 C）。 */
     captureError(error: unknown): void {
-      if (error instanceof ApiClientError) {
-        this.error = `${error.code}：${error.message}`
-        this.errorCode = error.code
+      const info = describeError(error)
+      this.errorTitle = info.title
+      this.error = info.message
+      this.errorDetail = info.detail
+      this.errorCode = error instanceof ApiClientError ? error.code : 'INTERNAL'
+    },
+    /** 回合业务失败（HTTP 200 + ok=false）→ 玩家可读三段（包 C）。 */
+    captureTurnFailure(code: string | null, text: string): void {
+      const info = describeTurnFailure(code, text)
+      this.errorTitle = info.title
+      this.error = info.message
+      this.errorDetail = info.detail
+      this.errorCode = code ?? 'INVALID_INPUT'
+    },
+    /** 把当前对局写进本机「最近对局」（localStorage；存储不可用时静默降级）。 */
+    rememberRecent(): void {
+      if (this.gameId === '') {
         return
       }
-      this.error = error instanceof Error ? error.message : String(error)
-      this.errorCode = 'INTERNAL'
+      rememberRecentGame({
+        gameId: this.gameId,
+        scenario: this.scenario,
+        turn: this.turn,
+        version: this.version,
+        lastText: this.lastText,
+        seed: this.seed,
+      })
     },
     applyCreated(created: CreatedGameResponse): void {
       this.gameId = created.game_id
@@ -85,6 +193,10 @@ export const useGameStore = defineStore('game', {
       this.snapshotVersion = created.snapshot_version
       this.status = 'active'
       this.lastText = ''
+      this.history = []
+      this.historyLoading = false
+      this.historyError = ''
+      this.narrativeSource = ''
       this.lastEffects = []
       this.lastSuggestedActions = []
       this.view = null
@@ -95,20 +207,22 @@ export const useGameStore = defineStore('game', {
       this.version = snapshot.version
       this.snapshotVersion = snapshot.snapshot_version
       this.status = snapshot.status
+      this.scenario = snapshot.scenario ?? this.scenario
       this.lastText = snapshot.last_text ?? ''
       this.lastEffects = []
       this.lastSuggestedActions = []
     },
-    /** 刷新 `GET /games/{id}` + `GET /view`：服务端权威版本链（不重置 busy/error）。 */
+    /** 刷新 `GET /games/{id}` + `GET /view`：服务端权威版本链（并清掉旧错误）。 */
     async refreshAll(): Promise<void> {
       if (this.gameId === '') {
         return
       }
+      this.clearError()
       const snapshot = await getGame(this.gameId)
       this.applySnapshot(snapshot)
       await this.refreshView()
     },
-    /** 只拉状态面板数据源（D-M6-4：StatusPanel 唯一数据源）。 */
+    /** 只拉状态面板数据源（D-M6-4：StatusPanel/view 唯一数据源；含目标/结局/建议）。 */
     async refreshView(): Promise<void> {
       if (this.gameId === '') {
         return
@@ -119,18 +233,63 @@ export const useGameStore = defineStore('game', {
       this.version = view.version
       this.snapshotVersion = view.snapshot_version
       this.status = view.status
+      this.scenario = view.scenario ?? this.scenario
+    },
+    /** 用只读 replay 重建冒险记录（包 A）；失败非致命：只提示，不阻塞继续游戏。 */
+    async loadHistory(options: { merge?: boolean } = {}): Promise<void> {
+      if (this.gameId === '') {
+        return
+      }
+      this.historyLoading = true
+      this.historyError = ''
+      const events: ReplayEvent[] = []
+      try {
+        let fromSeq = 1
+        for (let page = 0; page < HISTORY_MAX_PAGES; page += 1) {
+          const chunk = await getReplay(this.gameId, { fromSeq, limit: HISTORY_PAGE_SIZE })
+          events.push(...chunk.events)
+          if (chunk.events.length < HISTORY_PAGE_SIZE) {
+            break
+          }
+          const next = chunk.to_seq + 1
+          if (next <= fromSeq) {
+            break
+          }
+          fromSeq = next
+        }
+        const rebuilt = historyFromReplay(events)
+        this.history =
+          options.merge === true ? mergeReplayHistory(rebuilt, this.history) : rebuilt
+        const source = narrativeSourceFromReplay(events)
+        if (source !== '') {
+          this.narrativeSource = source
+        }
+      } catch {
+        this.historyError = '冒险记录加载失败，可点「刷新」重试。'
+      } finally {
+        this.historyLoading = false
+      }
     },
     async createGame(options: CreateGameRequest): Promise<string> {
       this.busy = true
-      this.error = ''
-      this.errorCode = ''
-      this.canRetry = false
+      this.clearError()
+      this.scenario = options.scenario ?? 'm2'
+      this.seed = options.seed ?? null
+      this.cardId = options.card_id ?? null
       const actionKey = `create-game:${options.card_id ?? 'none'}:${options.seed ?? 'default'}:${options.scenario ?? 'm2'}`
       try {
         const created = await createGame(options, actionKey)
         clearIdempotencyKey(actionKey)
         this.applyCreated(created)
-        await this.refreshView()
+        try {
+          await this.refreshView()
+        } catch (error) {
+          // 对局已创建成功：只提示刷新失败，不抛错阻塞进入对局（包 C）。
+          this.captureError(error)
+          this.errorTitle = '对局已创建'
+          this.error = '对局已经建好了，但状态没拉取到；进入后点「刷新」即可。'
+        }
+        this.rememberRecent()
         return created.game_id
       } catch (error) {
         this.captureError(error)
@@ -141,14 +300,16 @@ export const useGameStore = defineStore('game', {
     },
     async loadGame(gameId: string): Promise<void> {
       this.busy = true
-      this.error = ''
-      this.errorCode = ''
-      this.canRetry = false
+      this.clearError()
       try {
         this.gameId = gameId
         const snapshot = await getGame(gameId)
         this.applySnapshot(snapshot)
+        this.seed = null
+        this.cardId = null
         await this.refreshView()
+        this.rememberRecent()
+        await this.loadHistory()
       } catch (error) {
         this.captureError(error)
         throw error
@@ -156,14 +317,50 @@ export const useGameStore = defineStore('game', {
         this.busy = false
       }
     },
+    /**
+     * 成功回合后的数据刷新：刷新失败**不得**提示重试（回合已提交，包 C F3）。
+     */
+    async refreshAfterTurn(): Promise<void> {
+      try {
+        await this.refreshView()
+        this.rememberRecent()
+      } catch (error) {
+        this.captureError(error)
+        this.errorTitle = '回合已保存'
+        this.error = '这一回合已经保存成功，但界面数据没刷新出来；点「刷新」重新获取即可（不要重复发送同一指令）。'
+        this.canRetry = false
+      }
+    },
+    /**
+     * `CONFLICT` 自愈（包 C F2）：业务失败时服务端 200 + ok=false 已回传最新 version；
+     * 用它 + 刷新版本链/历史把玩家救回可玩状态，并提示「对局在别处推进了，请重发」。
+     */
+    async healConflict(serverVersion: number | null, serverText: string): Promise<void> {
+      if (serverVersion !== null) {
+        this.version = Math.max(this.version, serverVersion)
+      }
+      this.errorCode = 'CONFLICT'
+      this.canRetry = false
+      try {
+        await this.refreshAll()
+        await this.loadHistory({ merge: true })
+      } catch (error) {
+        this.captureError(error)
+      }
+      this.errorTitle = '对局在别处更新了'
+      this.error = `这个对局刚刚在别处（另一个标签页或终端）推进了，已同步到第 ${this.turn} 回合。请重新发送刚才的指令。`
+      this.errorDetail = `CONFLICT：${serverText === '' ? '版本过期' : serverText}`
+      this.errorCode = 'CONFLICT'
+      this.history = appendNotice(this.history, '（对局已在别处推进，这次指令未生效）')
+      this.canRetry = true
+    },
     async submitTurn(input: string): Promise<void> {
       const text = input.trim()
       if (this.busy || this.gameId === '' || text === '') {
         return
       }
       this.busy = true
-      this.error = ''
-      this.errorCode = ''
+      this.clearError()
       this.lastEffects = []
       this.lastSuggestedActions = []
       this.lastInput = text
@@ -183,32 +380,36 @@ export const useGameStore = defineStore('game', {
           this.lastEffects = result.effects
           this.lastSuggestedActions = result.suggested_actions
           this.version = result.version
-          await this.refreshView()
+          const source = narrativeSourceFromEvents(result.events)
+          if (source !== '') {
+            this.narrativeSource = source
+          }
+          this.history = appendNarrative(this.history, {
+            text: result.text,
+            turnId: result.turn_id,
+          })
+          await this.refreshAfterTurn()
           return
         }
         // 业务失败：HTTP 200 + ok=false，零写入；同一输入重提视为新逻辑动作。
         clearIdempotencyKey(actionKey)
         this.pendingKey = null
-        this.canRetry = false
         this.lastEffects = result.effects
         this.lastSuggestedActions = result.suggested_actions
-        this.error = `${result.error_code ?? 'INVALID_INPUT'}：${result.text === '' ? '动作没有生效' : result.text}`
-        this.errorCode = result.error_code ?? 'INVALID_INPUT'
+        if (result.error_code === 'CONFLICT') {
+          await this.healConflict(result.version, result.text)
+          return
+        }
+        this.canRetry = false
+        this.captureTurnFailure(result.error_code, result.text)
+        this.history = appendNotice(this.history)
       } catch (error) {
         if (error instanceof ApiClientError && error.isConflict) {
           clearIdempotencyKey(actionKey)
           this.pendingKey = null
-          this.captureError(error)
-          try {
-            await this.refreshAll()
-          } catch {
-            // 刷新失败时保留原错误；用户可用「重试」再次触发（手动）
-          }
-          this.error = '版本冲突（CONFLICT）：已刷新到服务端最新版本，请重新提交。'
-          this.errorCode = 'CONFLICT'
-          this.canRetry = true
+          await this.healConflict(null, error.message)
         } else {
-          // 网络/未知失败：保留幂等键 → 用户手动重试时服务端可回放首次结果。
+          // 网络/超时失败：保留幂等键 → 用户手动重试时服务端可回放首次结果。
           this.captureError(error)
           this.canRetry = true
         }
@@ -216,9 +417,9 @@ export const useGameStore = defineStore('game', {
         this.busy = false
       }
     },
-    /** 用户点「重试」：手动重放上一次输入（不是自动重试）。 */
+    /** 用户点「重试」：手动重放上一次输入（不是自动重试；回合已提交时 canRetry=false）。 */
     async retry(): Promise<void> {
-      if (this.lastInput === '') {
+      if (!this.canRetry || this.lastInput === '') {
         return
       }
       await this.submitTurn(this.lastInput)

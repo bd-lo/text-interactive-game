@@ -19,6 +19,8 @@ from textgame.api.schemas import (
     AuditRecordResponse,
     CreatedGameResponse,
     CreateGameBody,
+    GameListItemResponse,
+    GameListResponse,
     GamePlayerViewResponse,
     GameViewResponse,
     ReplayEventResponse,
@@ -40,6 +42,10 @@ router = APIRouter(prefix="/api/v1", tags=["games"])
 #: M6 回放契约 D-M6-3：``limit`` 默认 200、上限 500。
 _REPLAY_DEFAULT_LIMIT = 200
 _REPLAY_MAX_LIMIT = 500
+
+#: M6 存档列表契约（D9）：``limit`` 默认 10、上限 50。
+_GAME_LIST_DEFAULT_LIMIT = 10
+_GAME_LIST_MAX_LIMIT = 50
 
 
 def get_card_service_or_none(request: Request) -> CardService | None:
@@ -118,6 +124,25 @@ def create_game(
         version=view.version,
         snapshot_version=view.snapshot_version,
         save_seed=view.save_seed or "",
+    )
+
+
+@router.get("/games", response_model=GameListResponse)
+def list_games(
+    query_service: Annotated[QueryService, Depends(get_query_service)],
+    limit: Annotated[int, Query(ge=1, le=_GAME_LIST_MAX_LIMIT)] = _GAME_LIST_DEFAULT_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> GameListResponse:
+    """返回存档列表（M6 续玩 UI；只读、零写入），按最近更新时间倒序。
+
+    分页口径：``limit`` 默认 10、上限 50；``offset`` ≥0；``total`` 为存档总数。
+    每项含 ``game_id``/``turn``/``version``/``snapshot_version``/``status``/``scenario``/
+    ``last_text``/``updated_at``，供首页「最近对局/一键继续」直接渲染。
+    """
+    data = query_service.list_games(limit=limit, offset=offset)
+    return GameListResponse(
+        games=[GameListItemResponse.model_validate(item) for item in data["games"]],
+        total=int(data["total"]),
     )
 
 

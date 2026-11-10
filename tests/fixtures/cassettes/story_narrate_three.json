@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "recorded_with": "synthetic-handwritten",
+  "note": "R2 story 场景 LLM 叙事接线用手工合成 cassette（非真实 API 录制；不含密钥/玩家隐私；narrate@v2 事实供给口径）。",
+  "interactions": [
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"断桥横在封冻的河面上，桥板缺了三块，风从缺口里直灌上来。哨站就在桥那头，灯已经灭了两夜。你把衣领拉紧，朝哨站的方向迈出一步，脚下的积雪发出细碎的声响，北风卷着雪沫擦过脸颊，远处河面传来一声开裂的闷响。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 320, "completion_tokens": 96}
+        }
+      }
+    },
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"你朝火盆边的守夜人老兵开口问起信号灯的事。老兵抬起眼，说灯座空着，得有一支信号火把：火把在门口，铜线在铁匠铺，凑齐就能做出来；做好之后带上地窖那块火石，爬上瞭望塔点亮。风从破门里灌进来，火光在他脸上晃了晃。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 360, "completion_tokens": 104}
+        }
+      }
+    },
+    {
+      "request": {"task": "narrate", "agent_id": "narrator"},
+      "response": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": {
+          "content": "{\"narrative\": \"你弯下腰，从门边把火把捡起来，掸掉布头上的一层雪沫。松脂的气味很淡，火把的分量比看上去更趁手。守夜人老兵仍在火盆边坐着，没有抬头。你把火把收进行囊，听见风在哨站外头一阵紧过一阵。\"}",
+          "model": "cassette-narrate",
+          "usage": {"prompt_tokens": 340, "completion_tokens": 92}
+        }
+      }
+    }
+  ]
+}

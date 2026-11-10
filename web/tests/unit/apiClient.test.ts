@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiClientError, createGame, getGame, getPlayerView, submitTurn } from '@/api/client'
+import { ApiClientError, createGame, getGame, getPlayerView, listGames, submitTurn } from '@/api/client'
 
 const CREATED = {
   game_id: 'g1',
@@ -110,5 +110,62 @@ describe('api client（第 6 章 §6.7 错误契约 + 运行时字段校验）',
       input: '向北走',
       expected_version: 1,
     })
+  })
+
+  it('listGames：GET /games 分页参数 + {games,total} 字段校验（D9 存档列表）', async () => {
+    const payload = {
+      games: [
+        {
+          game_id: 'g1',
+          turn: 3,
+          version: 3,
+          snapshot_version: 2,
+          status: 'active',
+          scenario: 'story',
+          last_text: '你走进地窖。',
+          updated_at: '2026-11-10T11:52:00Z',
+        },
+      ],
+      total: 1,
+    }
+    const mock = mockFetch(() => jsonResponse(200, payload))
+
+    const response = await listGames({ limit: 10, offset: 0 })
+
+    expect(response.total).toBe(1)
+    expect(response.games[0]?.scenario).toBe('story')
+    const call = mock.mock.calls[0] as [RequestInfo | URL, RequestInit | undefined]
+    expect(String(call[0])).toBe('/api/v1/games?limit=10&offset=0')
+    expect(call[1]?.method).toBe('GET')
+  })
+
+  it('listGames 字段漂移 → 契约校验失败（不裸 as T）', async () => {
+    mockFetch(() => jsonResponse(200, { games: [{ game_id: 'g1' }], total: 1 }))
+
+    const error = (await listGames().catch((reason: unknown) => reason)) as ApiClientError
+
+    expect(error).toBeInstanceOf(ApiClientError)
+    expect(error.code).toBe('INTERNAL')
+    expect(error.message).toContain('契约')
+  })
+
+  it('请求超时/取消 → ApiClientError(TIMEOUT)，供 UI 显示「网络有点慢」并可重试', async () => {
+    mockFetch(() => Promise.reject(new DOMException('aborted', 'AbortError')))
+
+    const error = (await getPlayerView('g1').catch((reason: unknown) => reason)) as ApiClientError
+
+    expect(error).toBeInstanceOf(ApiClientError)
+    expect(error.code).toBe('TIMEOUT')
+    expect(error.status).toBe(0)
+  })
+
+  it('非 JSON 响应（如网关/静态兜底 HTML）→ ApiClientError 而不是裸 SyntaxError', async () => {
+    mockFetch(() => new Response('<html>bad gateway</html>', { status: 502 }))
+
+    const error = (await getGame('g1').catch((reason: unknown) => reason)) as ApiClientError
+
+    expect(error).toBeInstanceOf(ApiClientError)
+    expect(error.code).toBe('INTERNAL')
+    expect(error.message).toContain('不是合法 JSON')
   })
 })

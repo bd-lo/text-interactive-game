@@ -197,6 +197,8 @@ def test_turn_script_versions_texts_and_event_stamps(game_harness) -> None:
         "snapshot_version",
         "status",
         "last_text",
+        "scenario",
+        "ending_text",
     }
     assert view["turn"] == 7
     assert view["version"] == 7

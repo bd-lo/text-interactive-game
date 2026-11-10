@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  directionLabel,
   formatEventRef,
   formatEventSeq,
   formatTurn,
@@ -8,6 +9,7 @@ import {
   labelEventType,
   labelGameStatus,
   labelMethod,
+  labelScenario,
 } from '@/utils/labels'
 
 describe('回放元数据中文标签映射（未知值回退原值）', () => {
@@ -42,5 +44,15 @@ describe('回放元数据中文标签映射（未知值回退原值）', () => {
     expect(formatEventRef(3, 2)).toBe('第 2 回合 · 事件 #3')
     expect(labelGameStatus('active')).toBe('进行中')
     expect(labelGameStatus('ended')).toBe('已结束')
+  })
+
+  it('方位/场景标签中文映射，未知值回退原值', () => {
+    expect(directionLabel('north')).toBe('北')
+    expect(directionLabel('southwest')).toBe('西南')
+    expect(directionLabel('portal')).toBe('portal')
+    expect(labelScenario('m2')).toBe('废弃哨站（入门）')
+    expect(labelScenario('m3')).toBe('拾荒者营地（多角色）')
+    expect(labelScenario('story')).toBe('余烬哨站（剧情）')
+    expect(labelScenario('future_scenario')).toBe('future_scenario')
   })
 })

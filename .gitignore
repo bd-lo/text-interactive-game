@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 .eggs/
 build/
-dist/
+/dist/
 .venv*/
 venv/
 env/
@@ -47,9 +47,9 @@ artifacts/
 # 散落的自定义 SQLite 存档（如 console --db foo.db / 临时验收库）
 *.db
 
-# 前端构建产物（M6；Node 仅构建期）
+# 前端依赖（M6；Node 仅构建期）；web/dist 构建产物已入库（R2 分发方案 A：
+# fresh clone 无需 Node 即可一条命令玩网页版，CI 用 drift gate 保证产物与源码一致）
 node_modules/
-web/dist/
 
 # 写作工作区（中间产物，不入库）
 .work/

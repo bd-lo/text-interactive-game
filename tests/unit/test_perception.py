@@ -376,13 +376,18 @@ def test_plan_hint_over_limit_is_rejected(query: QueryService, state: GameState)
 # 序列化白名单：字段集合固定、可 JSON 序列化、不含 GameState/仓储引用
 # ---------------------------------------------------------------------------
 def test_perception_slice_field_whitelist_is_fixed() -> None:
-    """第 5 章 §5.5 定稿字段集合固定，禁止夹带 GameState/仓储/新增派生字段。"""
+    """第 5 章 §5.5 定稿字段集合固定 + R2 加法的 ``exit_refs``（房间名导航）。
+
+    ``exit_refs`` 只由确定性解析路径消费：``kind="room"``、``id``=方向英文值、
+    ``name``=目标房间展示名；它不携带任何全局状态，仍满足「切片只含私有感知」。
+    """
     assert set(PerceptionSlice.model_fields) == {
         "actor_id",
         "visible_entities",
         "local_events",
         "private_memory",
         "plan_hint",
+        "exit_refs",
     }
     assert set(EntityRef.model_fields) == {"kind", "id", "name"}
 

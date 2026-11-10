@@ -34,12 +34,16 @@ _VIEW_KEYS = {
     "version",
     "snapshot_version",
     "status",
+    "scenario",
     "hp",
     "max_hp",
     "inventory",
     "room",
+    "goal",
+    "ending_text",
+    "suggested_actions",
 }
-_ROOM_KEYS = {"room_id", "title", "description", "exits", "items", "npcs"}
+_ROOM_KEYS = {"room_id", "title", "description", "exits", "exit_names", "items", "npcs"}
 _ITEM_KEYS = {"item_id", "name"}
 _NPC_KEYS = {"npc_id", "name"}
 
@@ -81,9 +85,13 @@ def test_view_after_create_has_exact_contract(game_harness) -> None:
     assert view["version"] == created["version"] == 1
     assert view["snapshot_version"] == created["snapshot_version"] == 1
     assert view["status"] == "active"
+    assert view["scenario"] == "m2"
+    assert view["goal"] is None
+    assert view["ending_text"] is None
     assert view["hp"] == 20
     assert view["max_hp"] == 20
     assert view["inventory"] == []
+    assert view["suggested_actions"], "成功/初始视图应给玩家可执行的下一步建议"
 
     room = view["room"]
     assert set(room) == _ROOM_KEYS
@@ -91,6 +99,7 @@ def test_view_after_create_has_exact_contract(game_harness) -> None:
     assert room["title"] == ROOM_ENTRY_NAME
     assert isinstance(room["description"], str) and room["description"]
     assert room["exits"] == {"north": ROOM_CELLAR}
+    assert room["exit_names"] == {"north": "哨站地窖"}
     assert [set(item) for item in room["items"]] == [_ITEM_KEYS, _ITEM_KEYS]
     assert room["items"] == [
         {"item_id": ITEM_TORCH, "name": ITEM_TORCH_NAME},

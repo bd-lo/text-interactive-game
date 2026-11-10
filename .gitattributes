@@ -1,0 +1,13 @@
+# R2 分发方案 A：web/dist 已入库，让 fresh clone 无需 Node/pnpm 即可一条命令玩网页版。
+#
+# 行尾策略：
+# - *.sh 强制 LF（Windows clone 的 core.autocrlf=true 会把 .sh 变 CRLF，Git Bash/WSL 直接报
+#   $'\r': command not found）；
+# - *.ps1 强制 CRLF（Windows PowerShell 5.1 的稳定组合；注意 .ps1 内容本身存为 UTF-8 with BOM，
+#   否则 5.1 按 ANSI 解析中文会直接 parse error，见 R1 审计 OSS-P0-1）。
+* text=auto
+*.sh text eol=lf
+*.ps1 text eol=crlf
+
+# 构建产物：不做行尾转换、不按文本 diff（内容由 pnpm build 生成，CI drift gate 校验一致性）
+web/dist/** -text -diff

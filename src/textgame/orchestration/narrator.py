@@ -154,13 +154,29 @@ def _taken_text(event: Event, state: GameState) -> str:
 
 
 def _used_text(event: Event, state: GameState) -> str:
-    """``ITEM_CONSUMED``: 物品名 + 使用后的余韵。"""
+    """``ITEM_CONSUMED``: 物品名 + 使用后的余韵；烈酒（``hp_delta`` 负）走专属分支。"""
     item_name = _item_name(state, event.params.get("item_id"))
+    if _has_negative_hp_delta(event, state):
+        return (
+            f"你拧开{item_name}的瓶塞，烈酒呛得喉咙发烫，寒气被逼退了一些，"
+            "眼前却晃了一下，脚步不得不钉在原地。"
+            "你把瓶子收好，缓了几口气，重新留意四周的动静。"
+        )
     return (
         f"你取出{item_name}，按着记忆里的用法将它用掉。"
         "药水里带着一点草根的苦味，很快被温热带了下去，先前的疲惫也被压住了一些。"
         "你活动了一下手腕，把空瓶收好，重新留意四周的动静。"
     )
+
+
+def _has_negative_hp_delta(event: Event, state: GameState) -> bool:
+    """物品 ``stats.hp_delta`` 为负（如 story 的结霜烈酒）→ 用专属扣血文案。"""
+    item_id = event.params.get("item_id")
+    item = state.items.get(item_id) if isinstance(item_id, str) else None
+    if item is None:
+        return False
+    delta = item.stats.get("hp_delta")
+    return isinstance(delta, (int, float)) and not isinstance(delta, bool) and delta < 0
 
 
 _QUALITY_WORDS: dict[str, str] = {
@@ -200,8 +216,20 @@ def _crafted_text(event: Event, state: GameState) -> str:
 
 
 def _talked_text(event: Event, state: GameState) -> str:
-    """``DIALOGUE_EXCHANGED``: NPC 名 + 对话摘录 + 等待回应。"""
+    """``DIALOGUE_EXCHANGED``: NPC 名 + 对话摘录 + 等待回应。
+
+    D8：story 的 NPC 事件带 ``result.reply`` 时渲染 NPC 真回话（旧场景无 reply → 旧文案逐字不变）。
+    """
     npc_name = _npc_name(state, event.params.get("npc_id"))
+    reply = event.result.get("reply")
+    if isinstance(reply, str) and reply.strip():
+        # 玩家最需要读到的是 NPC 回话本身：不再重复玩家原文，也不在回话外再包一层「」，
+        # 避免与场景文案自带的引号嵌套（reply 本身可能包含『』）。
+        return (
+            f"你转向{npc_name}，把心里的话说了出去。"
+            f"{npc_name}沉默片刻，抬眼看你。{reply.strip()}"
+            "你把这些话记在心里，等着对方还有什么要交代。"
+        )
     return (
         f"你转向{npc_name}，把心里的话说了出去：「{_topic_excerpt(event)}」。"
         f"{npc_name}沉默片刻，抬眼打量你，随后缓缓点了点头，似乎在斟酌该如何回应。"
@@ -251,6 +279,19 @@ def _inventory_text(result_data: dict[str, Any]) -> str:
     )
 
 
+def _inspect_text(result_data: dict[str, Any]) -> str | None:
+    """``inspect_item`` 只读结果 → 一屏「细看」文本；缺字段返回 ``None`` 走兜底。"""
+    name = result_data.get("name")
+    description = result_data.get("description")
+    if not isinstance(name, str) or not name:
+        return None
+    if not isinstance(description, str) or not description:
+        return None
+    kind = result_data.get("kind")
+    subject = "这个人" if kind == "npc" else "这件东西"
+    return f"你凑近细看{name}。{description}你把{subject}的细节记在心里，才慢慢移开视线。"
+
+
 class TemplateNarrator:
     """确定性模板叙事器: 按事件类型/动作选模板, 无 random/时钟/LLM 依赖。"""
 
@@ -287,7 +328,12 @@ class TemplateNarrator:
     def _render_read_only(
         action: ParseOutcome, result_data: dict[str, Any], state: GameState
     ) -> str:
-        """只读动作: ``get_inventory`` 列行囊, ``get_room_view``/``look`` 复用房间描述。"""
+        """只读动作: ``inspect_item`` 细看描述、``get_inventory`` 列行囊、房间查看复用描述。"""
+        if action.tool == "inspect_item":
+            inspected = _inspect_text(result_data)
+            if inspected is not None:
+                return inspected
+            return _GENERIC_TEXT
         if action.tool == "get_inventory":
             return _inventory_text(result_data)
         if action.tool in {"get_room_view", "look"}:

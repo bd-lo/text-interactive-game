@@ -73,6 +73,7 @@ class SqliteRepository:
                     state=GameState.model_validate_json(current.state_json),
                     version=current.version,
                     last_seq=current.last_seq,
+                    updated_at=self._as_utc(current.updated_at),
                 )
             snapshot = self._latest_snapshot(session, game_id)
             if snapshot is not None:
@@ -81,6 +82,35 @@ class SqliteRepository:
             if not events:
                 return None
             return self._rebuild_from_events(game_id, events)
+
+    def list_games(self, *, limit: int, offset: int) -> list[GameRecord]:
+        """按 ``updated_at`` 倒序返回存档摘要（只读、零写入；``limit`` 由调用方限制）。
+
+        只扫描 ``game_state_current``（每个存档一行）并解析该行状态；不读事件/快照，
+        因此列表开销与存档数无关、不改变任何表。同一时间按 ``game_id`` 稳定排序。
+        """
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(GameStateCurrentRow)
+                .order_by(GameStateCurrentRow.updated_at.desc(), GameStateCurrentRow.game_id.asc())
+                .limit(limit)
+                .offset(offset)
+            ).all()
+        return [
+            GameRecord(
+                game_id=row.game_id,
+                state=GameState.model_validate_json(row.state_json),
+                version=row.version,
+                last_seq=row.last_seq,
+                updated_at=self._as_utc(row.updated_at),
+            )
+            for row in rows
+        ]
+
+    def count_games(self) -> int:
+        """返回存档总数（只读；列表分页 ``total`` 用）。"""
+        with self._session_factory() as session:
+            return int(session.scalar(select(func.count()).select_from(GameStateCurrentRow)) or 0)
 
     def _rebuild_from_snapshot(self, session: Session, snapshot: SnapshotRecord) -> GameRecord:
         """用「快照状态 + 快照之后事件」重建；快照哈希不符按损坏处理。"""

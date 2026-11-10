@@ -53,8 +53,8 @@ watch(gameId, () => {
     <header class="game-head">
       <h2>回放 <code>{{ gameId }}</code></h2>
       <p class="game-meta">
-        只读时间轴 · 第 {{ store.loadedCount }} 条已加载 · 已加载末 seq {{ store.lastSeq }} ·
-        末窗口 to_seq {{ store.toSeq }}
+        逐条重看这一局的经历 · 共 {{ store.loadedCount }} 条记录
+        <template v-if="store.hasMore"> · 还有更早的记录</template>
       </p>
     </header>
 
@@ -63,11 +63,8 @@ watch(gameId, () => {
         返回对局
       </RouterLink>
       <button class="btn btn-small" type="button" :disabled="busy || !store.hasMore" @click="onLoadMore">
-        {{ store.hasMore ? '加载更多（下一页）' : '已到末尾' }}
+        {{ store.hasMore ? '看更早的记录' : '已经到最早了' }}
       </button>
-      <span class="muted">
-        分页口径：from_seq 从 1 起、limit 默认 200（上限 500），事件按全局 seq 升序；只读、零写入、无自动重试。
-      </span>
     </div>
 
     <ErrorBanner :message="store.error" :retryable="showRetry" @retry="load" />
@@ -88,8 +85,7 @@ watch(gameId, () => {
       该存档暂无可回放事件（或事件尚未生成）。
     </p>
     <p class="muted replay-note">
-      数据源：GET /api/v1/games/{id}/replay（`result.narrative` 文本回放）；不展示原始 params，
-      不写对局状态，不推演权威版本（第 23 章 §23.3 / D-M6-3）。
+      回放只是重看，不会改变对局。用下方的进度条或按钮前后翻看每一次行动。
     </p>
   </section>
 </template>

@@ -4,7 +4,7 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import { useCardsStore } from '@/stores/cards'
-import { CARD_MAX_BYTES, checkCardFileSize } from '@/utils/cards'
+import { checkCardFileSize } from '@/utils/cards'
 
 const router = useRouter()
 const store = useCardsStore()
@@ -59,14 +59,12 @@ function onClear(): void {
     <header class="game-head">
       <h2>导入人物卡</h2>
       <p class="game-meta">
-        粘贴或选择 .json（≤64KB / {{ CARD_MAX_BYTES }} 字节）→ 服务端校验（以
-        POST /character-cards/validate 为准）→ multipart 导入（带 Idempotency-Key）
+        粘贴或选择一张 .json 人物卡（不超过 64KB），校验通过后就能用来开局。
       </p>
     </header>
 
     <div class="game-tools">
       <RouterLink class="btn btn-small btn-secondary" :to="{ name: 'cards' }">← 返回卡库</RouterLink>
-      <span class="muted">前端只做基础结构提示（不引 Ajv）；字段级校验以服务端为准。</span>
     </div>
 
     <ErrorBanner :message="localError" />
