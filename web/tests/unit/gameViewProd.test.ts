@@ -86,7 +86,7 @@ describe('GameView 生产构建分支（P2-1 诊断信息不入玩家页面）',
     expect(wrapper.text()).toContain('哨站地窖')
     expect(wrapper.text()).toContain('余烬哨站')
     expect(wrapper.text()).toContain('冒险记录')
-    expect(wrapper.text()).toContain('查看/背包等只读指令不会写入冒险记录')
+    expect(wrapper.text()).toContain('查看/背包等只读指令的正文只在当前会话显示，刷新后不保留（不写入回放）')
     expect(wrapper.text()).toContain('18/20')
   })
 })

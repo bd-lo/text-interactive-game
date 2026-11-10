@@ -178,6 +178,24 @@ describe('GameView（玩家视角：目标/建议/结局/诊断折叠）', () =>
     expect(afterTurn.findAll('.narrative-history li')).toHaveLength(1)
   })
 
+  it('H4 回归（s2.badge.no-event）：新局首次只读回合后冒险记录 1→2 行且开场保留', async () => {
+    const readonlyHistory = [
+      {
+        id: 'local:1',
+        kind: 'narrative' as const,
+        text: '你环顾四周，把入口看了一遍。',
+        turnId: 1,
+      },
+    ]
+    const { wrapper } = await mountGame({ history: readonlyHistory, narrativeSource: '' })
+
+    const rows = wrapper.findAll('.narrative-history li')
+    expect(rows).toHaveLength(2)
+    expect(wrapper.find('.history-opening').exists()).toBe(true)
+    expect(rows[1]?.text()).toContain('你环顾四周')
+    expect(wrapper.find('.source-badge').text()).toContain('来源未知')
+  })
+
   it('新手引导：首个回合前给出「从这里开始」与可点动作', async () => {
     const { wrapper } = await mountGame({ history: [] })
     expect(wrapper.text()).toContain('从这里开始')

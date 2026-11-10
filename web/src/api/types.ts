@@ -23,6 +23,11 @@ export const API_PATHS = {
   generateCard: '/api/v1/character-cards/generate',
   getCard: '/api/v1/character-cards/{card_id}',
   deleteCard: '/api/v1/character-cards/{card_id}',
+  listWorldBooks: '/api/v1/world-books',
+  importWorldBook: '/api/v1/world-books/import',
+  validateWorldBook: '/api/v1/world-books/validate',
+  getWorldBook: '/api/v1/world-books/{world_book_id}',
+  deleteWorldBook: '/api/v1/world-books/{world_book_id}',
 } as const
 
 export type Scenario = 'm2' | 'm3' | 'm4' | 'story'
@@ -45,12 +50,14 @@ export type ErrorCode =
   | 'INTERNAL'
 
 /** `POST /api/v1/games` 请求体（`CreateGameBody`；响应 5 字段，别名为 `save_seed`）。
- *  `card_id` 为 D-M6-2 加法语义（与 `seed`/`scenario` 互斥）。
+ *  `card_id` 为 D-M6-2 加法语义（与 `seed`/`scenario` 互斥）；`world_book_id` 为 H4 加法
+ *  （可与其他字段组合，绑定世界书，未知 404）。
  */
 export interface CreateGameRequest {
   card_id?: string
   seed?: number
   scenario?: Scenario
+  world_book_id?: string
 }
 
 /** `POST /api/v1/games` 201 响应（`CreatedGameResponse`，5 字段）。 */
@@ -64,6 +71,8 @@ export interface CreatedGameResponse {
 
 /** `GET /api/v1/games/{game_id}` 200 响应（`GameViewResponse`，刷新/断线恢复）。
  *  D9 加法字段：`scenario` 场景名；`ending_text` 结局正文（旧场景/未结束为 `null`）。
+ *  H4 加法字段：`world_book`/`world_book_id`/`lore` 与 `/view` 同源（旧场景全为 `null`；
+ *  刷新/续玩路径不再因未知响应键失败）。
  */
 export interface GameViewResponse {
   game_id: string
@@ -74,6 +83,9 @@ export interface GameViewResponse {
   last_text: string | null
   scenario?: string
   ending_text?: string | null
+  world_book?: WorldBookRef | null
+  world_book_id?: string | null
+  lore?: LoreView | null
 }
 
 /** 实体引用（`ItemRefResponse`）。 */
@@ -121,9 +133,28 @@ export interface Goal {
   objectives: GoalObjective[]
 }
 
+/** 本局绑定的世界书摘要（`WorldBookRefResponse`，H4 加法字段；未绑定为 `null`）。 */
+export interface WorldBookRef {
+  world_book_id: string
+  name: string
+  entry_count: number
+}
+
+/** 本回合激活的一条世界书条目（`LoreEntryResponse`，只读）。 */
+export interface LoreEntry {
+  entry_uid: number
+  content: string
+}
+
+/** `view.lore`：本回合激活的世界书条目（无世界书为 `null`）。 */
+export interface LoreView {
+  active_entries: LoreEntry[]
+}
+
 /** `GET /api/v1/games/{game_id}/view` 200 响应（`GamePlayerViewResponse`，StatusPanel 唯一数据源）。
  *  D9 加法字段：`scenario` 场景名、`goal` 剧情目标、`ending_text` 结局正文、
- *  `suggested_actions` 当前可执行的下一步指令（成功回合也给，供新手引导/可点建议）。
+ *  `suggested_actions` 当前可执行的下一步指令（成功回合也给，供新手引导/可点建议）；
+ *  H4 加法字段：`world_book` 本局绑定的世界书摘要、`lore` 本回合激活条目。
  */
 export interface GamePlayerViewResponse {
   game_id: string
@@ -139,6 +170,8 @@ export interface GamePlayerViewResponse {
   goal?: Goal | null
   ending_text?: string | null
   suggested_actions?: string[]
+  world_book?: WorldBookRef | null
+  lore?: LoreView | null
 }
 
 /** `GET /api/v1/games` 列表项（`GameListItemResponse`，D9 存档列表/续玩）。 */
@@ -196,7 +229,10 @@ export interface ReplayResponse {
   to_seq: number
 }
 
-/** `POST /api/v1/turns` 200 响应（`TurnResult`；业务失败也是 200 + `ok=false`）。 */
+/** `POST /api/v1/turns` 200 响应（`TurnResult`；业务失败也是 200 + `ok=false`）。
+ *  H4 加法字段：`narrative_source` 本回合叙事来源（`llm`/`template`/`null`），
+ *  无事件回合也能标来源（前端徽章改读该字段）。
+ */
 export interface TurnResult {
   ok: boolean
   turn_id: number | null
@@ -207,6 +243,7 @@ export interface TurnResult {
   effects: Array<Record<string, unknown>>
   suggested_actions: string[]
   usage: Record<string, unknown>
+  narrative_source?: 'llm' | 'template' | null
 }
 
 /** `POST /api/v1/turns` 请求体（JSON key 为 `input`）。 */
@@ -301,6 +338,104 @@ export interface CardGenerateResponse {
   draft: CharacterCard
   validation: CardGenerateValidation
   generated_by?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// H4 世界书（world-books；H4-CONTRACT §2/§7）
+// 说明：格式兼容层只借鉴 SillyTavern 的数据结构与触发语义，UI 不参考其界面。
+// ---------------------------------------------------------------------------
+
+/** 世界书来源（`tavern` / `character_card` / `manual`；未知值回退原值展示）。 */
+export type WorldBookSource = 'tavern' | 'character_card' | 'manual'
+
+/** 世界书导入/校验告警项（`WorldBookWarningResponse`；不阻塞导入）。 */
+export interface WorldBookWarning {
+  code: string
+  message: string
+}
+
+/** `GET /api/v1/world-books` 列表项（`WorldBookSummaryResponse`，按 updated_at 倒序）。 */
+export interface WorldBookSummary {
+  world_book_id: string
+  name: string
+  description: string
+  source: string
+  entry_count: number
+  updated_at: string
+}
+
+/** `GET /api/v1/world-books` 200 响应 `{world_books, total}`。 */
+export interface WorldBookListResponse {
+  world_books: WorldBookSummary[]
+  total: number
+}
+
+/** 世界书条目（`WorldBookEntryResponse`；触发语义字段与 H4-CONTRACT §2 一致）。 */
+export interface WorldBookEntry {
+  entry_uid: number
+  keys: string[]
+  secondary_keys: string[]
+  content: string
+  enabled: boolean
+  constant: boolean
+  order: number
+  position: number
+  depth: number
+  selective: boolean
+  selective_logic: number
+}
+
+/** 详情页世界书摘要（`WorldBookDetailBodyResponse`）。 */
+export interface WorldBookDetailBody {
+  world_book_id: string
+  name: string
+  description: string
+  source: string
+  entry_count: number
+  updated_at: string
+}
+
+/** `GET /api/v1/world-books/{world_book_id}` 200 响应 `{world_book, entries}`。 */
+export interface WorldBookDetailResponse {
+  world_book: WorldBookDetailBody
+  entries: WorldBookEntry[]
+}
+
+/** `POST /api/v1/world-books/import` 201 响应（multipart 上传）。 */
+export interface WorldBookImportResponse {
+  world_book_id: string
+  name: string
+  entry_count: number
+  source: string
+  warnings?: WorldBookWarning[]
+}
+
+/** 世界书校验错误项（`WorldBookValidationErrorResponse`，与人物卡校验同构）。 */
+export interface WorldBookValidationError {
+  loc: string[]
+  type: string
+  msg: string
+}
+
+/** 校验预览（`WorldBookValidatePreviewResponse`；格式不可识别时为占位值）。 */
+export interface WorldBookValidatePreview {
+  name?: string
+  entry_count?: number
+  detected_format?: string
+}
+
+/** `POST /api/v1/world-books/validate` 200 响应（只读无副作用）。 */
+export interface WorldBookValidateResponse {
+  valid: boolean
+  errors?: WorldBookValidationError[]
+  warnings?: WorldBookWarning[]
+  preview?: WorldBookValidatePreview
+}
+
+/** `DELETE /api/v1/world-books/{world_book_id}` 200 响应（软删；幂等）。 */
+export interface WorldBookDeleteResponse {
+  world_book_id: string
+  deleted: boolean
 }
 
 /** 失败统一信封（第 6 章 §6.7；`ok:false` + 稳定错误码）。 */

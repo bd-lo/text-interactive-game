@@ -25,6 +25,22 @@ const router = createRouter({
     },
     { path: '/game/:id', name: 'game', component: () => import('@/views/GameView.vue'), props: true },
     {
+      path: '/world-books',
+      name: 'world-books',
+      component: () => import('@/views/WorldBookLibraryView.vue'),
+    },
+    {
+      path: '/world-books/import',
+      name: 'world-book-import',
+      component: () => import('@/views/WorldBookImportView.vue'),
+    },
+    {
+      path: '/world-books/:worldBookId',
+      name: 'world-book-detail',
+      component: () => import('@/views/WorldBookDetailView.vue'),
+      props: true,
+    },
+    {
       path: '/game/:id/replay',
       name: 'replay',
       component: () => import('@/views/ReplayView.vue'),

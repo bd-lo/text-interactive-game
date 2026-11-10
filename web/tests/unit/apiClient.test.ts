@@ -20,6 +20,7 @@ const TURN_OK = {
   effects: [],
   suggested_actions: [],
   usage: {},
+  narrative_source: 'template',
 }
 
 function jsonResponse(status: number, body: unknown): Response {

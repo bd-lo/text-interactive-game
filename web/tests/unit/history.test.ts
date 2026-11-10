@@ -123,7 +123,7 @@ describe('冒险记录纯函数（replay → 回合日志）', () => {
     expect(merged[1]?.text).toBe('（网络异常，指令状态未知）')
   })
 
-  it('P2-2 withOpening：空历史插入「开场」= 房间描述 + 目标引导；有历史不插入', () => {
+  it('P2-2 withOpening：空历史插入「开场」= 房间描述 + 目标引导；事件回合后不插入', () => {
     const view = makeView()
     const opened = withOpening([], view)
 
@@ -139,6 +139,21 @@ describe('冒险记录纯函数（replay → 回合日志）', () => {
     // 无房间描述不伪造开场；无 goal 时只显示描述
     expect(withOpening([], makeView({ room: { ...view.room, description: '   ' } }))).toEqual([])
     expect(openingTextOf(makeView({ goal: null }))).toBe('墙上的信标还暗着。')
+  })
+
+  it('H4：新局首个只读回合（turnId=1，零事件）仍保留「开场」，记录可见地 +1 行', () => {
+    const view = makeView()
+    const readonlyTurn = [
+      { id: 'local:1', kind: 'narrative' as const, text: '你环顾四周，把入口看了一遍。', turnId: 1 },
+    ]
+
+    const displayed = withOpening(readonlyTurn, view)
+
+    expect(displayed).toHaveLength(2)
+    expect(displayed[0]).toMatchObject({ id: OPENING_ENTRY_ID, kind: 'opening' })
+    expect(displayed[1]?.text).toContain('你环顾四周')
+    // 只读回合后不再是「纯空局」，但还未推进回合 → 保留开场（e2e s2.badge.no-event 回归点）
+    expect(withOpening([...readonlyTurn, { id: 'notice:1', kind: 'notice' as const, text: '（未生效）', turnId: null }], view)).toHaveLength(2)
   })
 
   it('AC-10d withEnding：ended 才追加固定 id「结局」行，重复派生幂等', () => {

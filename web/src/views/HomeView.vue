@@ -2,9 +2,10 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
-import { listGames } from '@/api/client'
-import type { GameListItem, Scenario } from '@/api/types'
+import { listGames, listWorldBooks } from '@/api/client'
+import type { GameListItem, Scenario, WorldBookSummary } from '@/api/types'
 import ErrorBanner from '@/components/ErrorBanner.vue'
+import { vReveal } from '@/directives/reveal'
 import { useGameStore } from '@/stores/game'
 import { describeError, type PlayerErrorInfo } from '@/utils/errors'
 import { labelGameStatus, labelScenario } from '@/utils/labels'
@@ -31,6 +32,12 @@ const savesFailed = ref(false)
 const recentGames = ref<RecentGameRecord[]>([])
 const createError = ref<PlayerErrorInfo | null>(null)
 
+/** 世界书下拉（H4）：开新局可选绑定一本；读取失败不阻塞开局。 */
+const worldBooks = ref<WorldBookSummary[]>([])
+const worldBookId = ref('')
+const worldBooksFailed = ref(false)
+const WORLD_BOOK_OPTION_LIMIT = 50
+
 const scenarioOptions: Array<{ value: Scenario; label: string; hint: string }> = [
   { value: 'story', label: '余烬哨站（剧情）', hint: '有目标与结局，推荐第一次玩' },
   { value: 'm2', label: '废弃哨站（入门）', hint: '一小段探索' },
@@ -51,6 +58,18 @@ async function loadSaves(): Promise<void> {
     recentGames.value = loadRecentGames()
   } finally {
     savesLoading.value = false
+  }
+}
+
+/** 读取可选世界书列表（失败时只提示，不影响开局）。 */
+async function loadWorldBooks(): Promise<void> {
+  worldBooksFailed.value = false
+  try {
+    const response = await listWorldBooks({ limit: WORLD_BOOK_OPTION_LIMIT })
+    worldBooks.value = response.world_books
+  } catch {
+    worldBooks.value = []
+    worldBooksFailed.value = true
   }
 }
 
@@ -75,7 +94,11 @@ async function onCreate(): Promise<void> {
     return
   }
   try {
-    const id = await store.createGame({ scenario: scenario.value, seed: parsed.seed })
+    const id = await store.createGame({
+      scenario: scenario.value,
+      seed: parsed.seed,
+      world_book_id: worldBookId.value === '' ? undefined : worldBookId.value,
+    })
     await router.push({ name: 'game', params: { id } })
   } catch (error) {
     createError.value = describeError(error)
@@ -100,12 +123,13 @@ function onReloadSaves(): void {
 
 onMounted(() => {
   void loadSaves()
+  void loadWorldBooks()
 })
 </script>
 
 <template>
   <section class="home-view">
-    <h2>开始冒险</h2>
+    <h2 class="home-title">开始冒险</h2>
     <p class="muted home-tagline">
       一台老式文字冒险机：用一句话描述你想做的事，故事会回应你。
     </p>
@@ -116,7 +140,7 @@ onMounted(() => {
       :detail="createError?.detail"
     />
 
-    <section class="panel save-panel" aria-label="继续游戏">
+    <section v-reveal class="panel save-panel" aria-label="继续游戏">
       <h3 class="panel-title">继续游戏</h3>
       <p v-if="savesLoading" class="muted" role="status">正在读取存档…</p>
       <template v-else-if="saves.length > 0">
@@ -157,7 +181,7 @@ onMounted(() => {
       </template>
     </section>
 
-    <form class="panel home-form" @submit.prevent="onCreate">
+    <form v-reveal class="panel home-form" @submit.prevent="onCreate">
       <h3 class="panel-title">开始新对局</h3>
       <label class="field">
         <span>故事</span>
@@ -168,6 +192,31 @@ onMounted(() => {
         </select>
         <span class="field-hint muted">
           {{ scenarioOptions.find((option) => option.value === scenario)?.hint }}
+        </span>
+      </label>
+      <label class="field">
+        <span>世界书（可选）</span>
+        <select
+          v-model="worldBookId"
+          class="input"
+          :disabled="store.busy || worldBooksFailed"
+        >
+          <option value="">不使用世界书</option>
+          <option
+            v-for="book in worldBooks"
+            :key="book.world_book_id"
+            :value="book.world_book_id"
+          >
+            {{ book.name }}（{{ book.entry_count }} 条）
+          </option>
+        </select>
+        <span class="field-hint muted">
+          <template v-if="worldBooksFailed">暂时读不到世界书列表（不影响开局）。</template>
+          <template v-else-if="worldBooks.length === 0">
+            还没有世界书，<RouterLink :to="{ name: 'world-book-import' }">先导入一本</RouterLink>？</template>
+          <template v-else>
+            世界书会给故事补充设定；<RouterLink :to="{ name: 'world-books' }">管理世界书</RouterLink>
+          </template>
         </span>
       </label>
       <details class="advanced">
@@ -191,7 +240,7 @@ onMounted(() => {
       </button>
     </form>
 
-    <details class="panel manual-panel">
+    <details v-reveal class="panel manual-panel">
       <summary>用对局 ID 继续</summary>
       <form class="manual-form" @submit.prevent="onContinueById">
         <label class="field">

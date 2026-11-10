@@ -87,6 +87,8 @@ watch(gameId, () => {
     <p class="muted replay-note">
       回放只是重看，不会改变对局。用下方的进度条或按钮前后翻看每一次行动。
     </p>
-    <p class="muted replay-note">查看/背包等只读指令不会写入冒险记录，也不会出现在回放里。</p>
+    <p class="muted replay-note">
+      查看/背包等只读指令的正文不会出现在回放里（只在当前会话的冒险记录中显示，刷新后消失）。
+    </p>
   </section>
 </template>

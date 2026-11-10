@@ -20,6 +20,9 @@ const GAME_VIEW_1 = {
   last_text: '你在入口。',
   scenario: 'story',
   ending_text: null,
+  world_book: null,
+  world_book_id: null,
+  lore: null,
 }
 const GAME_VIEW_2 = { ...GAME_VIEW_1, turn: 2, version: 2, snapshot_version: 2, last_text: '你走进地窖。' }
 const GAME_VIEW_3 = { ...GAME_VIEW_1, turn: 3, version: 3, snapshot_version: 3, last_text: '你继续前进。' }
@@ -39,6 +42,8 @@ const PLAYER_VIEW_1 = {
   goal: null,
   ending_text: null,
   suggested_actions: [],
+  world_book: null,
+  lore: null,
 }
 const PLAYER_VIEW_2 = { ...PLAYER_VIEW_1, turn: 2, version: 2, snapshot_version: 2 }
 const PLAYER_VIEW_3 = { ...PLAYER_VIEW_1, turn: 3, version: 3, snapshot_version: 3 }
@@ -54,6 +59,7 @@ const TURN_OK = {
   effects: [],
   suggested_actions: [],
   usage: {},
+  narrative_source: 'template',
 }
 
 /** replay 事件（`GET /games/{id}/replay` 契约字段；供历史重建测试）。 */
@@ -398,9 +404,27 @@ describe('game store（服务端权威版本链 + 禁自动重试）', () => {
     expect(turnCalls).toBe(1)
   })
 
-  it('叙事来源徽章：从 TurnResult.events[].result.narrative_source 推导', async () => {
-    const withSource = {
+  it('叙事来源徽章：优先读 TurnResult.narrative_source（无事件回合也能标来源）', async () => {
+    const withSource = { ...TURN_OK, events: [], narrative_source: 'llm' as const }
+    mockFetch((url) => {
+      if (url === '/api/v1/games') return jsonResponse(201, CREATED)
+      if (url === '/api/v1/games/g1/view') return jsonResponse(200, PLAYER_VIEW_2)
+      if (url === '/api/v1/turns') return jsonResponse(200, withSource)
+      return unexpected(url)
+    })
+    const store = useGameStore()
+
+    await store.createGame({ seed: 42, scenario: 'story' })
+    expect(store.narrativeSource).toBe('')
+    await store.submitTurn('查看背包')
+
+    expect(store.narrativeSource).toBe('llm')
+  })
+
+  it('叙事来源徽章：narrative_source 缺失/为 null 时回退事件里的 result.narrative_source', async () => {
+    const legacy = {
       ...TURN_OK,
+      narrative_source: null,
       events: [
         {
           turn_id: 2,
@@ -414,13 +438,12 @@ describe('game store（服务端权威版本链 + 禁自动重试）', () => {
     mockFetch((url) => {
       if (url === '/api/v1/games') return jsonResponse(201, CREATED)
       if (url === '/api/v1/games/g1/view') return jsonResponse(200, PLAYER_VIEW_2)
-      if (url === '/api/v1/turns') return jsonResponse(200, withSource)
+      if (url === '/api/v1/turns') return jsonResponse(200, legacy)
       return unexpected(url)
     })
     const store = useGameStore()
 
     await store.createGame({ seed: 42, scenario: 'story' })
-    expect(store.narrativeSource).toBe('')
     await store.submitTurn('向北走')
 
     expect(store.narrativeSource).toBe('llm')

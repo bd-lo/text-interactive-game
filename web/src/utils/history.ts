@@ -121,18 +121,34 @@ export function openingTextOf(view: GamePlayerViewResponse): string {
 }
 
 /**
- * 新局开场行（P2-2）：**仅当冒险记录为空**时插入第 1 条「开场」；有记录后不再插入（首回合后不重复）。
+ * 新局开场行（P2-2 + H4 修正）：满足以下任一条件时插入第 1 条「开场」：
+ * - 冒险记录为空；或
+ * - 记录里**只有新局首个回合（turnId ≤ 1）的只读回合正文**（看/背包等零事件回合不推进回合，
+ *   `TurnResult.turn_id` 仍为 1）。此时若把开场行撤掉，玩家会看到「记录条数没有变化」，
+ *   且丢失开局房间描述；保留开场直到出现真正推进回合的事件回合（turnId ≥ 2）。
+ *
+ * 旧行为（R3）是「有记录后立刻移除开场」；H4 起放宽到「首个事件回合后才移除」，
+ * 旧行为测试（turnId=2 的记录不插开场）仍然成立。
  */
 export function withOpening(
   history: readonly HistoryEntry[],
   view: GamePlayerViewResponse | null,
 ): HistoryEntry[] {
-  if (history.length > 0 || view === null) {
+  if (view === null) {
+    return [...history]
+  }
+  const onlyFreshReadonlyRows =
+    history.length > 0 &&
+    history.every(
+      (entry) =>
+        entry.kind === 'narrative' && entry.turnId !== null && entry.turnId <= 1,
+    )
+  if (history.length > 0 && !onlyFreshReadonlyRows) {
     return [...history]
   }
   const text = openingTextOf(view)
   if (text === '') {
-    return []
+    return [...history]
   }
   return [
     { id: OPENING_ENTRY_ID, kind: 'opening', text, turnId: null },

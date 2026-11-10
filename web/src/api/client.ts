@@ -28,6 +28,11 @@ import type {
   ReplayResponse,
   TurnRequest,
   TurnResult,
+  WorldBookDeleteResponse,
+  WorldBookDetailResponse,
+  WorldBookImportResponse,
+  WorldBookListResponse,
+  WorldBookValidateResponse,
 } from './types'
 
 export const API_BASE: string = import.meta.env.VITE_API_BASE ?? ''
@@ -170,6 +175,9 @@ const GAME_VIEW_KEYS = [
   'last_text',
   'scenario',
   'ending_text',
+  'world_book',
+  'world_book_id',
+  'lore',
 ] as const
 const PLAYER_VIEW_KEYS = [
   'game_id',
@@ -185,6 +193,8 @@ const PLAYER_VIEW_KEYS = [
   'goal',
   'ending_text',
   'suggested_actions',
+  'world_book',
+  'lore',
 ] as const
 const GAME_LIST_KEYS = ['games', 'total'] as const
 const GAME_LIST_ITEM_KEYS = [
@@ -207,6 +217,7 @@ const TURN_RESULT_KEYS = [
   'effects',
   'suggested_actions',
   'usage',
+  'narrative_source',
 ] as const
 
 /** `POST /api/v1/games`：创建对局（写，必带幂等键）。 */
@@ -604,4 +615,227 @@ export async function saveCard(
   }
   assertCardRecord(assertRecord(record.card, 'CharacterCard'), 'CharacterCard')
   return record as unknown as CharacterCardSaveResponse
+}
+
+// ---------------------------------------------------------------------------
+// H4 世界书（world-books 5 端点；H4-CONTRACT §2/§7）
+// 口径：只做资料库 CRUD + 只读校验；世界书不参与事件溯源（不产生 Event、不改状态）。
+// ---------------------------------------------------------------------------
+
+const WORLD_BOOK_LIST_KEYS = ['world_books', 'total'] as const
+const WORLD_BOOK_SUMMARY_KEYS = [
+  'world_book_id',
+  'name',
+  'description',
+  'source',
+  'entry_count',
+  'updated_at',
+] as const
+const WORLD_BOOK_DETAIL_KEYS = ['world_book', 'entries'] as const
+const WORLD_BOOK_DETAIL_BODY_KEYS = [
+  'world_book_id',
+  'name',
+  'description',
+  'source',
+  'entry_count',
+  'updated_at',
+] as const
+const WORLD_BOOK_ENTRY_KEYS = [
+  'entry_uid',
+  'keys',
+  'secondary_keys',
+  'content',
+  'enabled',
+  'constant',
+  'order',
+  'position',
+  'depth',
+  'selective',
+  'selective_logic',
+] as const
+const WORLD_BOOK_IMPORT_KEYS = ['world_book_id', 'name', 'entry_count', 'source', 'warnings'] as const
+const WORLD_BOOK_VALIDATE_KEYS = ['valid', 'errors', 'warnings', 'preview'] as const
+const WORLD_BOOK_VALIDATE_PREVIEW_KEYS = ['name', 'entry_count', 'detected_format'] as const
+const WORLD_BOOK_VALIDATION_ERROR_KEYS = ['loc', 'type', 'msg'] as const
+const WORLD_BOOK_DELETE_KEYS = ['world_book_id', 'deleted'] as const
+
+/** 世界书告警项 `[{code,message}]`：不阻塞导入，逐项校验 code/message 为字符串。 */
+function assertWorldBookWarnings(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw contractError(label, 'warnings 不是数组')
+  }
+  for (const item of value) {
+    const warning = assertRecord(item, 'WorldBookWarningResponse')
+    if (typeof warning.code !== 'string' || typeof warning.message !== 'string') {
+      throw contractError('WorldBookWarningResponse', 'code/message 类型不符')
+    }
+  }
+}
+
+/** 世界书校验错误项 `[{loc,type,msg}]` 逐项校验。 */
+function assertWorldBookValidationErrors(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw contractError(label, 'errors 不是数组')
+  }
+  for (const item of value) {
+    assertKeys(
+      assertRecord(item, 'WorldBookValidationErrorResponse'),
+      'WorldBookValidationErrorResponse',
+      WORLD_BOOK_VALIDATION_ERROR_KEYS,
+    )
+  }
+}
+
+/** 列表项逐项校验（`extra="forbid"` 契约；字段漂移即失败）。 */
+function assertWorldBookSummary(item: unknown, label: string): void {
+  const summary = assertRecord(item, label)
+  assertKeys(summary, label, WORLD_BOOK_SUMMARY_KEYS)
+  if (typeof summary.world_book_id !== 'string' || typeof summary.entry_count !== 'number') {
+    throw contractError(label, 'world_book_id/entry_count 类型不符')
+  }
+}
+
+/** `GET /api/v1/world-books` 查询参数：`query`（匹配 name）、`limit` 1..100、`offset` ≥0。 */
+export interface WorldBookListQuery {
+  query?: string
+  limit?: number
+  offset?: number
+}
+
+/** `GET /api/v1/world-books`：世界书列表 `{world_books, total}`（只读；按 updated_at 倒序）。 */
+export async function listWorldBooks(
+  query: WorldBookListQuery = {},
+  signal?: AbortSignal,
+): Promise<WorldBookListResponse> {
+  const params = new URLSearchParams()
+  if (query.query !== undefined && query.query.trim() !== '') {
+    params.set('query', query.query.trim())
+  }
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit))
+  }
+  if (query.offset !== undefined) {
+    params.set('offset', String(query.offset))
+  }
+  const queryString = params.toString()
+  const suffix = queryString === '' ? '' : `?${queryString}`
+  const payload = await request<unknown>(
+    `/api/v1/world-books${suffix}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'WorldBookListResponse')
+  assertKeys(record, 'WorldBookListResponse', WORLD_BOOK_LIST_KEYS)
+  if (!Array.isArray(record.world_books) || typeof record.total !== 'number') {
+    throw contractError('WorldBookListResponse', 'world_books/total 类型不符')
+  }
+  for (const item of record.world_books) {
+    assertWorldBookSummary(item, 'WorldBookSummaryResponse')
+  }
+  return record as unknown as WorldBookListResponse
+}
+
+/** `GET /api/v1/world-books/{world_book_id}`：详情 `{world_book, entries}`（未知/已删 404）。 */
+export async function getWorldBook(
+  worldBookId: string,
+  signal?: AbortSignal,
+): Promise<WorldBookDetailResponse> {
+  const payload = await request<unknown>(
+    `/api/v1/world-books/${encodeURIComponent(worldBookId)}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'WorldBookDetailResponse')
+  assertKeys(record, 'WorldBookDetailResponse', WORLD_BOOK_DETAIL_KEYS)
+  assertKeys(
+    assertRecord(record.world_book, 'WorldBookDetailBodyResponse'),
+    'WorldBookDetailBodyResponse',
+    WORLD_BOOK_DETAIL_BODY_KEYS,
+  )
+  if (!Array.isArray(record.entries)) {
+    throw contractError('WorldBookDetailResponse', 'entries 不是数组')
+  }
+  for (const item of record.entries) {
+    const entry = assertRecord(item, 'WorldBookEntryResponse')
+    assertKeys(entry, 'WorldBookEntryResponse', WORLD_BOOK_ENTRY_KEYS)
+    if (typeof entry.entry_uid !== 'number' || !Array.isArray(entry.keys)) {
+      throw contractError('WorldBookEntryResponse', 'entry_uid/keys 类型不符')
+    }
+  }
+  return record as unknown as WorldBookDetailResponse
+}
+
+/**
+ * `POST /api/v1/world-books/import`：multipart（`file` 部件 ≤256KB + 可选 `name`）+ 幂等键 → 201。
+ * 不手写 `Content-Type`（FormData 自动带 boundary；第 23 章 §23.5）。
+ */
+export async function importWorldBook(
+  content: string,
+  actionKey: string,
+  options: { filename?: string; name?: string } = {},
+  signal?: AbortSignal,
+): Promise<WorldBookImportResponse> {
+  const form = new FormData()
+  form.append(
+    'file',
+    new Blob([content], { type: 'application/json' }),
+    options.filename ?? 'world-book.json',
+  )
+  const name = options.name?.trim()
+  if (name !== undefined && name !== '') {
+    form.append('name', name)
+  }
+  const payload = await request<unknown>(
+    '/api/v1/world-books/import',
+    { method: 'POST', body: form },
+    { idempotent: true, actionKey, signal },
+  )
+  const record = assertRecord(payload, 'WorldBookImportResponse')
+  assertKeys(record, 'WorldBookImportResponse', WORLD_BOOK_IMPORT_KEYS)
+  if (typeof record.world_book_id !== 'string' || typeof record.entry_count !== 'number') {
+    throw contractError('WorldBookImportResponse', 'world_book_id/entry_count 类型不符')
+  }
+  assertWorldBookWarnings(record.warnings, 'WorldBookImportResponse')
+  return record as unknown as WorldBookImportResponse
+}
+
+/** `POST /api/v1/world-books/validate`：只读校验 `{payload}` → `{valid, errors, warnings, preview}`。 */
+export async function validateWorldBook(
+  payload: unknown,
+  signal?: AbortSignal,
+): Promise<WorldBookValidateResponse> {
+  const response = await request<unknown>(
+    '/api/v1/world-books/validate',
+    { method: 'POST', body: JSON.stringify({ payload }) },
+    { signal },
+  )
+  const record = assertRecord(response, 'WorldBookValidateResponse')
+  assertKeys(record, 'WorldBookValidateResponse', WORLD_BOOK_VALIDATE_KEYS)
+  if (typeof record.valid !== 'boolean') {
+    throw contractError('WorldBookValidateResponse', 'valid 类型不符')
+  }
+  assertWorldBookValidationErrors(record.errors, 'WorldBookValidateResponse')
+  assertWorldBookWarnings(record.warnings, 'WorldBookValidateResponse')
+  const preview = assertRecord(record.preview, 'WorldBookValidatePreviewResponse')
+  assertKeys(preview, 'WorldBookValidatePreviewResponse', WORLD_BOOK_VALIDATE_PREVIEW_KEYS)
+  return record as unknown as WorldBookValidateResponse
+}
+
+/** `DELETE /api/v1/world-books/{world_book_id}`：软删（幂等；必带幂等键）→ `{world_book_id, deleted}`。 */
+export async function deleteWorldBook(
+  worldBookId: string,
+  actionKey: string,
+  signal?: AbortSignal,
+): Promise<WorldBookDeleteResponse> {
+  const payload = await request<unknown>(
+    `/api/v1/world-books/${encodeURIComponent(worldBookId)}`,
+    { method: 'DELETE' },
+    { idempotent: true, actionKey, signal },
+  )
+  const record = assertRecord(payload, 'WorldBookDeleteResponse')
+  assertKeys(record, 'WorldBookDeleteResponse', WORLD_BOOK_DELETE_KEYS)
+  if (typeof record.world_book_id !== 'string' || typeof record.deleted !== 'boolean') {
+    throw contractError('WorldBookDeleteResponse', 'world_book_id/deleted 类型不符')
+  }
+  return record as unknown as WorldBookDeleteResponse
 }

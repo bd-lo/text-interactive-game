@@ -901,3 +901,736 @@ a {
     font-size: 1.05rem;
   }
 }
+
+/* ==========================================================================
+   H4 炫酷化「CRT 终端 + 余烬星尘 + 霓虹」（零依赖；全部可降级）
+   - 参考：tsparticles(MIT)/@vueuse/motion(MIT)/@formkit/auto-animate(MIT)/
+     anime.js(MIT)/vue-kinesis(MIT)/@tresjs/core(MIT) 的动效思路；代码全部自写，未复制；
+   - 约束：375px 不溢出；对比度不降（特效层透明度极低）；关闭特效 = 纯静态文本界面。
+   ========================================================================== */
+
+/* —— 设计 tokens（只增不改） —— */
+:root {
+  --ember: #ff9d5c;
+  --neon: #7fffd4;
+  --glow-accent: 0 0 10px rgba(127, 211, 155, 0.35);
+  --scanline: rgba(180, 255, 214, 0.035);
+  --noise-opacity: 0.045;
+}
+
+/* 背景氛围：静态渐变（无动画开销，关闭特效时仍可保留） */
+body {
+  background:
+    radial-gradient(120% 80% at 50% -20%, rgba(127, 211, 155, 0.1), transparent 60%),
+    radial-gradient(90% 70% at 90% 110%, rgba(255, 157, 92, 0.07), transparent 55%),
+    var(--bg);
+}
+
+/* 视觉隐藏但保留给读屏（skip-link/打字机用） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 内容在特效层之上 */
+.app-shell {
+  position: relative;
+  z-index: 1;
+}
+
+/* —— 特效层定位（纯装饰，不拦截指针） —— */
+.ember-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+.crt-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.crt-scanlines {
+  position: absolute;
+  inset: -2px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--scanline) 0 1px,
+    transparent 1px 3px
+  );
+  animation: crt-scroll 16s linear infinite;
+}
+
+.crt-noise {
+  position: absolute;
+  inset: 0;
+  opacity: var(--noise-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  animation: crt-flicker 5.5s steps(2) infinite;
+}
+
+.crt-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(115% 90% at 50% 45%, transparent 55%, rgba(0, 0, 0, 0.42) 100%);
+}
+
+.crt-beam {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -30%;
+  height: 28%;
+  background: linear-gradient(to bottom, transparent, rgba(180, 255, 214, 0.035), transparent);
+  animation: crt-beam 9s linear infinite;
+}
+
+@keyframes crt-scroll {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 3px;
+  }
+}
+
+@keyframes crt-flicker {
+  0%,
+  100% {
+    opacity: var(--noise-opacity);
+  }
+  48% {
+    opacity: calc(var(--noise-opacity) + 0.012);
+  }
+}
+
+@keyframes crt-beam {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(500%);
+  }
+}
+
+/* —— 标题：品牌 glitch（视觉副本 aria-hidden）+ 页面标题光晕/结局收束 —— */
+.glitch {
+  position: relative;
+  display: inline-block;
+}
+
+.glitch::before,
+.glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+}
+
+html[data-visual='full'] .glitch::before {
+  color: var(--neon);
+  opacity: 0.5;
+  animation: glitch-a 3.6s steps(2) infinite;
+}
+
+html[data-visual='full'] .glitch::after {
+  color: var(--ember);
+  opacity: 0.4;
+  animation: glitch-b 2.9s steps(2) infinite;
+}
+
+.glitch-brand {
+  color: var(--accent);
+  text-shadow: var(--glow-accent);
+}
+
+@keyframes glitch-a {
+  0%,
+  88%,
+  100% {
+    transform: none;
+    clip-path: inset(0 0 100% 0);
+  }
+  89% {
+    transform: translate(-2px, 1px);
+    clip-path: inset(12% 0 58% 0);
+  }
+  91% {
+    transform: translate(2px, -1px);
+    clip-path: inset(52% 0 12% 0);
+  }
+  93% {
+    transform: translate(-1px, 0);
+    clip-path: inset(30% 0 40% 0);
+  }
+}
+
+@keyframes glitch-b {
+  0%,
+  90%,
+  100% {
+    transform: none;
+    clip-path: inset(0 0 100% 0);
+  }
+  92% {
+    transform: translate(2px, 1px);
+    clip-path: inset(44% 0 26% 0);
+  }
+  94% {
+    transform: translate(-2px, -1px);
+    clip-path: inset(20% 0 60% 0);
+  }
+}
+
+.home-title,
+.game-head h2,
+.ending-title {
+  color: var(--accent);
+  text-shadow: 0 0 14px rgba(127, 211, 155, 0.22);
+}
+
+html[data-visual='full'] .ending-title {
+  animation: ending-bloom 2.2s ease-out both;
+}
+
+@keyframes ending-bloom {
+  from {
+    opacity: 0.3;
+    letter-spacing: 0.32em;
+    text-shadow: 0 0 0 rgba(127, 211, 155, 0);
+  }
+  to {
+    opacity: 1;
+    letter-spacing: normal;
+    text-shadow: 0 0 18px rgba(127, 211, 155, 0.5);
+  }
+}
+
+/* —— 面板：进场 + 顶部霓虹高光 —— */
+html[data-visual='full'] .panel {
+  animation: panel-in 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.panel {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(127, 211, 155, 0.035), transparent 38%),
+    var(--panel);
+  box-shadow: inset 0 1px 0 rgba(180, 255, 214, 0.05);
+}
+
+html[data-visual='full'] .panel::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(127, 255, 212, 0.35), transparent);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* —— 滚动进场（v-reveal） —— */
+.reveal {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.reveal-visible {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* —— 页面切换过渡 —— */
+.page-enter-active,
+.page-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* —— 叙事：最新行微光 + 打字机 —— */
+.history-entry:last-child .history-text,
+.history-ending:last-child .history-text {
+  text-shadow: 0 0 12px rgba(127, 211, 155, 0.12);
+}
+
+.history-typewriter {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.typewriter {
+  display: block;
+}
+
+.typewriter-animating {
+  cursor: pointer;
+}
+
+.typewriter-visible::after {
+  content: '▌';
+  color: var(--accent);
+  opacity: 0;
+}
+
+.typewriter-animating .typewriter-visible::after {
+  opacity: 1;
+  animation: caret-blink 1s steps(2) infinite;
+}
+
+.typewriter-skip {
+  margin-left: 8px;
+  padding: 1px 8px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.typewriter-skip:hover,
+.typewriter-skip:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* —— 目标完成 / 结局 / 按钮霓虹反馈 —— */
+html[data-visual='full'] .objective-done .objective-mark {
+  animation: objective-pop 0.5s ease-out both;
+}
+
+@keyframes objective-pop {
+  0% {
+    transform: scale(0.4);
+    filter: brightness(2);
+  }
+  60% {
+    transform: scale(1.25);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+html[data-visual='full'] .ending-panel {
+  box-shadow:
+    0 0 30px rgba(127, 211, 155, 0.12),
+    inset 0 0 40px rgba(127, 211, 155, 0.05);
+}
+
+html[data-visual='full'] .ending-text {
+  animation: ending-fade 1.2s ease-out both 0.2s;
+}
+
+@keyframes ending-fade {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+.btn {
+  transition:
+    box-shadow 0.18s ease,
+    transform 0.12s ease,
+    background-color 0.18s ease;
+}
+
+html[data-visual='full'] .btn:hover:not(:disabled) {
+  box-shadow: 0 0 16px rgba(127, 211, 155, 0.35);
+}
+
+html[data-visual='full'] .btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.chip {
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+html[data-visual='full'] .chip:hover:not(:disabled) {
+  box-shadow: 0 0 12px rgba(127, 211, 155, 0.22);
+}
+
+html[data-visual='full'] .input:focus,
+html[data-visual='full'] .command-text:focus {
+  box-shadow:
+    0 0 0 1px rgba(127, 211, 155, 0.35),
+    0 0 18px rgba(127, 211, 155, 0.12);
+}
+
+/* —— 滚动条（细，低对比） —— */
+.narrative-history {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.narrative-history::-webkit-scrollbar {
+  width: 6px;
+}
+
+.narrative-history::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+/* —— 视觉设置控件 —— */
+.visual-settings {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.visual-toggle {
+  padding: 2px 10px;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+html[data-visual='full'] .visual-toggle {
+  box-shadow: inset 0 0 12px rgba(127, 211, 155, 0.08);
+}
+
+.visual-toggle:hover,
+.visual-toggle:focus-visible {
+  border-color: var(--accent);
+}
+
+.visual-menu summary {
+  cursor: pointer;
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+}
+
+.visual-menu[open] {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  min-width: 230px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.visual-menu[open] summary {
+  color: var(--accent);
+}
+
+.visual-option {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin: 6px 0;
+  font-size: 0.85rem;
+}
+
+.visual-option-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.visual-note {
+  max-width: 240px;
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+}
+
+/* —— 动效降级：关闭特效 / 低功耗 / 系统减少动态 —— */
+html[data-visual='off'] .ember-field,
+html[data-visual='off'] .crt-layer,
+html[data-visual='off'] .panel::after,
+html[data-visual='off'] .glitch::before,
+html[data-visual='off'] .glitch::after {
+  display: none;
+}
+
+html[data-visual='low'] .crt-noise,
+html[data-visual='low'] .crt-beam,
+html[data-visual='low'] .glitch::before,
+html[data-visual='low'] .glitch::after,
+html[data-reduced-motion='true'] .crt-noise,
+html[data-reduced-motion='true'] .crt-beam,
+html[data-reduced-motion='true'] .crt-scanlines,
+html[data-reduced-motion='true'] .glitch::before,
+html[data-reduced-motion='true'] .glitch::after {
+  animation: none !important;
+  display: none;
+}
+
+html[data-reduced-motion='true'] .panel,
+html[data-reduced-motion='true'] .ending-text,
+html[data-reduced-motion='true'] .objective-done .objective-mark,
+html[data-reduced-motion='true'] .glitch-brand {
+  animation: none !important;
+}
+
+html[data-reduced-motion='true'] .reveal,
+html[data-visual='off'] .reveal {
+  opacity: 1;
+  transform: none;
+}
+
+/* —— 移动端（≤480px）：特效收敛，绝不引入横向溢出 —— */
+@media (max-width: 480px) {
+  .ember-field {
+    opacity: 0.5;
+  }
+
+  .crt-vignette {
+    background: radial-gradient(120% 95% at 50% 45%, transparent 60%, rgba(0, 0, 0, 0.32) 100%);
+  }
+
+  .visual-settings {
+    margin-left: 0;
+  }
+
+  .visual-menu[open] {
+    right: auto;
+    left: 0;
+  }
+
+  .typewriter-skip {
+    min-height: 32px;
+  }
+}
+
+
+/* ==========================================================================
+   H4 世界书 UI（world-books / 对局内「世界设定」）
+   ========================================================================== */
+
+.world-book-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-book-item {
+  margin: 10px 0;
+}
+
+.world-book-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.world-book-name {
+  color: var(--accent);
+  font-size: 1.05rem;
+  text-decoration: none;
+}
+
+.world-book-name:hover,
+.world-book-name:focus-visible {
+  text-decoration: underline;
+}
+
+.world-book-meta {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+}
+
+.world-book-desc {
+  margin: 6px 0 0;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.world-book-actions {
+  margin: 8px 0 0;
+}
+
+.world-tag {
+  padding: 0 6px;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.world-tag-constant {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/* 导入页：拖拽区 */
+.world-book-dropzone {
+  border: 1px dashed var(--border);
+  padding: 8px;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.world-book-dropzone-active {
+  border-color: var(--accent);
+  background: rgba(127, 211, 155, 0.06);
+}
+
+/* 条目表 */
+.world-entry-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-entry {
+  padding: 10px 0;
+  border-top: 1px dashed var(--border);
+}
+
+.world-entry:first-child {
+  border-top: 0;
+}
+
+.world-entry-disabled {
+  opacity: 0.55;
+}
+
+.world-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: baseline;
+}
+
+.world-entry-uid {
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+}
+
+.world-entry-order {
+  font-size: 0.75rem;
+}
+
+.world-entry-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.world-key {
+  padding: 0 6px;
+  color: var(--neon);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.world-entry-content {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.world-entry-secondary {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+}
+
+/* 对局内「世界设定」面板 */
+.world-lore-summary {
+  margin: 0 0 8px;
+  color: var(--accent);
+}
+
+.world-lore-entries {
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.world-lore-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.world-lore-entry {
+  margin: 6px 0;
+  color: var(--fg-dim);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+html[data-visual='full'] .world-key {
+  text-shadow: 0 0 8px rgba(127, 255, 212, 0.25);
+}
+
+@media (max-width: 480px) {
+  .world-lore-entries {
+    max-height: 200px;
+  }
+
+  .world-book-head {
+    justify-content: flex-start;
+  }
+}

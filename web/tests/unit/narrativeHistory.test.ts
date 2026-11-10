@@ -59,10 +59,10 @@ describe('NarrativeHistory（冒险记录日志）', () => {
     expect(items[2]?.text()).toContain('信标在风里亮起。')
   })
 
-  it('P2-3 只读提示：冒险记录页常驻一行「查看/背包等只读指令不会写入冒险记录」', () => {
+  it('P2-3 只读提示：冒险记录页常驻一行「只读指令正文仅当前会话可见/不写入回放」', () => {
     const wrapper = mount(NarrativeHistory, { props: { entries: entries() } })
     expect(wrapper.find('.history-readonly-hint').text()).toContain(
-      '查看/背包等只读指令不会写入冒险记录',
+      '查看/背包等只读指令的正文只在当前会话显示，刷新后不保留（不写入回放）',
     )
   })
 

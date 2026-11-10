@@ -29,6 +29,7 @@ import type {
   GameStatus,
   GameViewResponse,
   ReplayEvent,
+  TurnResult,
 } from '@/api/types'
 import { describeError, describeTurnFailure } from '@/utils/errors'
 import {
@@ -60,9 +61,20 @@ function narrativeSourceFromEvents(events: readonly EventRecord[]): NarrativeSou
   return ''
 }
 
+/**
+ * 优先读 TurnResult 的加法字段 `narrative_source`（H4 L3：仅做「看/背包」等无事件回合也能标来源）；
+ * 旧服务端/字段缺失时回退到事件里的 `result.narrative_source`（保持向后兼容）。
+ */
+function narrativeSourceFromResult(result: TurnResult): NarrativeSource {
+  const value = result.narrative_source
+  if (value === 'llm' || value === 'template') {
+    return value
+  }
+  return narrativeSourceFromEvents(result.events)
+}
+
 /** 从 replay 事件里取最近一条 `narrative_source`（刷新/深链后恢复徽章用）。 */
-function narrativeSourceFromReplay(events: readonly ReplayEvent[]): NarrativeSource {
-  const ordered = [...events].sort((left, right) => left.seq - right.seq)
+function narrativeSourceFromReplay(events: readonly ReplayEvent[]): NarrativeSource {  const ordered = [...events].sort((left, right) => left.seq - right.seq)
   for (let index = ordered.length - 1; index >= 0; index -= 1) {
     const value = ordered[index]?.result.narrative_source
     if (value === 'llm' || value === 'template') {
@@ -380,7 +392,7 @@ export const useGameStore = defineStore('game', {
           this.lastEffects = result.effects
           this.lastSuggestedActions = result.suggested_actions
           this.version = result.version
-          const source = narrativeSourceFromEvents(result.events)
+          const source = narrativeSourceFromResult(result)
           if (source !== '') {
             this.narrativeSource = source
           }

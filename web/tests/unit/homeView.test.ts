@@ -37,6 +37,8 @@ const PLAYER_VIEW = {
   goal: null,
   ending_text: null,
   suggested_actions: [],
+  world_book: null,
+  lore: null,
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -54,6 +56,9 @@ function makeRouter() {
       { path: '/game/:id', name: 'game', component: { template: '<div>game</div>' } },
       { path: '/cards', name: 'cards', component: { template: '<div>cards</div>' } },
       { path: '/cards/generate', name: 'card-generate', component: { template: '<div>generate</div>' } },
+      { path: '/world-books', name: 'world-books', component: { template: '<div>world-books</div>' } },
+      { path: '/world-books/import', name: 'world-book-import', component: { template: '<div>wb-import</div>' } },
+      { path: '/world-books/:worldBookId', name: 'world-book-detail', component: { template: '<div>wb-detail</div>' } },
     ],
   })
 }
@@ -166,5 +171,44 @@ describe('HomeView（存档列表 / 一键继续 / 新手可读的新建对局�
       return init?.method === 'POST'
     })
     expect(postCalls).toHaveLength(0)
+  })
+
+  it('世界书下拉：加载列表并可绑定到新建对局（H4）', async () => {
+    const bodies: unknown[] = []
+    const { wrapper } = await mountHome((url, init) => {
+      if (url === '/api/v1/games' && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body)))
+        return jsonResponse(201, CREATED)
+      }
+      if (url === '/api/v1/games/g2/view') return jsonResponse(200, PLAYER_VIEW)
+      if (url.startsWith('/api/v1/games?')) return jsonResponse(200, { games: [], total: 0 })
+      if (url.startsWith('/api/v1/world-books')) {
+        return jsonResponse(200, {
+          world_books: [
+            {
+              world_book_id: 'wb_abc',
+              name: '余烬哨站设定',
+              description: '哨站与信标。',
+              source: 'tavern',
+              entry_count: 12,
+              updated_at: '2026-11-11T01:00:00Z',
+            },
+          ],
+          total: 1,
+        })
+      }
+      return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: `unexpected ${url}` })
+    })
+
+    const options = wrapper.findAll('option')
+    expect(options.some((option) => option.text().includes('余烬哨站设定'))).toBe(true)
+    expect(options.some((option) => option.text().includes('12 条'))).toBe(true)
+
+    const select = wrapper.findAll('select')[1]
+    await select?.setValue('wb_abc')
+    await wrapper.find('form.home-form').trigger('submit')
+    await flushPromises()
+
+    expect(bodies).toEqual([{ scenario: 'story', world_book_id: 'wb_abc' }])
   })
 })

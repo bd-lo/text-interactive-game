@@ -10,7 +10,10 @@ import NarrativeHistory from '@/components/NarrativeHistory.vue'
 import StatusPanel from '@/components/StatusPanel.vue'
 import TurnFeedback from '@/components/TurnFeedback.vue'
 import TurnTextStream from '@/components/TurnTextStream.vue'
+import WorldLorePanel from '@/components/WorldLorePanel.vue'
+import { vReveal } from '@/directives/reveal'
 import { useGameStore } from '@/stores/game'
+import { useVisualStore } from '@/stores/visual'
 import { IS_DEV } from '@/utils/env'
 import { displayHistory } from '@/utils/history'
 import { formatEndingSummary, labelGameStatus, labelScenario } from '@/utils/labels'
@@ -18,6 +21,7 @@ import { isAppAction, suggestActions } from '@/utils/suggestions'
 
 const route = useRoute()
 const store = useGameStore()
+const visual = useVisualStore()
 
 const gameId = computed<string>(() => String(route.params.id ?? ''))
 const busy = computed<boolean>(() => store.busy)
@@ -168,8 +172,8 @@ watch(gameId, () => {
       @retry="onRetry"
     />
 
-    <section v-if="ended" class="panel ending-panel" aria-live="polite">
-      <h3 class="panel-title">故事结束</h3>
+    <section v-if="ended" v-reveal class="panel ending-panel" aria-live="polite">
+      <h3 class="panel-title ending-title" data-text="故事结束">故事结束</h3>
       <p v-if="endingSummary !== ''" class="ending-summary">{{ endingSummary }}</p>
       <p class="ending-text">{{ endingText === '' ? '这一局已经走到结局。' : endingText }}</p>
       <RouterLink class="btn btn-small" :to="{ name: 'home' }">开始新的冒险</RouterLink>
@@ -193,9 +197,9 @@ watch(gameId, () => {
       </RouterLink>
     </div>
 
-    <GoalPanel v-if="goal !== null" :goal="goal" />
+    <GoalPanel v-if="goal !== null" v-reveal :goal="goal" />
 
-    <div class="game-columns">
+    <div v-reveal class="game-columns">
       <div class="game-main">
         <section v-if="showOnboarding" class="panel guide-panel" aria-label="新手引导">
           <h3 class="panel-title">从这里开始</h3>
@@ -206,7 +210,11 @@ watch(gameId, () => {
           <ActionChips :actions="suggestionActions" @command="onCommand" />
         </section>
 
-        <NarrativeHistory :entries="historyEntries" :loading="store.historyLoading" />
+        <NarrativeHistory
+          :entries="historyEntries"
+          :loading="store.historyLoading"
+          :typewriter="visual.typewriterEnabled"
+        />
         <p v-if="store.historyError !== ''" class="muted" role="status">{{ store.historyError }}</p>
 
         <TurnFeedback
@@ -229,6 +237,10 @@ watch(gameId, () => {
       </div>
 
       <div class="game-side">
+        <WorldLorePanel
+          :world-book="store.view?.world_book ?? null"
+          :lore="store.view?.lore ?? null"
+        />
         <StatusPanel
           :view="store.view"
           :loading="busy"

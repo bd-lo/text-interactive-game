@@ -30,7 +30,9 @@ from fastapi.testclient import TestClient
 from textgame.api.app import create_app
 from textgame.persistence.card_repository import SqliteCardRepository
 from textgame.persistence.database import init_schema, prepare_db
+from textgame.persistence.world_book_repository import SqliteWorldBookRepository
 from textgame.services.card_service import CardService
+from textgame.services.world_book_service import WorldBookService
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 TYPES_TS = WEB_ROOT / "src" / "api" / "types.ts"
@@ -52,6 +54,11 @@ EXPECTED_FRONTEND_PATHS = {
     "/api/v1/character-cards/validate",
     GENERATE_CARD_PATH,
     "/api/v1/character-cards/{card_id}",
+    # H4 世界书（world-books；H4-CONTRACT §2）
+    "/api/v1/world-books",
+    "/api/v1/world-books/import",
+    "/api/v1/world-books/validate",
+    "/api/v1/world-books/{world_book_id}",
 }
 
 # TS 接口 → OpenAPI schema（响应；字段集合必须一致）
@@ -82,6 +89,21 @@ RESPONSE_INTERFACES = {
     "CharacterCardValidateResponse": "CharacterCardValidateResponse",
     "CardGenerateResponse": "CardGenerateResponse",
     "CardGenerateValidation": "CardGenerateValidation",
+    # H4 世界书（world-books；含 /view 加法字段 world_book/lore）
+    "WorldBookRef": "WorldBookRefResponse",
+    "LoreEntry": "LoreEntryResponse",
+    "LoreView": "LoreResponse",
+    "WorldBookWarning": "WorldBookWarningResponse",
+    "WorldBookSummary": "WorldBookSummaryResponse",
+    "WorldBookListResponse": "WorldBookListResponse",
+    "WorldBookEntry": "WorldBookEntryResponse",
+    "WorldBookDetailBody": "WorldBookDetailBodyResponse",
+    "WorldBookDetailResponse": "WorldBookDetailResponse",
+    "WorldBookImportResponse": "WorldBookImportResponse",
+    "WorldBookValidationError": "WorldBookValidationErrorResponse",
+    "WorldBookValidatePreview": "WorldBookValidatePreviewResponse",
+    "WorldBookValidateResponse": "WorldBookValidateResponse",
+    "WorldBookDeleteResponse": "WorldBookDeleteResponse",
 }
 
 # TS 接口 → OpenAPI schema（请求；字段名 + 可选项必须一致）
@@ -573,6 +595,126 @@ def test_game_list_endpoint_consistency() -> None:
     assert params["limit"]["schema"]["default"] == 10
     assert params["limit"]["schema"]["maximum"] == 50
     assert params["offset"]["schema"]["minimum"] == 0
+
+
+#: 一份合法简化世界书（H4-CONTRACT §2：name + entries[{keys,content,...}]）。
+_SIMPLE_WORLD_BOOK = {
+    "name": "余烬哨站设定",
+    "description": "前端契约测试用世界书。",
+    "entries": [
+        {"uid": 1, "keys": ["哨站"], "content": "余烬哨站是河谷里的旧哨站。", "order": 10},
+        {
+            "uid": 2,
+            "keys": ["守夜人", "老兵"],
+            "keysecondary": ["信号灯"],
+            "content": "守夜人老兵在此看守信号灯。",
+            "constant": True,
+            "order": 20,
+        },
+    ],
+}
+
+
+@pytest.fixture
+def world_book_client() -> Iterator[TestClient]:
+    """内存 SQLite + 真实 WorldBookService 的 TestClient（H4 世界书 live 契约）。"""
+    engine, _factory = prepare_db("sqlite:///:memory:")
+    init_schema(engine)
+    service = WorldBookService(SqliteWorldBookRepository(engine))
+    with TestClient(create_app(world_book_service=service)) as client:
+        yield client
+    engine.dispose()
+
+
+def test_world_book_endpoints_consistency() -> None:
+    """H4 世界书 5 端点的方法/路径/分页/multipart 声明与前端 API_PATHS 一致。"""
+    api_paths = _frontend_api_paths()
+    expected = {
+        "listWorldBooks": "/api/v1/world-books",
+        "importWorldBook": "/api/v1/world-books/import",
+        "validateWorldBook": "/api/v1/world-books/validate",
+        "getWorldBook": "/api/v1/world-books/{world_book_id}",
+        "deleteWorldBook": "/api/v1/world-books/{world_book_id}",
+    }
+    for name, path in expected.items():
+        assert api_paths[name] == path, f"前端 API_PATHS.{name} 未指向 {path}"
+
+    paths = _openapi()["paths"]
+    assert set(paths["/api/v1/world-books"]) == {"get"}
+    assert set(paths["/api/v1/world-books/import"]) == {"post"}
+    assert set(paths["/api/v1/world-books/validate"]) == {"post"}
+    assert set(paths["/api/v1/world-books/{world_book_id}"]) == {"get", "delete"}
+
+    import_schema = paths["/api/v1/world-books/import"]["post"]["requestBody"]["content"][
+        "multipart/form-data"
+    ]["schema"]
+    assert "file" in import_schema["properties"], "import 必须是 multipart file 部件"
+    assert "name" in import_schema["properties"], "import 支持可选 name 表单字段"
+
+    list_params = {
+        parameter["name"]: parameter
+        for parameter in paths["/api/v1/world-books"]["get"].get("parameters", [])
+        if parameter.get("in") == "query"
+    }
+    assert {"query", "limit", "offset"} <= set(list_params)
+    assert list_params["limit"]["schema"]["default"] == 20
+    assert list_params["limit"]["schema"]["maximum"] == 100
+    assert list_params["offset"]["schema"]["minimum"] == 0
+
+
+def test_live_world_book_lifecycle_fields_match_frontend_types(
+    world_book_client: TestClient,
+) -> None:
+    """世界书实测：导入→列表→详情→校验→软删，字段集合与 TS 接口一致（纯加法、零事件）。"""
+    ts = _ts_interfaces()
+    content = json.dumps(_SIMPLE_WORLD_BOOK, ensure_ascii=False).encode("utf-8")
+
+    imported = world_book_client.post(
+        "/api/v1/world-books/import",
+        headers={"Idempotency-Key": "frontend-contract-wb-0001"},
+        files={"file": ("world-book.json", content, "application/json")},
+    )
+    assert imported.status_code == 201, imported.text
+    payload = imported.json()
+    assert set(payload) == set(ts["WorldBookImportResponse"])
+    assert payload["entry_count"] == 2
+    # 简化 schema 可能被识别为 tavern（entries 数组兼容）或 manual；只断言是已知来源
+    assert payload["source"] in {"tavern", "manual", "character_card"}
+    world_book_id = payload["world_book_id"]
+    assert world_book_id.startswith("wb_")
+
+    listing = world_book_client.get("/api/v1/world-books", params={"limit": 5})
+    assert listing.status_code == 200, listing.text
+    body = listing.json()
+    assert set(body) == set(ts["WorldBookListResponse"])
+    assert body["total"] >= 1
+    assert set(body["world_books"][0]) == set(ts["WorldBookSummary"])
+
+    detail = world_book_client.get(f"/api/v1/world-books/{world_book_id}")
+    assert detail.status_code == 200, detail.text
+    detail_body = detail.json()
+    assert set(detail_body) == set(ts["WorldBookDetailResponse"])
+    assert set(detail_body["world_book"]) == set(ts["WorldBookDetailBody"])
+    assert detail_body["entries"], "导入的世界书应有条目"
+    for entry in detail_body["entries"]:
+        assert set(entry) == set(ts["WorldBookEntry"])
+
+    validated = world_book_client.post(
+        "/api/v1/world-books/validate", json={"payload": _SIMPLE_WORLD_BOOK}
+    )
+    assert validated.status_code == 200, validated.text
+    validate_body = validated.json()
+    assert set(validate_body) == set(ts["WorldBookValidateResponse"])
+    assert validate_body["valid"] is True
+    assert set(validate_body["preview"]) == set(ts["WorldBookValidatePreview"])
+
+    deleted = world_book_client.delete(
+        f"/api/v1/world-books/{world_book_id}",
+        headers={"Idempotency-Key": "frontend-contract-wb-del-0001"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert set(deleted.json()) == set(ts["WorldBookDeleteResponse"])
+    assert world_book_client.get(f"/api/v1/world-books/{world_book_id}").status_code == 404
 
 
 def test_frontend_source_has_no_forbidden_patterns() -> None:
