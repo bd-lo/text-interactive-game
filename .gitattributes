@@ -11,3 +11,6 @@
 
 # 构建产物：不做行尾转换、不按文本 diff（内容由 pnpm build 生成，CI drift gate 校验一致性）
 web/dist/** -text -diff
+
+# golden fixture 内容哈希 pin 按 LF 规范化计算（跨平台检出稳定）
+tests/fixtures/golden/*.json text eol=lf

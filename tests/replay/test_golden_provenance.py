@@ -26,16 +26,19 @@ pytestmark = [pytest.mark.replay]
 _GOLDEN_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "golden"
 
 #: 冻结基线指纹（2026-11-10 HEAD 33e620b；重基线时由 Lead 显式更新）。
+#: 指纹按「LF 规范化后的内容」计算：Windows（core.autocrlf=true）检出为 CRLF、
+#: Linux CI 检出为 LF，若按原始字节算哈希会在不同平台得出不同值（CI-only 失败）。
 _GOLDEN_SHA256: dict[str, str] = {
     "m2_golden.json": "26f6408697615499325fe7b252ccd569a2faf135538eaf15ad8cef58a2a9f3d7",
-    "m3_golden.json": "ea40c1874d63281a57da6c448203906f1af52044a876c0c3e215dae762462268",
-    "m4_golden.json": "9abdef6002151d444c9f746595e35457e3e2b67bb2df7a3ca2578d6ced48235e",
+    "m3_golden.json": "438d8bed1213ec5f0526a55e941e851bc2f6f0d3e06aea8d15b892433e48c48b",
+    "m4_golden.json": "e8061724ab1cf6bcb39393542583b143b14e142048c9ca510bf4b9ae8da508a3",
 }
 
 
 def _sha256(path: Path) -> str:
-    """按字节计算文件 sha256（UTF-8 JSON 原文，不做规范化）。"""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """按 LF 规范化后的 UTF-8 内容计算 sha256（跨 Windows/Linux 检出稳定）。"""
+    normalized = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 @pytest.mark.parametrize("filename", sorted(_GOLDEN_SHA256))
