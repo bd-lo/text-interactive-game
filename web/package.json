@@ -1,0 +1,29 @@
+{
+  "name": "textgame-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "textgame 2G 文字 MUD Web 客户端（M6-025 骨架；Node 仅构建期，运行期由 FastAPI 托管 web/dist）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "pinia": "4.1.0",
+    "vue": "3.5.45",
+    "vue-router": "5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@vitejs/plugin-vue": "6.0.10",
+    "@vue/test-utils": "2.5.1",
+    "jsdom": "31.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "vitest": "5.1.0",
+    "vue-tsc": "3.3.14"
+  }
+}

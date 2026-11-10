@@ -110,3 +110,35 @@ jobs:
           name: sbom-licenses
           path: artifacts/
           if-no-files-found: warn
+
+  # 前端构建门（M6-025、D-M6-5④）：lockfile 锁装 → 类型检查 → 构建 web/dist → 单元测试。
+  # Node 基线：本机 Node 26.10.0；若 runner 暂不支持 26，可将 node-version 降为 "24"
+  #（第 23 章 §23.2 的 LTS 基线；vite 8 / vitest 5 的 engines 均接受 24/26，产物语义不变）。
+  # 运行期零 Node/pnpm：本 job 只产出 web/dist，由 FastAPI 托管（D-M6-5②）。
+  web-build:
+    name: web-build (Node 26)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 pnpm 12.6.0（与 lockfile 生成器一致；不用 packageManager/corepack）
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+      - name: 安装 Node（仅构建期）
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: 安装前端依赖（锁定）
+        run: pnpm --dir web install --frozen-lockfile
+      - name: 类型检查（vue-tsc）
+        run: pnpm --dir web typecheck
+      - name: 构建（产出 web/dist）
+        run: pnpm --dir web build
+      - name: 构建产物校验（SPA 入口存在）
+        run: test -f web/dist/index.html && ls -lh web/dist/assets
+      - name: 单元测试（vitest：幂等键/版本链/错误契约/安全静态扫描）
+        run: pnpm --dir web test

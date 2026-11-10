@@ -1,0 +1,258 @@
+/* 2G 文字风格 tokens（第 23 章 §23.4）：等宽字体、深色、无图片、320px 起可用。 */
+:root {
+  --fg: #c8d6c0;
+  --fg-dim: #8a9a86;
+  --bg: #0b0f0c;
+  --panel: #111812;
+  --border: #24312a;
+  --accent: #7fd39b;
+  --danger: #e08a7a;
+  --warn: #d8c27a;
+  --font-mono: "Courier New", "Cascadia Mono", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+body {
+  min-width: 320px;
+}
+
+code {
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--accent);
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 12px;
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-brand {
+  color: var(--accent);
+  font-weight: bold;
+  letter-spacing: 0.18em;
+  text-decoration: none;
+}
+
+.app-subtitle,
+.app-footer,
+.muted {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+}
+
+.app-main {
+  flex: 1;
+  padding: 16px 0;
+}
+
+.app-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.home-view h2,
+.game-head h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  letter-spacing: 0.06em;
+}
+
+.panel {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.panel-title {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--accent);
+}
+
+.panel-subtitle {
+  margin: 10px 0 4px;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.input,
+.command-text {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+}
+
+.btn {
+  padding: 6px 14px;
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-small {
+  padding: 3px 10px;
+  font-size: 0.85rem;
+}
+
+.btn-secondary {
+  color: var(--accent);
+  background: transparent;
+}
+
+.game-meta {
+  margin: 0 0 8px;
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+}
+
+.game-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.game-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (min-width: 720px) {
+  .game-columns {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+  }
+}
+
+.turn-text-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.turn-text-meta {
+  margin: 6px 0 0;
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0 0 8px;
+}
+
+.status-grid dt {
+  color: var(--fg-dim);
+}
+
+.status-grid dd {
+  margin: 0;
+}
+
+.room-desc {
+  margin: 8px 0;
+  color: var(--fg-dim);
+}
+
+.plain-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.command-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+
+.command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.error-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0;
+  padding: 8px 12px;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  background: rgba(224, 138, 122, 0.08);
+}
+
+.error-text {
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
