@@ -230,6 +230,35 @@ def test_story_rejected_action_shows_specific_chinese_reason(
     assert view["version"] == version
 
 
+def test_story_craft_missing_material_hint_names_the_item(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """AC-09c：缺制造材料时必须点名缺什么（而不是「没听懂」），且零写入。
+
+    复现：入口 → 铁匠铺拿两卷铜线（无火把）→ 打造信号火把。
+    """
+    app = _build_app_with_db(monkeypatch, tmp_path / "story-craft-hint.db")
+    try:
+        with TestClient(app) as client:
+            game_id, version = _create_story(client)
+            for text in ("向东走进入口", "向东走进铁匠铺", "拿起铜线", "拿起铜线"):
+                result, version = _turn(client, game_id, version, text)
+                assert result["ok"] is True, (text, result)
+            rejected, version_after = _turn(client, game_id, version, "打造信号火把")
+            view = _view(client, game_id)
+    finally:
+        _dispose(app)
+
+    assert rejected["ok"] is False
+    assert rejected["events"] == []
+    assert version_after == version
+    hints = " ".join(str(effect.get("hint", "")) for effect in rejected["effects"])
+    assert "缺少材料" in hints and "火把" in hints, hints
+    assert "item_" not in hints and "npc_" not in hints and "room_" not in hints
+    assert rejected["suggested_actions"]
+    assert view["version"] == version
+
+
 def test_story_first_talk_with_generic_topic_counts_as_briefed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

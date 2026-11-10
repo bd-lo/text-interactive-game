@@ -110,7 +110,9 @@ class CraftService:
             state_slice = build_craft_state_slice(state, ctx.actor_id)
         except ValueError as exc:
             return Result.fail(ErrorCode.INVALID_INPUT, str(exc))
-        rejected = self._check_recipe_preconditions(recipe, state_slice)
+        rejected = self._check_recipe_preconditions(
+            recipe, state_slice, self._template_display_names(state)
+        )
         if rejected is not None:
             return rejected
 
@@ -334,36 +336,62 @@ class CraftService:
         )
 
     @staticmethod
-    def _check_recipe_preconditions(recipe: Recipe, state: CraftStateSlice) -> Result | None:
+    def _template_display_names(state: GameState) -> dict[str, str]:
+        """模板键 → 玩家可读名称（失败提示用：缺材料/缺工具时必须点名，不能只给内部 ID）。
+
+        优先取场景里同模板实例的 ``name``；场景未提供实例时用常见材料兜底名（story/m4 的
+        火把、铜线、铁锭等）。仍未知时由调用方回退为「材料/工具」。
+        """
+        names: dict[str, str] = {
+            "item.torch": "火把",
+            "item.copper_wire": "铜线",
+            "item.iron_ingot": "铁锭",
+            "item.oak_handle": "橡木柄",
+            "item.forge_hammer": "锻锤",
+        }
+        for item in state.items.values():
+            if item.tags and item.name:
+                names.setdefault(item.tags[0], item.name)
+        return names
+
+    @staticmethod
+    def _check_recipe_preconditions(
+        recipe: Recipe,
+        state: CraftStateSlice,
+        display_names: dict[str, str] | None = None,
+    ) -> Result | None:
         """材料/工具/工位前置校验（第 13 章 §13.4；技能校验 M4 后移，D-M4-2）。
 
         返回 None 表示通过；否则返回带稳定错误码的 Result.fail：
         工位不符/缺工具 → NOT_ALLOWED；材料不在背包 → NOT_FOUND；数量不足 → OUT_OF_RANGE。
+        失败文案面向玩家（中文、点名缺什么/还差几个），不含内部模板 ID；详细诊断仍进审计。
         """
+        names = display_names or {}
         station = recipe.station
         if station is not None and station != state.station_id:
+            station_name = "铁匠炉" if station == "station.forge" else "合适的工位"
             return Result.fail(
                 ErrorCode.NOT_ALLOWED,
-                f"craft station mismatch: need {station!r} (current {state.station_id!r})",
+                f"这里不是合适的制作地点（需要{station_name}）。",
             )
         for item in recipe.inputs:
             available = state.inventory.get(item.template_id, 0)
+            item_name = names.get(item.template_id)
             if item.role == "tool":
                 if available < item.qty:
                     return Result.fail(
                         ErrorCode.NOT_ALLOWED,
-                        f"missing tool: {item.template_id!r}",
+                        f"缺少工具：{item_name or '合适的工具'}。",
                     )
                 continue
             if available == 0:
                 return Result.fail(
                     ErrorCode.NOT_FOUND,
-                    f"material {item.template_id!r} is not in inventory",
+                    f"缺少材料：{item_name or '一样材料'}（先把它拿进行囊）。",
                 )
             if available < item.qty:
                 return Result.fail(
                     ErrorCode.OUT_OF_RANGE,
-                    f"insufficient material {item.template_id!r}: "
-                    f"need {item.qty}, have {available}",
+                    f"材料不够：{item_name or '材料'}还差 {item.qty - available} 个。",
                 )
         return None
