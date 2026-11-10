@@ -11,8 +11,9 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
 Write-Host '== 文字交互游戏 · 5 分钟上手 =='
-uv sync --frozen
+# 只安装运行时依赖（不装 dev 组，约 98 个包）；首次运行需联网下载 CPython 3.12 与锁定依赖
+uv sync --frozen --no-dev
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-uv run python -m textgame.console --seed 42
+uv run --no-dev python -m textgame.console --seed 42
 exit $LASTEXITCODE
