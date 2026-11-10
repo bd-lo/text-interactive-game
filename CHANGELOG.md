@@ -23,6 +23,7 @@
 
 ### 变更
 
+- **CI Actions 升级（2026-11-11）**：GitHub Actions 改为**固定精确语义版本**并升级到 Node24 运行时——`actions/checkout@v7.0.1`、`astral-sh/setup-uv@v10.3.3`（自 v8 起上游不再发布 major/minor tag，必须精确固定）、`actions/upload-artifact@v7.0.2`、`pnpm/action-setup@v6.1.1`、`actions/setup-node@v7.1.0`；消除 runner 上「Node.js 20 is deprecated」警告；既有输入（`python-version`/`node-version`/`cache`/`version`/`name`/`path`/`if-no-files-found`）在新版本均保留，CI 门禁与缓存行为不变。
 - **静态托管解析（R2）**：`create_app` 静态目录按 `TEXTGAME_STATIC_DIR` → CWD `web/dist` → 仓库根 `web/dist`（由 `__file__` 推导，不依赖 CWD）→ 包内 `textgame/web_dist` 解析；缺失时 WARNING；缺失的带扩展名路径（`/assets/x.js`、`/favicon.ico`）返回 404 JSON 而非 SPA HTML；`index.html` 响应 `Cache-Control: no-cache`、`/assets/*` 为 `immutable`。
 - **终端入口（R2）**：`ensure_utf8_stdio` 同时修复 stdin（管道/重定向输入中文不再抛 `UnicodeEncodeError`）；`--db` 支持 `sqlite:///` DSN 自动转换，非 SQLite DSN/内存库给中文报错；显式 `--scenario` 与同库旧存档场景不一致时不再静默继续（提示 `--new`/`--continue`）。
 - 022 缩范围：`022-cost-budget` → `022-concurrency-idempotency`（仅 D-M4-15/G-1 并发同 `Idempotency-Key` 幂等）；成本/预算/价格表/`llm_call_log` 表/Alembic 0003 不做，0003 顺延 M6 卡库（D-M5-10）。
