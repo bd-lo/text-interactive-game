@@ -71,6 +71,8 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 
 **020 已落地（2026-11-10，D-M5-4 / D-TEAM-6）**：① 配置包 `src/textgame/llm/config/`（`__init__.py` + `llm.default.json`；`LLMClientConfig` 导入路径不变，原 `llm/config.py` 迁入包）；② 新增 `LLMConfig`（`schema_version`/`providers`/`tiers`/`cache`，`extra=forbid`，两档 `strong|economy` 必须声明且 provider 必须在 `providers` 中）与 `load_llm_config(path=None)`（包内默认 → `TEXTGAME_LLM_CONFIG`；文件缺失/JSON 非法/字段越界一律构造期 fail-fast）；③ `LiteLLMClient` 按 `req.model_tier` 经 `LLMConfig.backend_for()` 选 `(provider, model, api_base)`，**JSON 是模型名/分级/价格的唯一权威**，`Settings` 只保留密钥/开关/配置路径（历史 `TEXTGAME_LLM_PROVIDER/MODEL/BASE_URL` 仅兼容、不再驱动请求）；④ 回退链/价格字段预留，024/022 消费；真实调用仍默认关闭（D-M5-6）。
 
+**离线成本表（2026-11-10，CI 修复）**：`import litellm` 默认会从 `raw.githubusercontent.com` 拉取模型成本表（`litellm/__init__.py` 的 `get_model_cost_map`）；本项目成本归集使用自建价格表（022），不依赖 LiteLLM 远端成本表。`llm/providers.py` 与 `tests/conftest.py` 默认设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`（使用包内备份表、零联网；用户显式设 False 时仍尊重用户意图）。原因：CI（ubuntu、无代理）无 DNS 掩盖，`import litellm` 的下载被 Q9 禁网守卫拦截后 `RuntimeError` 逃逸（LiteLLM 只捕获 `httpx.HTTPError`），导致 `tests/unit/test_llm_providers.py` 两个用例只在 CI 失败；本地因 `NO_PROXY=[::1]` 触发 httpx `InvalidURL` 被 LiteLLM 捕获而掩盖。详见 `docs/progress/CI-1-2026-11-10-actions-offline-fix.md`。
+
 人物卡生成任务（`task=character_card_generate`，v0.2 新增）：`model_tier=STRONG`、`timeout_s=20`、`max_repair=1`、缓存不适用（同 brief 可重复生成）；幂等分两层——HTTP 幂等键用客户端 UUID `Idempotency-Key`（第 6、23 章），服务端另算 `sha256(canonical payload)`（brief/schema_version/options）用于同键异参 `CONFLICT` 与审计；成本按 `agent_id=character_card` 归集，单用户限流 5 次/分钟；失败降级为确定性模板（brief+默认属性草稿），与第 6 章 `POST /api/v1/character-cards/generate` 对齐。
 
 ### 12.5 Prompt 模板管理
