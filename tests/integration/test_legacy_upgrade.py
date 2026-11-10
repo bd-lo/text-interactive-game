@@ -4,7 +4,7 @@
 
 - 旧 **M2 schema**（``events`` ``seq`` 单主键、``event_uid`` 全局唯一、``snapshots``
   无 ``version``、无 ``audit_events``）→ 备份文件 → 补 ``version``/``audit_events`` →
-  ``stamp 0001`` → ``upgrade head``（0002 复合主键）：数据/状态/哈希保留、事件 seq 连续、
+  ``stamp 0001`` → ``upgrade head``（0002 复合主键 + 0003 人物卡表）：数据/状态/哈希保留、事件 seq 连续、
   可继续提交回合、审计可写、结构 = 当前 metadata；
 - 已 stamp 的 ``0001``（M3 schema）→ 直接 upgrade head，数据保留；
 - M3 ``create_all`` 形状但无 ``alembic_version`` → 补 stamp 后 upgrade head；
@@ -352,7 +352,7 @@ def test_upgrade_m2_legacy_database_end_to_end(tmp_path: Path) -> None:
 
     assert report.action == "upgraded_legacy"
     assert report.from_revision is None
-    assert report.to_revision == "0002"
+    assert report.to_revision == "0003"
     assert report.changed is True
     assert report.backup_path is not None
     backup = Path(report.backup_path)
@@ -364,7 +364,7 @@ def test_upgrade_m2_legacy_database_end_to_end(tmp_path: Path) -> None:
 
     engine = create_engine(_db_url(db_path))
     try:
-        assert _alembic_revision(engine) == "0002"
+        assert _alembic_revision(engine) == "0003"
         _assert_schema_matches_metadata(engine, tmp_path)
 
         repo = SqliteRepository(engine)
@@ -449,15 +449,15 @@ def test_upgrade_m2_legacy_database_is_idempotent(tmp_path: Path) -> None:
     assert second.action == "noop"
     assert second.changed is False
     assert second.backup_path is None
-    assert second.from_revision == "0002"
+    assert second.from_revision == "0003"
     assert _backups(db_path) == backups_after_first
 
 
 # ---------------------------------------------------------------------------
-# 已 stamp 0001（M3 schema）→ 0002
+# 已 stamp 0001（M3 schema）→ head（0002/0003）
 # ---------------------------------------------------------------------------
 def test_upgrade_from_stamped_0001_to_head_preserves_data(tmp_path: Path) -> None:
-    """M3（0001）库直接 upgrade head：0002 重建主键但数据/事件保留。"""
+    """M3（0001）库直接 upgrade head：0002 重建主键、0003 增人物卡表，数据/事件保留。"""
     db_path = tmp_path / "m3-0001.db"
     db_url = _db_url(db_path)
     seeded = _stamp_and_seed_0001(db_url, drop_alembic_version=False)
@@ -469,7 +469,7 @@ def test_upgrade_from_stamped_0001_to_head_preserves_data(tmp_path: Path) -> Non
     assert report.backup_path is not None
     engine = create_engine(db_url)
     try:
-        assert _alembic_revision(engine) == "0002"
+        assert _alembic_revision(engine) == "0003"
         _assert_schema_matches_metadata(engine, tmp_path)
         repo = SqliteRepository(engine)
         record = repo.load(_GAME_ID)
@@ -482,7 +482,7 @@ def test_upgrade_from_stamped_0001_to_head_preserves_data(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# M3 create_all 形状（无 alembic_version）→ 补 stamp 后 0002
+# M3 create_all 形状（无 alembic_version）→ 补 stamp 后升级到 head（0002/0003）
 # ---------------------------------------------------------------------------
 def test_upgrade_m3_create_all_schema_without_alembic_version(tmp_path: Path) -> None:
     """M3 create_all 形状（已有 version/审计、事件仍 seq 单主键）也能升级到 head。"""
@@ -497,7 +497,7 @@ def test_upgrade_m3_create_all_schema_without_alembic_version(tmp_path: Path) ->
     assert not any("ADD COLUMN version" in step for step in report.steps)
     engine = create_engine(db_url)
     try:
-        assert _alembic_revision(engine) == "0002"
+        assert _alembic_revision(engine) == "0003"
         _assert_schema_matches_metadata(engine, tmp_path)
         repo = SqliteRepository(engine)
         record = repo.load(_GAME_ID)
@@ -527,7 +527,7 @@ def test_upgrade_m4_create_all_schema_stamps_head(tmp_path: Path) -> None:
     assert _backups(db_path) == set()
     engine = create_engine(_db_url(db_path))
     try:
-        assert _alembic_revision(engine) == "0002"
+        assert _alembic_revision(engine) == "0003"
         _assert_schema_matches_metadata(engine, tmp_path)
         # 可直接多存档写入
         repo = SqliteRepository(engine)
@@ -551,7 +551,7 @@ def test_upgrade_fresh_database_initializes_schema(tmp_path: Path) -> None:
     assert report.backup_path is None
     engine = create_engine(_db_url(db_path))
     try:
-        assert _alembic_revision(engine) == "0002"
+        assert _alembic_revision(engine) == "0003"
         _assert_schema_matches_metadata(engine, tmp_path)
     finally:
         engine.dispose()
@@ -606,7 +606,7 @@ def test_cli_success_and_failure(
     assert main(["--db-url", _db_url(db_path)]) == 0
     output = capsys.readouterr().out
     assert "upgraded_legacy" in output
-    assert '"to_revision": "0002"' in output
+    assert '"to_revision": "0003"' in output
 
     # 失败路径：返回 1 且 stderr 有明确错误
     def _boom(*_args: Any, **_kwargs: Any) -> None:
@@ -618,8 +618,8 @@ def test_cli_success_and_failure(
 
 
 def test_report_as_dict_is_json_friendly() -> None:
-    report = LegacyUpgradeReport(db_url="sqlite:///x.db", action="noop", from_revision="0002")
+    report = LegacyUpgradeReport(db_url="sqlite:///x.db", action="noop", from_revision="0003")
     payload = report.as_dict()
     assert payload["changed"] is False
     assert payload["steps"] == []
-    assert payload["to_revision"] == "0002"
+    assert payload["to_revision"] == "0003"

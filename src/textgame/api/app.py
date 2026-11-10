@@ -24,12 +24,14 @@ from fastapi.responses import FileResponse
 
 from textgame import __version__
 from textgame.api.errors import ApiError, install_error_handlers
+from textgame.api.routes.cards import router as cards_router
 from textgame.api.routes.games import router as games_router
 from textgame.api.routes.health import router as health_router
 from textgame.api.routes.turns import router as turns_router
 from textgame.domain.results import ErrorCode
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.services.audit_service import AuditService
+from textgame.services.card_service import CardService
 from textgame.services.query_service import QueryService
 
 #: D-M6-5①：默认静态产物目录（``web/dist``；gitignore 忽略，构建期生成）。
@@ -103,9 +105,10 @@ def create_app(
     orchestrator: TurnOrchestrator | None = None,
     query_service: QueryService | None = None,
     audit_service: AuditService | None = None,
+    card_service: CardService | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
-    """创建 FastAPI 应用实例; 可选注入编排器、查询服务、审计服务与静态目录。
+    """创建 FastAPI 应用实例; 可选注入编排器、查询服务、审计服务、人物卡服务与静态目录。
 
     ``static_dir`` 缺省 ``web/dist``：目录存在则挂载静态托管 + SPA fallback，缺失则跳过
     （API 与现有测试行为不变；D-M6-5①）。组合根仍只负责装配，本文件不做业务计算。
@@ -120,12 +123,15 @@ def create_app(
     app.include_router(health_router)
     app.include_router(games_router)
     app.include_router(turns_router)
+    app.include_router(cards_router)
     if orchestrator is not None:
         app.state.orchestrator = orchestrator
     if query_service is not None:
         app.state.query_service = query_service
     if audit_service is not None:
         app.state.audit_service = audit_service
+    if card_service is not None:
+        app.state.card_service = card_service
     dist = Path(static_dir) if static_dir is not None else DEFAULT_STATIC_DIR
     if dist.is_dir():
         _register_spa_fallback(app, dist)

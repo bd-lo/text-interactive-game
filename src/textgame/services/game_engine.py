@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from textgame.domain.events import Event, EventLog, EventType
@@ -58,11 +58,19 @@ class GameEngine:
         idempotency_key: str | None = None,
         game_id: str | None = None,
         scenario: Scenario = "m2",
+        initial_state: dict[str, Any] | None = None,
+        card_id: str | None = None,
     ) -> Result:
         """创建存档：``game_created`` 首事件（seq=1）+ 当前状态 + 初始快照（契约 §3.2）。
 
         ``scenario``：``m2``=M2 单场景（默认，保证 M2 golden 不回归）；``m3``=多角色
         场景（``build_m3_state``）；``m4``=M4 制造场景（``build_m4_state``，D-M4-11）。
+
+        D-M6-2 加法（默认 ``None`` 行为与事件/哈希完全不变）：``initial_state`` 为预先构造
+        好的初始状态 JSON（人物卡建局时由 ``CardService`` 映射，玩家槽位仍是 ``PLAYER_ID``），
+        提供时不再构造内置场景状态；``card_id`` 只写入 ``game_created.params`` 供回放/审计
+        （加法字段，M2–M4 无卡路径恒为 ``None``）。
+
         返回 ``Result.data = {"game_id", "turn", "version", "snapshot_version", "save_seed"}``；
         同一 ``game_id`` 已存在时返回 ``CONFLICT``；同一数据库可创建多个不同 ``game_id``
         的存档（D-008-3 复合主键落地后，``events.seq`` 每存档各自从 1 起）。
@@ -75,32 +83,37 @@ class GameEngine:
         if self._repo.load(new_game_id) is not None:
             return Result.fail(ErrorCode.CONFLICT, f"game already exists: {new_game_id}")
 
-        if scenario == "m3":
-            initial_state = build_m3_state(save_seed=save_seed)
+        if initial_state is not None:
+            try:
+                base_state = GameState.model_validate(initial_state)
+            except ValueError as exc:
+                return Result.fail(ErrorCode.SCHEMA_VIOLATION, f"invalid initial_state: {exc}")
+        elif scenario == "m3":
+            base_state = build_m3_state(save_seed=save_seed)
         elif scenario == "m4":
-            initial_state = build_m4_state(save_seed=save_seed)
+            base_state = build_m4_state(save_seed=save_seed)
         else:
-            initial_state = build_initial_state(save_seed=save_seed)
+            base_state = build_initial_state(save_seed=save_seed)
         game_created = Event(
             turn_id=1,
             actor_id="system",
             method="game_created",
             event_type=EventType.GAME_CREATED,
             params={
-                "card_id": None,
+                "card_id": card_id,
                 "starting_room_id": ROOM_ENTRY,
                 "initial_character_id": PLAYER_ID,
                 "save_seed": save_seed,
                 "snapshot_version": _INITIAL_SNAPSHOT_VERSION,
             },
-            result={"initial_state": initial_state.model_dump(mode="json")},
+            result={"initial_state": base_state.model_dump(mode="json")},
         )
         try:
             stamped = EventLog(save_seed).stamp([game_created])
         except ValueError as exc:  # 序列化校验失败按 SCHEMA_VIOLATION 处理（第 5 章 5.8）
             return Result.fail(ErrorCode.SCHEMA_VIOLATION, str(exc))
         try:
-            new_state = initial_state.apply(stamped)
+            new_state = base_state.apply(stamped)
         except ValueError as exc:
             return Result.fail(ErrorCode.INTERNAL, f"game_created projection failed: {exc}")
 

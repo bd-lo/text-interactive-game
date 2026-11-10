@@ -1,9 +1,11 @@
-"""SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency / audit_events。
+"""SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency / audit_events
+/ character_cards。
 
 M2 契约 §6、M3 契约 §3.5/D-M3-6/D-M3-7、M4 前 D-008-3 与第 14 章 14.3：SQLAlchemy 2.0
 同步 ORM + SQLite，新库建表走 ``Base.metadata.create_all``；迁移走 Alembic
 （``alembic/versions/0001_m3_baseline.py`` 空库 5 表，``0002_composite_event_key.py``
-把 events 改为 ``(game_id, seq)`` 复合主键以支持同库多存档）。
+把 events 改为 ``(game_id, seq)`` 复合主键以支持同库多存档，
+``0003_character_cards.py`` 增 M6 人物卡库表 ``character_cards``）。
 
 ``events.seq`` 是**每存档内**全局单调序号、由 ``EventLog`` 分配（**不使用数据库自增**），
 ``id = f"evt_{seq:06d}"`` 即领域 ``Event.id``——因此 ``event_uid`` 只在存档内唯一，
@@ -132,3 +134,27 @@ class AuditEventRow(Base):
     verdict_reason: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CharacterCardRow(Base):
+    """M6 人物卡库表（第 5 章 §5.7、第 6 章 §6.7、D-M6-5）：**不参与事件溯源**。
+
+    人物卡是独立于游戏世界状态的资料库：写入由 ``CardService`` 校验后落本表，只有创建
+    存档（``POST /games``）才把卡映射为 ``Character`` 并交给唯一写入者 ``GameEngine``。
+    ``card_json`` 存整张卡的规范 JSON（``CharacterCard.model_dump(mode="json")``）；
+    ``name``/``source``/``generated_by`` 冗余为列供列表查询与展示，``deleted_at`` 为软删除
+    时间戳（``NULL`` = 未删除），删除不物理删行，便于审计与幂等回放。
+    """
+
+    __tablename__ = "character_cards"
+    __table_args__ = (Index("ix_character_cards_updated_at", "updated_at"),)
+
+    card_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(8), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    card_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    generated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

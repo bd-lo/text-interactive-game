@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from textgame.api.deps import (
     get_audit_service,
@@ -32,6 +32,7 @@ from textgame.orchestration.turn_orchestrator import (
     TurnOrchestrator,
 )
 from textgame.services.audit_service import AuditService
+from textgame.services.card_service import CardService, CardServiceError
 from textgame.services.query_service import GameNotFoundError, QueryService
 
 router = APIRouter(prefix="/api/v1", tags=["games"])
@@ -39,6 +40,22 @@ router = APIRouter(prefix="/api/v1", tags=["games"])
 #: M6 回放契约 D-M6-3：``limit`` 默认 200、上限 500。
 _REPLAY_DEFAULT_LIMIT = 200
 _REPLAY_MAX_LIMIT = 500
+
+
+def get_card_service_or_none(request: Request) -> CardService | None:
+    """返回组合根注入的 ``CardService``；未装配为 ``None``（仅卡建局路径要求其存在）。"""
+    card_service: CardService | None = getattr(request.app.state, "card_service", None)
+    return card_service
+
+
+def _card_api_error(exc: CardServiceError) -> ApiError:
+    """``CardServiceError`` → 统一失败信封（含 NOT_FOUND/INVALID_INPUT/SCHEMA_VIOLATION）。"""
+    return ApiError(
+        exc.error_code,
+        exc.message,
+        violations=exc.violations,
+        status_override=exc.http_status,
+    )
 
 
 def _replay_event(event: Event) -> ReplayEventResponse:
@@ -63,16 +80,33 @@ def _replay_event(event: Event) -> ReplayEventResponse:
 def create_game(
     idempotency_key: Annotated[str, Depends(require_idempotency_key)],
     orchestrator: Annotated[TurnOrchestrator, Depends(get_orchestrator)],
+    card_service: Annotated[CardService | None, Depends(get_card_service_or_none)],
     body: CreateGameBody | None = None,
 ) -> CreatedGameResponse:
     """创建存档；同键同参幂等回放（零写入），同键异参 409。
 
-    M3 可选 ``scenario``（``m2``/``m3``），缺省 ``m2`` 保持 M2 行为与回放不变。
+    M3 可选 ``scenario``（``m2``/``m3``/``m4``），缺省 ``m2`` 保持 M2 行为与回放不变。
+    D-M6-2 加法：body 可带 ``card_id`` 按人物卡建局（先经卡库读取，未知卡 404；与
+    ``seed``/``scenario`` 同给 → 422 ``INVALID_INPUT``）；不提供时行为完全不变。
     """
+    card_id = body.card_id if body is not None else None
+    card: dict[str, Any] | None = None
+    if card_id is not None:
+        explicit_scenario = body is not None and "scenario" in body.model_fields_set
+        if (body is not None and body.seed is not None) or explicit_scenario:
+            raise ApiError(ErrorCode.INVALID_INPUT, "card_id 不能与 seed/scenario 同时提供")
+        if card_service is None:
+            raise ApiError(ErrorCode.INTERNAL, "服务未完成人物卡服务装配")
+        try:
+            card = card_service.get_card_payload(card_id)
+        except CardServiceError as exc:
+            raise _card_api_error(exc) from exc
     request = CreateGameRequest(
         seed=body.seed if body is not None else None,
         idempotency_key=idempotency_key,
         scenario=body.scenario if body is not None else "m2",
+        card_id=card_id,
+        card=card,
     )
     try:
         view = orchestrator.create_game(request)

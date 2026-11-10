@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from textgame.domain.character_card import CardSource, CharacterCard
+
 
 class TurnRequestBody(BaseModel):
     """``POST /api/v1/turns`` 请求体；JSON key 保持 ``input``。"""
@@ -27,11 +29,14 @@ class CreateGameBody(BaseModel):
     """``POST /api/v1/games`` 请求体；可省略，``seed`` 缺省用服务端默认种子。
 
     可选 ``scenario``（``m2`` 单场景 / ``m3`` 多角色场景 / ``m4`` 制造场景），缺省
-    ``m2`` 保持 M2 契约与回放不变（D-M3-3/D-M4-11）。
+    ``m2`` 保持 M2 契约与回放不变（D-M3-3/D-M4-11）。D-M6-2 加法：``card_id`` 指定人物卡
+    建局（与 ``seed``/``scenario`` 互斥，同给 → 422 ``INVALID_INPUT``）；不提供时行为与
+    M2–M4 完全一致。
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    card_id: str | None = Field(default=None, min_length=1, max_length=64)
     seed: int | None = Field(default=None, ge=0)
     scenario: Literal["m2", "m3", "m4"] = "m2"
 
@@ -160,6 +165,83 @@ class ReplayResponse(BaseModel):
     to_seq: int
 
 
+class CharacterCardListItemResponse(BaseModel):
+    """``GET /api/v1/character-cards`` 列表项（第 6 章 §6.7：卡片库列表）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: str
+    name: str
+    source: CardSource
+    generated_by: str | None = None
+    updated_at: datetime
+
+
+class CharacterCardListResponse(BaseModel):
+    """``GET /api/v1/character-cards`` 200 响应 ``{cards, total}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cards: list[CharacterCardListItemResponse]
+    total: int
+
+
+class CharacterCardDetailResponse(BaseModel):
+    """``GET /api/v1/character-cards/{card_id}`` 200 响应 ``{card}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    card: CharacterCard
+
+
+class CharacterCardWarningResponse(BaseModel):
+    """人物卡告警项（与生成接口的 ``validation.warnings`` 同构：``[{code, message, field?}]``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    field: str | None = None
+
+
+class CharacterCardImportResponse(BaseModel):
+    """``POST /api/v1/character-cards/import`` 201 响应 ``{card_id, card, warnings}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: str
+    card: CharacterCard
+    warnings: list[CharacterCardWarningResponse]
+
+
+class CharacterCardSaveResponse(BaseModel):
+    """``POST /api/v1/character-cards``（保存）201 响应 ``{card_id, card}``。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: str
+    card: CharacterCard
+
+
+class CharacterCardValidationErrorResponse(BaseModel):
+    """查询式校验错误项：``{loc, type, msg}``（与第 6 章 §6.7 示例一致）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    loc: list[str]
+    type: str
+    msg: str
+
+
+class CharacterCardValidateResponse(BaseModel):
+    """``POST /api/v1/character-cards/validate`` 200 响应 ``{valid, errors}``（只读无副作用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    errors: list[CharacterCardValidationErrorResponse]
+
+
 class AuditRecordResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/audit`` 单条审计记录（读模型）。"""
 
@@ -191,6 +273,14 @@ class AuditListResponse(BaseModel):
 __all__ = [
     "AuditListResponse",
     "AuditRecordResponse",
+    "CharacterCardDetailResponse",
+    "CharacterCardImportResponse",
+    "CharacterCardListItemResponse",
+    "CharacterCardListResponse",
+    "CharacterCardSaveResponse",
+    "CharacterCardValidateResponse",
+    "CharacterCardValidationErrorResponse",
+    "CharacterCardWarningResponse",
     "CreateGameBody",
     "CreatedGameResponse",
     "GamePlayerViewResponse",

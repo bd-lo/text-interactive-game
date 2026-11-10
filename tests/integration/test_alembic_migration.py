@@ -1,14 +1,15 @@
-"""M3/M4 集成测试：Alembic 迁移链（0001 baseline → 0002 复合主键；契约 D-M3-6/D-008-3）。
+"""M3/M4/M6 集成测试：Alembic 迁移链（0001 baseline → 0002 复合主键 → 0003 人物卡表）。
 
 覆盖：
 
-- ``alembic upgrade head`` 在临时 SQLite 文件库上建出全部 5 张表
-  （events / snapshots / game_state_current / idempotency / audit_events）、
-  ``alembic_version=0002``，``events`` 为 ``(game_id, seq)`` 复合主键 +
+- ``alembic upgrade head`` 在临时 SQLite 文件库上建出全部 6 张表
+  （events / snapshots / game_state_current / idempotency / audit_events / character_cards）、
+  ``alembic_version=0003``，``events`` 为 ``(game_id, seq)`` 复合主键 +
   ``(game_id, event_uid)`` 复合唯一 + ``(game_id, turn_id, seq)`` 索引；
 - 迁移库 schema 与 ORM ``Base.metadata.create_all`` 的**表/列/主键/索引/唯一约束**
   一致（防止迁移与 tables.py 漂移）；
 - 重复 ``upgrade head`` 幂等；``downgrade base`` 删除全部表后可再次 upgrade；
+- 0003 往返：``downgrade 0002`` 只删 ``character_cards`` 且保留事件数据，再 ``upgrade`` 恢复；
 - 0001（M3 schema）单存档数据 upgrade head 后行级保留、可插入第二个存档
   （同 seq=1 可共存），删掉第二个存档数据后可 downgrade 回 0001（旧全局唯一约束）再
   upgrade，数据仍保留；
@@ -42,8 +43,20 @@ _EXPECTED_TABLES = {
     "game_state_current",
     "idempotency",
     "audit_events",
+    "character_cards",
 }
-_HEAD_REVISION = "0002"
+_HEAD_REVISION = "0003"
+_CHARACTER_CARD_COLUMNS = {
+    "card_id",
+    "schema_version",
+    "name",
+    "card_json",
+    "source",
+    "generated_by",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+}
 _TS = "2026-11-09 00:00:00.000000"
 
 
@@ -177,6 +190,14 @@ def test_upgrade_head_creates_all_tables(tmp_path: Path) -> None:
         assert "ix_events_turn_id" not in index_names
         audit_indexes = {str(index["name"]) for index in inspector.get_indexes("audit_events")}
         assert "ix_audit_events_game_turn" in audit_indexes
+        # 0003 人物卡表：列集合/主键/索引与 ORM 一致（M6 character-cards）
+        card_columns = {column["name"] for column in inspect(engine).get_columns("character_cards")}
+        assert card_columns == _CHARACTER_CARD_COLUMNS
+        assert tuple(
+            inspector.get_pk_constraint("character_cards")["constrained_columns"] or ()
+        ) == ("card_id",)
+        card_indexes = {str(index["name"]) for index in inspector.get_indexes("character_cards")}
+        assert "ix_character_cards_updated_at" in card_indexes
     finally:
         engine.dispose()
 
@@ -235,6 +256,44 @@ def test_downgrade_base_drops_all_tables_then_reupgrade(tmp_path: Path) -> None:
     try:
         assert set(inspect(engine).get_table_names()) >= _EXPECTED_TABLES
         assert _alembic_revision(engine) == _HEAD_REVISION
+    finally:
+        engine.dispose()
+
+
+def test_0003_character_cards_roundtrip_keeps_event_data(tmp_path: Path) -> None:
+    """0003 往返：``downgrade 0002`` 只删人物卡表，事件数据保留；再 upgrade 恢复。"""
+    db_url = _db_url(tmp_path)
+    _upgrade(db_url, "0002")
+    engine = _engine(db_url)
+    try:
+        with engine.begin() as connection:
+            for seq in (1, 2):
+                _insert_raw_event(connection, game_id="game-m3", seq=seq, uid=f"evt_{seq:06d}")
+        tables = set(inspect(engine).get_table_names())
+        assert "character_cards" not in tables
+        assert _alembic_revision(engine) == "0002"
+    finally:
+        engine.dispose()
+
+    _upgrade(db_url)  # 0002 → head（0003 增人物卡表）
+    engine = _engine(db_url)
+    try:
+        assert _alembic_revision(engine) == _HEAD_REVISION
+        assert "character_cards" in set(inspect(engine).get_table_names())
+        with engine.connect() as connection:
+            rows = connection.execute(text("SELECT game_id, seq FROM events ORDER BY seq")).all()
+        assert [tuple(row) for row in rows] == [("game-m3", 1), ("game-m3", 2)]
+    finally:
+        engine.dispose()
+
+    command.downgrade(_alembic_config(db_url), "0002")
+    engine = _engine(db_url)
+    try:
+        assert _alembic_revision(engine) == "0002"
+        assert "character_cards" not in set(inspect(engine).get_table_names())
+        with engine.connect() as connection:
+            count = connection.execute(text("SELECT COUNT(*) FROM events")).scalar()
+        assert count == 2
     finally:
         engine.dispose()
 
@@ -443,3 +502,8 @@ def test_orm_metadata_contains_all_baseline_tables() -> None:
     assert ("game_id", "event_uid") in unique_columns
     assert "ix_events_game_turn_seq" in {index.name for index in events.indexes}
     assert "uq_events_game_event_uid" in {constraint.name for constraint in events.constraints}
+    # 0003 人物卡表与 ORM 定义一致（M6 character-cards）
+    character_cards = Base.metadata.tables["character_cards"]
+    assert [column.name for column in character_cards.primary_key.columns] == ["card_id"]
+    assert {column.name for column in character_cards.columns} == _CHARACTER_CARD_COLUMNS
+    assert "ix_character_cards_updated_at" in {index.name for index in character_cards.indexes}

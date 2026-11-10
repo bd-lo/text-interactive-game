@@ -44,6 +44,7 @@ from textgame.orchestration.proposal_queue import (
 )
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
+from textgame.services.card_service import build_card_initial_state
 from textgame.services.dto import TurnResult
 from textgame.services.game_engine import GameEngine
 from textgame.services.ports import AuditRecord, GameRecord, GameRepository, IdempotencyRecord
@@ -147,6 +148,25 @@ class CharacterAgentLike(Protocol):
     ) -> list[Proposal]: ...
 
 
+class AgentSchedulerLike(Protocol):
+    """NPC 调度端口（M5-023 批量合并 + 休眠唤醒 + 调用审计）。
+
+    一次返回本回合所有 NPC 提案（可为空）；默认 ``None`` 表示保留原逐 Agent 循环
+    （M2–M4 行为不变）。实现见 ``orchestration.batch_sleep.BatchSleepScheduler``。
+    """
+
+    def collect(
+        self,
+        state: GameState,
+        events: Sequence[Event],
+        *,
+        turn_id: int,
+        save_seed: str,
+        player_action: ParseOutcome | None,
+        character_agents: Mapping[str, CharacterAgentLike],
+    ) -> list[Proposal]: ...
+
+
 class AuditRecorderLike(Protocol):
     """审计写入端口（``AuditService.save``；审计失败不得阻塞回合）。"""
 
@@ -157,7 +177,9 @@ class CreateGameRequest(BaseModel):
     """``POST /api/v1/games`` 的编排层请求（``seed`` 可省略，缺省用组合根默认种子）。
 
     ``scenario`` 支持 ``m2``/``m3``/``m4``（M4 制造场景，D-M4-11），缺省 ``m2``
-    保持 M2 契约与固定种子回放不变。
+    保持 M2 契约与固定种子回放不变。D-M6-2 加法：``card_id`` + ``card``（人物卡 9 字段
+    JSON，接入层已按卡库校验/加载）指定按卡建局；与 ``seed``/``scenario`` 互斥，
+    同时提供 → ``INVALID_INPUT``。不提供 ``card_id`` 时行为与 M2–M4 完全一致。
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -165,6 +187,8 @@ class CreateGameRequest(BaseModel):
     seed: int | None = None
     idempotency_key: str = Field(min_length=8, max_length=128)
     scenario: Literal["m2", "m3", "m4"] = "m2"
+    card_id: str | None = Field(default=None, min_length=1, max_length=64)
+    card: dict[str, Any] | None = None
 
 
 class GameView(BaseModel):
@@ -409,11 +433,13 @@ class TurnOrchestrator:
         actors: ActorDirectory | None = None,
         character_agents: Mapping[str, CharacterAgentLike] | None = None,
         audit: AuditRecorderLike | None = None,
+        agent_scheduler: AgentSchedulerLike | None = None,
     ) -> None:
         """装配依赖；``narrator=None`` 时使用内置确定性模板叙事。
 
         注入 ``registry``/``resolver``/``actors`` 三者后启用 M3 多角色链路；缺省保持 M2
-        单角色链路（默认装配行为与 M2 完全一致，M2 测试不回归）。
+        单角色链路（默认装配行为与 M2 完全一致，M2 测试不回归）。``agent_scheduler``
+        为 M5-023 可选的批量/休眠 NPC 调度器，默认 ``None`` = 原逐 Agent 循环。
         """
         self._repo = repo
         self._engine = engine
@@ -429,6 +455,8 @@ class TurnOrchestrator:
         self._actors = actors
         self._character_agents: dict[str, CharacterAgentLike] = dict(character_agents or {})
         self._audit = audit
+        # M5-023：可选 NPC 调度器（批量合并 + 休眠唤醒 + 审计）；None = 原逐 Agent 循环。
+        self._agent_scheduler = agent_scheduler
         # D-M4-15/G-1：同 Idempotency-Key 的回合在进程内串行，避免两个线程同时未命中
         # 幂等缓存、后到者拿到 CONFLICT/INVALID_INPUT 而非首结果；固定分段避免锁增长。
         self._idempotency_locks = tuple(threading.Lock() for _ in range(_IDEMPOTENCY_LOCK_STRIPES))
@@ -444,9 +472,17 @@ class TurnOrchestrator:
     # 开局
     # ------------------------------------------------------------------
     def create_game(self, request: CreateGameRequest) -> GameView:
-        """创建存档；同一幂等键同参回放首次结果（零写入），异参抛 ``CreateGameError(CONFLICT)``。"""
+        """创建存档；同一幂等键同参回放首次结果（零写入），异参抛 ``CreateGameError(CONFLICT)``。
+
+        D-M6-2 加法：提供 ``card_id`` 时按人物卡映射初始状态（``build_card_initial_state``，
+        玩家槽位仍是 ``PLAYER_ID``、场景取默认 m2），与 ``seed``/``scenario`` 互斥（422）；
+        不提供卡时请求哈希与 M2–M4 完全一致（零回归）。
+        """
         store_key = f"game:{request.idempotency_key}"
-        request_hash = params_hash({"seed": request.seed, "scenario": request.scenario})
+        hash_payload: dict[str, Any] = {"seed": request.seed, "scenario": request.scenario}
+        if request.card_id is not None:
+            hash_payload["card_id"] = request.card_id
+        request_hash = params_hash(hash_payload)
         cached = self._repo.get_idempotent(store_key)
         if cached is not None:
             if cached.params_hash != request_hash:
@@ -461,10 +497,27 @@ class TurnOrchestrator:
             if request.seed is not None
             else self._save_seed_default
         )
+        card_initial_state: dict[str, Any] | None = None
+        if request.card_id is not None:
+            if request.seed is not None or request.scenario != "m2":
+                raise CreateGameError(
+                    ErrorCode.INVALID_INPUT,
+                    "card_id 不能与 seed/scenario 同时提供",
+                )
+            if request.card is None:
+                raise CreateGameError(ErrorCode.INTERNAL, "创建存档缺少人物卡数据")
+            try:
+                card_initial_state = build_card_initial_state(
+                    request.card, card_id=request.card_id, save_seed=save_seed
+                )
+            except ValueError as exc:
+                raise CreateGameError(ErrorCode.SCHEMA_VIOLATION, f"人物卡数据非法: {exc}") from exc
         engine_result = self._engine.create_game(
             save_seed=save_seed,
             idempotency_key=request.idempotency_key,
             scenario=request.scenario,
+            initial_state=card_initial_state,
+            card_id=request.card_id,
         )
         if not engine_result.ok:
             raise CreateGameError(
@@ -761,25 +814,43 @@ class TurnOrchestrator:
         player_entry: QueueEntry | None = None
         if player_proposal is not None:
             player_entry = queue.enqueue(player_proposal, source=ProposalSource.PLAYER)
-        for actor_id in sorted(self._character_agents):
-            agent = self._character_agents[actor_id]
-            if not self._actors.exists(state, actor_id):
-                continue
-            npc_perception = self._query.build_perception_slice(
+        if self._agent_scheduler is not None:
+            # M5-023 接线：调度器一次返回本回合全部 NPC 提案（批量/休眠/审计由其负责）；
+            # 默认 None 时走下方原逐 Agent 循环，M2–M4 行为与 golden 逐字不变。
+            scheduled = self._agent_scheduler.collect(
                 state,
-                actor_id,
+                events_history,
                 turn_id=turn_id,
                 save_seed=save_seed,
-                events=events_history,
+                player_action=outcome,
+                character_agents=self._character_agents,
             )
-            try:
-                npc_proposals = agent.propose(npc_perception, turn_id=turn_id, save_seed=save_seed)
-            except Exception:  # 单个角色 Agent 失败不影响其余（第 9 章 §9.2 步骤 8）
-                continue
-            for npc_proposal in npc_proposals:
+            for npc_proposal in scheduled:
                 if npc_proposal.turn_id != turn_id:
                     continue
                 queue.enqueue(npc_proposal, source=ProposalSource.NPC)
+        else:
+            for actor_id in sorted(self._character_agents):
+                agent = self._character_agents[actor_id]
+                if not self._actors.exists(state, actor_id):
+                    continue
+                npc_perception = self._query.build_perception_slice(
+                    state,
+                    actor_id,
+                    turn_id=turn_id,
+                    save_seed=save_seed,
+                    events=events_history,
+                )
+                try:
+                    npc_proposals = agent.propose(
+                        npc_perception, turn_id=turn_id, save_seed=save_seed
+                    )
+                except Exception:  # 单个角色 Agent 失败不影响其余（第 9 章 §9.2 步骤 8）
+                    continue
+                for npc_proposal in npc_proposals:
+                    if npc_proposal.turn_id != turn_id:
+                        continue
+                    queue.enqueue(npc_proposal, source=ProposalSource.NPC)
         drained = queue.drain()
         expired = queue.expire_pending()
         entries: list[QueueEntry] = [*drained, *expired]
@@ -1071,6 +1142,7 @@ class TurnOrchestrator:
 
 
 __all__ = [
+    "AgentSchedulerLike",
     "AuditRecorderLike",
     "CharacterAgentLike",
     "CreateGameError",

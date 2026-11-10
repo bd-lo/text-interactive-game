@@ -29,7 +29,11 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
 
 
 class ApiError(Exception):
-    """接入层可映射异常：携带稳定错误码、消息与可选字段级 violations。"""
+    """接入层可映射异常：携带稳定错误码、消息与可选字段级 violations。
+
+    ``status_override`` 用于契约里「错误码相同但状态码不同」的特例（文件过大：
+    ``INVALID_INPUT`` 却必须返回 HTTP 413，第 6 章 §6.7）；缺省仍按 ``_HTTP_STATUS`` 映射。
+    """
 
     def __init__(
         self,
@@ -37,16 +41,20 @@ class ApiError(Exception):
         message: str,
         *,
         violations: list[dict[str, Any]] | None = None,
+        status_override: int | None = None,
     ) -> None:
         """构造失败信封所需的元数据。"""
         super().__init__(message)
         self.code = code
         self.message = message
         self.violations = violations
+        self._status_override = status_override
 
     @property
     def status_code(self) -> int:
-        """该错误码对应的 HTTP 状态码。"""
+        """该错误码对应的 HTTP 状态码（``status_override`` 优先）。"""
+        if self._status_override is not None:
+            return self._status_override
         return _HTTP_STATUS[self.code]
 
 

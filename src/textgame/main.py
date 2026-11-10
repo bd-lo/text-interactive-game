@@ -28,11 +28,13 @@ from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
 from textgame.orchestration.resolver import Resolver, ToolGateRouter
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
+from textgame.persistence.card_repository import SqliteCardRepository
 from textgame.persistence.database import init_schema, prepare_db
 from textgame.persistence.sqlite_repository import SqliteRepository
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
 from textgame.services.audit_service import AuditService
+from textgame.services.card_service import CardService
 from textgame.services.craft_service import CraftService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
@@ -50,6 +52,7 @@ def _build_app() -> FastAPI:
     game_engine = GameEngine(repo)
     query = QueryService(repo)
     action = ActionService(query)
+    card_service = CardService(SqliteCardRepository(engine))
     catalog = RecipeCatalog.load_builtin()
     llm_client = build_llm_client(settings)
     craft_service = CraftService(
@@ -92,7 +95,12 @@ def _build_app() -> FastAPI:
         character_agents=character_agents,
         audit=audit_service,
     )
-    return create_app(orchestrator=orchestrator, query_service=query, audit_service=audit_service)
+    return create_app(
+        orchestrator=orchestrator,
+        query_service=query,
+        audit_service=audit_service,
+        card_service=card_service,
+    )
 
 
 app = _build_app()

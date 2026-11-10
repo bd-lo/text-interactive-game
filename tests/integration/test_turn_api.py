@@ -94,11 +94,15 @@ def test_create_game_same_key_different_seed_conflicts(game_harness) -> None:
 
 
 def test_create_game_rejects_unknown_body_fields(game_harness) -> None:
-    """body 出现未知字段（如 M6 的 card_id）→ 422 失败信封。"""
+    """body 出现未知字段 → 422 失败信封。
+
+    注：M6 D-M6-2 起 body 合法字段扩为 ``{card_id?, seed?, scenario?}``，``card_id`` 不再
+    属于未知字段（卡建局用例见 ``test_create_game_with_card.py``）；本用例改用真正未知字段。
+    """
     resp = game_harness.client.post(
         "/api/v1/games",
         headers={"Idempotency-Key": _GAME_KEY},
-        json={"card_id": "card_01J9Z3K4Q7X8Y9Z0ABCDEFGHJX"},
+        json={"unknown_field": 1},
     )
 
     assert resp.status_code == 422

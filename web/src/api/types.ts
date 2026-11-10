@@ -30,8 +30,11 @@ export type ErrorCode =
   | 'LLM_UNAVAILABLE'
   | 'INTERNAL'
 
-/** `POST /api/v1/games` 请求体（`CreateGameBody`；响应 5 字段，别名为 `save_seed`）。 */
+/** `POST /api/v1/games` 请求体（`CreateGameBody`；响应 5 字段，别名为 `save_seed`）。
+ *  `card_id` 为 D-M6-2 加法语义（与 `seed`/`scenario` 互斥）。
+ */
 export interface CreateGameRequest {
+  card_id?: string
   seed?: number
   scenario?: Scenario
 }
