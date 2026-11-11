@@ -355,6 +355,7 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、vibe coding 开发计划、测试策略、依赖与许可证、风险与开放问题、轻量进度制度，以及 Vue 3 前端设计。
 - [按章拆分版](docs/开发文档/) ｜ [开发进度总览](docs/PROGRESS.md)（含 [WB2 世界书详情字段](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 用户内容批次](docs/progress/UC-2026-11-11-user-content-and-llm.md)） ｜ [单次进度文档](docs/progress/) ｜ [决策记录（ADR-lite）](docs/decisions/)（含 [M6 后计划表 D-N1..N7](docs/decisions/2026-11-11-post-m6-roadmap.md)）
 - [docs/design/deployment-and-distribution.md](docs/design/deployment-and-distribution.md)：部署/分发形态对比、Docker 评估（暂不提供镜像）与发布冒烟清单。
+- [docs/design/narrative-streaming.md](docs/design/narrative-streaming.md)：流式叙事阶段 1 设计与可行性评估（JSON 增量提取 + NDJSON；实现排 N2 038–040）。
 - [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)：炫技类前端效果调研、许可证矩阵、缝合落点与署名要求。
 - [docs/design/world-book-format-compat.md](docs/design/world-book-format-compat.md)：SillyTavern World Info / CCv2 `character_book` 字段表与兼容矩阵。
 - [docs/design/trpg-world-module.md](docs/design/trpg-world-module.md)：跑团式世界模组设计（本轮只写文档）；[story-hazard-copy.md](docs/design/story-hazard-copy.md)：枯井环境伤害文案。

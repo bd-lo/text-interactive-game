@@ -1,0 +1,195 @@
+# 流式叙事阶段 1 设计与评估（Narrative Streaming, Phase 1）
+
+> 归属：N2 体验轨 **037 streaming-phase1-design**（对应 [D-N2-1..N2-8](../decisions/2026-11-11-streaming-phase1.md)）；
+> 路线图 [D-N4](../decisions/2026-11-11-post-m6-roadmap.md)；风险 R-T8 / 开放项 Q7-B。
+> 状态：**设计与可行性评估完成（2026-11-11）**；实现排入 038（后端）/039（前端）/040（验收）。
+> 本批**不改运行时代码**，既有 `POST /api/v1/turns` 与默认离线路径逐字不变。
+
+## 0. TL;DR
+
+1. 当前痛点不是「总耗时」不可接受，而是**整段生成前玩家看不到任何字**（真实 LLM 首回合 7–8s、后续 2–6s，R-T8）。
+2. 架构约束决定「直接 token 流式」不能直接用：叙事是**结构化 JSON**（`{"narrative": "…"}`）+ 校验/一次修复，
+   事件只存**校验后的最终文本**。因此阶段 1 采用「**JSON 流式 + 服务端增量提取 narrative 字段**」：
+   增量只用于显示，最终仍以校验通过的完整文本提交。
+3. 真实供应商实测（2026-11-11，DeepSeek `deepseek-flash`）：流式 **首内容 chunk 0.66s**、**首个可显示 narrative
+   前缀 0.68s**、总耗时 1.28s；增量提取结果与最终 JSON 文本 **完全一致**。→ 方案可行，收益 = 把「首字可见」
+   从 2–8s 提前到 <1s。
+4. 阶段 1 边界：独立端点 `POST /api/v1/turns/stream`（NDJSON）、默认仅「LLM 已配置」时前端启用、失败自动
+   降级普通 `/turns`（一次）、`TEXTGAME_STREAM_ENABLED` 一键回滚；不改 `TurnResult`/事件/`GameState`。
+5. 工作量估算：038 后端 ≈ 1 人日（客户端流式 + 提取器 + 端点 + 测试），039 前端 ≈ 0.5–1 人日，
+   040 验收/文档 ≈ 0.5 人日；合计 **2–3 人日**，风险中等（集中在客户端治理与提取器边界）。
+
+## 1. 现状（为什么不能简单 `stream=True` 透传）
+
+| 环节 | 现状 | 对流式的含义 |
+| --- | --- | --- |
+| 叙事生成 | `LLMNarratorAgent` 调 `complete_json`，要求输出 **JSON** `{"narrative": "80–150 字"}` | 流式 chunk 是 **JSON 片段**，不是可直接显示的正文 |
+| 校验 | `complete_json_with_repair`：Schema + 长度校验，最多 1 次修复；失败回退模板 | 增量文本在完整 JSON 到达前**不可信**（可能被修复/回退替换） |
+| 提交 | 叙事完成 → `TurnResult` → `GameEngine` 原子提交事件（唯一写入者/CAS/幂等） | 不能「边流边写」；流式只影响显示，不影响提交顺序 |
+| 前端 | `TurnTextStream` 对**完整文本**做打字机；`submitTurn` 普通 `fetch` + JSON | 需要「增量追加」通道；不能破坏既有 120s 超时/错误映射 |
+| LLM 治理 | 同步客户端集中处理 deadline/tenacity/RPM/熔断/缓存/幂等/计量/记录 | 流式必须继续走同一治理层，不能绕过（D-N2-4） |
+| 测试 | 默认禁网（Q9）；真实 LLM 只用 `.work` 手跑取证 | 流式测试必须注入 Fake transport，零 socket |
+
+## 2. 可行性实测（2026-11-11，真实 DeepSeek API）
+
+探针脚本：`.work/stream_probe.py`（纯文本流式）、`.work/stream_json_probe.py`（JSON 流式 + 增量提取）；
+不落库、不提交，仅作证据（`.work` 已 gitignore）。
+
+| 指标 | 纯文本探针 | JSON 探针（贴近 narrate 契约） |
+| --- | --- | --- |
+| 模型 | `deepseek/deepseek-flash` | 同 |
+| 首内容 chunk | **0.461s** | **0.655s** |
+| 首个可提取 `narrative` 前缀 | — | **0.675s** |
+| 总耗时 | 2.158s | 1.280s |
+| chunk 数 | 111 | 87 |
+| 正文长度 | 140 字 | 109 字（JSON 内 `narrative`） |
+| 增量提取可用步数 | — | 83 / 87 |
+| 提取文本 = 最终 JSON 文本 | — | ✅ `exact_match=true` |
+| usage（末 chunk） | prompt 89 / completion 171（含 reasoning 58）/ cost ≈ $0.000116 | 未单独记录（同 `stream_options.include_usage` 路径可用） |
+
+结论：供应商支持 `stream=True`、`stream_options={"include_usage": True}` 在末 chunk 返回 usage；JSON 模式下
+从流式片段增量提取字段**可行且与最终文本一致**。对玩家而言，首字可见延迟从「整段 2–8s」降到 **0.7s 左右**。
+
+> 说明：探针的 1–2s 总耗时是短文本；玩家真实回合含更长的 system prompt/世界设定，首 chunk 可能更晚，
+> 但「首字 < 总耗时」的收益结构不变。040 会记录真实回合（含世界书/目标）的数字。
+
+## 3. 方案对比
+
+| 方案 | 做法 | 优点 | 缺点/风险 | 结论 |
+| --- | --- | --- | --- | --- |
+| **A. JSON 流式 + 服务端增量提取**（选定） | 保持 `narrate` JSON 契约；服务端从 chunk 中提取 `narrative` 字符串前缀下发；完整 JSON 到达后走原校验/修复 | 校验链/回退/事件语义全部不变；实测可行；前端只收正文 | 需写健壮的增量提取器（转义/字段顺序/provider 差异）；提取失败时静默不发增量 | ✅ 阶段 1 |
+| B. 纯文本叙事（`narrate@v4`） | 放弃 JSON，直接流文本，只做长度校验 | 实现最简单、最像「原生流式」 | 丢失 Schema 校验/修复链；prompt/叙事口径变化 → m3/story/世界书叙事重基线；回退语义要重做 | ✗（阶段 1 不做；如做需单独立 ADR + 重基线） |
+| C. 假流式 | 前端继续对完整文本打字机（现状） | 零风险 | 真实 LLM 首字延迟不改善（R-T8 不变） | ✗（已存在，不解决问题） |
+| D. 两段式预览 | 先流一段「预览文本」，结束后再正式生成 JSON 叙事 | 显示最自由 | **双倍 token 成本/双倍延迟**；两段文本可能不一致 | ✗ |
+| E. 客户端提取 JSON | 前端拿原始 JSON chunk 自己 extract | 服务端简单 | 未校验半截 JSON 进前端（违反「不裸 body as T」/安全扫描口径）；类型契约难守 | ✗ |
+
+## 4. 选定方案（A）详细设计
+
+### 4.1 总体流程
+
+```text
+浏览器                         FastAPI (async? 否：sync generator + 线程桥接)                 LLM 治理层
+  │  POST /turns/stream            │                                                       │
+  │  Idempotency-Key + body        │ 1) 幂等/CAS/限流前置（与 /turns 相同）                  │
+  │ ──────────────────────────────▶│                                                       │
+  │                                │ 2) StreamingResponse(media_type=application/x-ndjson) │
+  │  ◀── {"type":"start",...}      │                                                       │
+  │                                │ 3) 工作线程跑 TurnOrchestrator.run_turn(on_delta) ──────▶ complete_json_stream
+  │  ◀── {"type":"delta","text":"你"} │      增量提取器把 narrative 前缀放入 queue          │  每 chunk：提取前缀
+  │  ◀── {"type":"delta","text":"沿着…"} │                                                   │
+  │                                │ ┄┄ 叙事完整 → 校验/修复（原链）→ 提交事件/状态 ┄┄        │
+  │  ◀── {"type":"replace",...}   │ （仅当校验失败/LLM 中途失败回退模板时）                  │
+  │  ◀── {"type":"done","result":{TurnResult}} │ 最终结果（权威文本 + version/events）       │
+  │                                │                                                       │
+  │  ◀── {"type":"error",...}     │ 回合未提交的失败（start 后仍可能发生，如 LLM 不可用）    │
+```
+
+关键点：
+
+- 路由是 **sync**（沿用项目「同步路由 + 线程池」口径，不引入 async 重构）；`StreamingResponse` 的同步
+  generator 中启动一个工作线程跑编排，generator 从 `queue.Queue` 读取事件并 yield；回合结束/异常都通过
+  queue 传递（含 `done`/`error`），generator 收尾时 join 线程（超时兜底）。
+- `run_turn` 增加可选 `on_delta: Callable[[str], None] | None`（默认 None → 与现在完全一致）；
+  `LLMNarratorAgent.render_with_meta(..., on_delta=None)` 在检测到客户端支持流式时走
+  `complete_json_stream`，否则原样 `complete_json_with_repair`。
+- 增量提取器（纯函数）放在新模块 `llm/streaming.py`：
+  `extract_narrative_prefix(buffer: str) -> str | None`：定位 `"narrative"` 键后的字符串起始引号，逐字符
+  扫描处理 `\"`、`\\`、`\n`、`\t`、`\uXXXX` 转义，返回已解转义前缀；数据上限 `150 + 64` 字符（超出丢弃增量，
+  等 `done`）；格式不匹配返回 `None`（不抛异常）。
+- 提交时机不变（D-N2-5）：叙事完成后照常提交；断连不撤销。
+
+### 4.2 NDJSON 协议示例
+
+```text
+{"type":"start","turn_id":3,"expected_version":2}
+{"type":"delta","text":"你沿着"}
+{"type":"delta","text":"北边的通道动身"}
+{"type":"delta","text":"，脚下的石板缝里积着陈年的灰。"}
+{"type":"done","result":{"ok":true,"turn_id":3,"version":3,"text":"你沿着北边的通道动身，……","events":[…],"error_code":null,"narrative_source":"llm"}}
+```
+
+校验失败/中途失败时：
+
+```text
+{"type":"delta","text":"你沿着北边的通道动身"}
+{"type":"replace","text":"你沿着北边的通道动身……（模板叙事全文）","reason":"SCHEMA_VIOLATION"}
+{"type":"done","result":{"ok":true,…,"narrative_source":"template"}}
+```
+
+失败信封（回合未提交）：
+
+```text
+{"type":"start","turn_id":4,"expected_version":3}
+{"type":"error","error_code":"CONFLICT","message":"版本已过期"}
+```
+
+错误口径：与 `/turns` 一致——**业务失败仍是 HTTP 200**（`error` 事件 + `ok=false` 语义）；协议错误
+（缺 `Idempotency-Key`、body 非法）在流开始前返回 4xx 统一信封。重复 `Idempotency-Key` 同参 → 幂等命中，
+发送单段 `delta`（完整历史文本）+ `done`（不重放历史增量）。
+
+### 4.3 LLM 客户端流式治理（D-N2-4）
+
+- `LLMClient` 增可选方法 `complete_json_stream(req, on_delta) -> Result`；`LiteLLMClient` 实现，
+  `DisabledLLMClient` 不实现（编排层探测 `getattr(client, "complete_json_stream", None)`）。
+- 治理顺序：RPM 前置 → 熔断检查 → 尝试链 → **首 chunk 前** tenacity 重试（超时/429/5xx）→ 首 chunk 后任何
+  失败 → `LLM_UNAVAILABLE`（不重试、不再换供应商，避免已显示正文被另一模型续写）→ 记录/日志/计量。
+- 空闲超时：chunk 间隔 > `timeout_s` 视为超时（deadline 之外的第二道保护）。
+- usage：末 chunk（`stream_options.include_usage`）→ `LLMCallRecord` 新增 `streamed: bool = False`（只增）；
+  既有非流式记录不变。
+- 缓存/幂等命中：`on_delta(完整 content)` 一次 → 正常 `Result`。
+
+### 4.4 前端（D-N2-6）
+
+- `web/src/api/client.ts`：`streamTurn(request, key, { signal, timeoutMs, onEvent })`：
+  `fetch` + `AbortController` + `response.body.getReader()` + `TextDecoder("utf-8", {stream:true})`，
+  按 `\n` 分帧、`JSON.parse` 逐事件回调；非 2xx/非 NDJSON → 抛 `ApiClientError`（复用错误信封解析）。
+- `web/src/api/types.ts`：新增 `TurnStreamEvent` 联合类型（start/delta/replace/done/error）。
+- `stores/game.ts::submitTurn`：当「LLM 可用」（`llmSettings` store 状态 `enabled=true`）时走流式，
+  `streamingText` 状态累积增量并驱动 `TurnTextStream`；`replace` 覆盖；`done` 用 `result.text` 覆盖并走既有
+  成功处理（刷新 view/replay/历史）；`error` 转玩家可读错误；**流式失败降级一次**普通 `submitTurn`（不自动重试）。
+- 离线/未配置 LLM：完全走现有 `/turns`（零变化；e2e/golden 不受影响）。
+- 「无自动重试」「无 `EventSource`」底线不变（`security-scan.test.ts` 已 forbid）。
+
+### 4.5 配置与回滚
+
+- `TEXTGAME_STREAM_ENABLED`（bool，默认 `true`）：`false` 时 `/turns/stream` 返回 404（前端自动降级）或
+  统一 4xx（二选一在 038 定；推荐 404，前端按「端点不存在」降级）；`.env.example` 增加说明。
+- 默认离线（`TEXTGAME_LLM_ENABLED=false`）不改变任何现有行为：端点仍可调用，但叙事是模板单段 → 单条 delta
+  + done；前端未配置 LLM 时不走流式，因此正常离线体验与现在逐字一致。
+
+## 5. 任务拆分与验收
+
+| 切片 | 内容 | 主要文件 | 验收命令/证据 |
+| --- | --- | --- | --- |
+| **038** | `llm/streaming.py` 提取器 + `complete_json_stream` + `run_turn(on_delta)` + `POST /turns/stream` NDJSON + 开关 + 断连/幂等/错误测试 | `llm/{streaming,client,litellm_client,providers}.py`、`orchestration/turn_orchestrator.py`、`api/routes/turns.py`、`config/settings.py`、`.env.example` | 新增单测/集成 ≥25；`POST /turns` 既有测试零改动；`demo/console --check` 逐字；断连后回合仍提交 |
+| **039** | `streamTurn` 客户端 + 事件类型 + game store/GameView 流式与降级 + vitest | `web/src/api/{client,types}.ts`、`stores/game.ts`、`views/GameView.vue`、`components/TurnTextStream.vue`（如需） | vitest 新增（分帧/转换/降级/replace）；typecheck/build；dist 重建 |
+| **040** | 真实 LLM 手跑（首字/总耗时，含世界书/目标）+ 离线回退 + e2e 1 步 + 文档回写（第 12/23 章、README FAQ、PROGRESS） | `scripts/e2e-web.mjs`、docs | 全量 pytest 数字、e2e 步数/断言、手跑证据（`.work/`）写入进度文档 |
+
+## 6. 风险与缓解
+
+| 风险 | 等级 | 缓解 |
+| --- | --- | --- |
+| 增量提取器对 provider 差异（字段顺序/额外字段/非 JSON 包裹）不鲁棒 | 中 | 提取失败静默不发 delta（最终仍 done）；FakeStreamTransport 覆盖乱序/转义/超长；040 至少 DeepSeek 真跑 |
+| 流式中途失败导致已显示正文与最终不一致 | 中 | `replace` 显式覆盖；`done.result.text` 为权威；首 chunk 后不换供应商 |
+| 断连后台线程与幂等表并发 | 中 | 复用 `/turns` 的幂等/分段锁路径；断连不写新协议；集成测试覆盖 |
+| 前端流式降级导致双倍请求/成本 | 中 | 只在「流式失败一次」时降级；不自动重试；UI 提示一次 |
+| 测试/CI 禁网与真实 LLM 证据冲突 | 低 | Fake transport 单测；真实手跑证据只进 `.work`/进度文档 |
+| 同步 generator + 线程桥接的复杂度 | 低 | 用 `queue.Queue` + join 超时；路由实现尽量薄；错误统一转 `error` 事件 |
+
+## 7. 不在阶段 1 范围
+
+- 完全 async 化（D-M5-1 的异步化复评门留到阶段 2；阶段 1 用同步 generator + 线程桥接）；
+- 取消/断线重连恢复增量（阶段 2）；
+- SSE（`text/event-stream`）——NDJSON 已满足且不受 `EventSource` 禁令影响；
+- 多供应商流式差异策略（先单供应商 DeepSeek，其它随 N4 055/后续）；
+- 模板叙事的逐字流式（模板是单段短文本，打字机已足够，阶段 1 不做）。
+
+## 8. 与文档/轨道的对应
+
+| 文档 | 回写内容 |
+| --- | --- |
+| 第 12 章 §12.2/§12.6/§12.7/§12.8 | `complete_json_stream` 契约、增量提取、重试/超时/计量口径 |
+| 第 23 章 §23.3/§23.4 | NDJSON 客户端、流式渲染与降级、无 EventSource |
+| 第 17 章 §17.9.2 N2 | 037 状态更新（本设计完成）、038–040 待启动 |
+| README / FAQ | 「流式叙事」说明与开关（实现后） |
+| 第 20 章 R-T8 | 流式阶段 1 落地后状态更新（实现后） |
