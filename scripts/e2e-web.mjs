@@ -1570,6 +1570,101 @@ async function runFlow() {
     return 'deleted=true'
   })
 
+  // -------------------------------------------------------------------------
+  // S5 用户内容平台：场景 JSON 上传（场景库）+ 运行期 LLM 设置页
+  // -------------------------------------------------------------------------
+  const SCENARIO_PAYLOAD = {
+    schema_version: 1,
+    slug: 'e2e-tower',
+    meta: { title: 'E2E 小塔', author: 'e2e', description: '端到端测试用最小场景' },
+    player: { name: '旅人', hp: 10, max_hp: 10, location: 'gate', inventory: [] },
+    rooms: [
+      { key: 'gate', name: '塔门', description: '一扇虚掩的木门，门缝里透出风。', exits: { north: 'hall' } },
+      { key: 'hall', name: '塔厅', description: '螺旋楼梯向上，墙上挂着一盏没点亮的灯。', exits: { south: 'gate' }, items: ['flint'] },
+    ],
+    items: [{ key: 'flint', name: '火石', description: '一块干燥的火石。', tags: ['quest'] }],
+    npcs: [],
+    goal: {
+      title: '爬上塔顶',
+      description: '带着火石到塔厅。',
+      objectives: [
+        { key: 'climb', text: '带着火石进入塔厅', when: { all: [{ in_room: 'hall' }, { has_item: 'flint' }] } },
+      ],
+    },
+    endings: [],
+  }
+  let e2eScenarioId = ''
+
+  await step('scenario.import-and-list', '场景库：上传场景 JSON → 列表出现条目', async () => {
+    const imported = await postJson('/api/v1/scenarios', SCENARIO_PAYLOAD, '导入场景 JSON')
+    e2eScenarioId = String(imported?.scenario_id ?? '')
+    check('导入返回场景 id', e2eScenarioId.startsWith('scn_'), e2eScenarioId)
+    await navigate('/scenarios', '场景库列表', '.scenario-library-view')
+    await waitFor(
+      `document.querySelectorAll('.scenario-item').length >= 1`,
+      '场景列表出现至少一个条目',
+    )
+    await waitFor(
+      `document.body.innerText.includes(${JSON.stringify(SCENARIO_PAYLOAD.meta.title)})`,
+      '列表出现上传场景标题',
+    )
+    await checkNoInternalIdsVisible('场景库列表')
+    await screenshot('20-scenario-library-1280.png')
+    return `scenario_id=${e2eScenarioId}`
+  })
+
+  await step('scenario.start', '场景库：按上传场景开局 → 对局页目标面板与场景徽章', async () => {
+    await navigate(
+      `/scenarios/${encodeURIComponent(e2eScenarioId)}`,
+      '场景详情页',
+      '.scenario-detail-view',
+    )
+    await waitFor(
+      `document.querySelector('.scenario-detail-view')?.innerText.includes(${JSON.stringify(SCENARIO_PAYLOAD.meta.title)})`,
+      '详情页显示场景标题',
+    )
+    await clickButtonByText('.scenario-detail-view button', '按此场景开局', '按此场景开局')
+    await waitFor(`location.pathname.startsWith('/game/')`, '进入对局页（上传场景）')
+    await waitVisible('.scenario-badge', '对局页场景徽章')
+    const badgeText = String(await textOf('.scenario-badge'))
+    check(
+      '徽章显示上传场景标题',
+      badgeText.includes(SCENARIO_PAYLOAD.meta.title),
+      truncate(badgeText, 120),
+    )
+    await waitVisible('.goal-panel', '目标面板')
+    const goalText = String(await textOf('.goal-panel'))
+    check(
+      '目标面板显示上传场景目标',
+      goalText.includes(SCENARIO_PAYLOAD.goal.title),
+      truncate(goalText, 160),
+    )
+    await checkNoInternalIdsVisible('上传场景对局页')
+    await screenshot('21-scenario-game-1280.png')
+    return `badge=${truncate(badgeText, 40)}`
+  })
+
+  await step('settings.llm', '设置页：AI 状态卡 + API Key 表单可用（不提交真实密钥）', async () => {
+    await navigate('/settings', '设置页', '.settings-view')
+    await waitFor(
+      `document.body.innerText.includes('当前 AI 状态')`,
+      '设置页展示当前 AI 状态卡',
+    )
+    await waitFor(`document.querySelector('input[type="password"]') !== null`, 'API Key 密码框存在')
+    const text = String(await pageText())
+    check(
+      '设置页提供保存/测试入口与安全说明',
+      text.includes('保存并启用') && text.includes('测试连接') && text.includes('不会'),
+      truncate(text, 200),
+    )
+    await screenshot('22-settings-1280.png')
+    await setViewport(MOBILE_VIEWPORT.width, MOBILE_VIEWPORT.height, true)
+    await checkNoHorizontalOverflow('设置页 375px')
+    await screenshot('23-settings-375.png')
+    await clearViewport()
+    return 'settings-viewed'
+  })
+
   await step('console.no-errors', '全程无 console 错误 / 未捕获异常', async () => {
     const bad = consoleEvents.filter((entry) => !isBenignConsoleError(entry))
     check(

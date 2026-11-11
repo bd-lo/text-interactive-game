@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -100,7 +101,9 @@ def format_transcript(records: list[dict[str, Any]]) -> str:
 
 
 def _walkthrough_once(seed: int) -> list[dict[str, Any]]:
-    """临时库上跑一次完整演示并释放引擎（不写 ``data/``）。"""
+    """临时库上跑一次完整演示并释放引擎（不写 ``data/``；强制离线保证 golden 可复现）。"""
+    # 演示是确定性 golden 产物（屏字数逐字比对）：即使用户 .env 配了开发 key 也必须离线模板。
+    os.environ["TEXTGAME_LLM_ENABLED"] = "false"
     with tempfile.TemporaryDirectory(prefix="textgame-demo-") as tmp:
         db_path = Path(tmp) / "demo.db"
         app = build_app(f"sqlite:///{db_path.as_posix()}")

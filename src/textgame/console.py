@@ -848,7 +848,9 @@ def run_interactive(
 
 
 def _run_check_app() -> int:
-    """自检用临时库装配（不写 ``data/``）。"""
+    """自检用临时库装配（不写 ``data/``；**强制离线**保证逐屏 golden 可复现）。"""
+    # 自检是确定性产物（屏字数/golden 比对）：即使用户 .env 配了开发 key，也必须走离线模板路径。
+    os.environ["TEXTGAME_LLM_ENABLED"] = "false"
     with tempfile.TemporaryDirectory(prefix="textgame-console-") as tmp:
         db_path = Path(tmp) / "check.db"
         app = build_app(f"sqlite:///{db_path.as_posix()}")
