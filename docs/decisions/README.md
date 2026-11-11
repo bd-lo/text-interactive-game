@@ -63,6 +63,7 @@
 | 2026-11-11 | M6 出口 e2e 验收口径（D-M6-11）＋ R3 收尾决策（D-R3-1..5） | 已定案 | M6 025–028 + M6 出口附加项；R3 打磨批次 | [2026-11-11-m6-exit-and-r3-closure.md](2026-11-11-m6-exit-and-r3-closure.md) |
 | 2026-11-11 | M5 出口附加项：裁判 Agent 接线（D-M5-14） | 已定案 | M5 出口附加项（M5E-2，不占 019–024 编号） | [2026-11-11-m5-judge-wiring.md](2026-11-11-m5-judge-wiring.md) |
 | 2026-11-11 | H4 世界书 MVP + 前端炫酷化（D-H4-1..6） | 已定案 | 范围外玩家体验批次（世界书/炫酷化/L1/L3；跑团仅文档） | [2026-11-11-h4-worldbook-and-visual.md](2026-11-11-h4-worldbook-and-visual.md) |
+| 2026-11-11 | 用户内容平台（场景 JSON 上传）+ LLM 运行期凭据（D-UC-1..7 / D-LLM-1..5） | 已定案 | 范围外玩家内容批次（场景库/设置页/运行期 API Key） | [2026-11-11-user-content-and-llm-runtime.md](2026-11-11-user-content-and-llm-runtime.md) |
 
 ## 7. 记录模板
 

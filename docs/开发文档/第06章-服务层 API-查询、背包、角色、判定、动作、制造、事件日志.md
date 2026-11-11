@@ -447,3 +447,24 @@ Content-Type: application/json
 4. 确定性计算与智能体生成的边界：判定与常规制造是纯函数（同 `rng_seed` 同结果、零事件），自由制造草案必须过 JSON Schema + 状态一致性检查，失败返回 `SCHEMA_VIOLATION`/`NOT_ALLOWED` 且不写状态。
 5. 依赖结论：SQLAlchemy 2.0.x + `python-statemachine` 2 个 pip 依赖；`returns` 仅参考设计（且必须锁 0.26.x 才满足 3.10）、`result` 因仓库归档放弃、`dependency-injector` 因编译扩展与能力重叠放弃、`transitions` 因 6 个月无提交放弃。
 6. `ToolContext` 定稿（本章新增约定）：工具层构造、服务层消费，六字段 `actor_id`/`actor_tags`/`turn_id`/`save_seed`/`idempotency_key`/`caller`——已与第 21 章 §21.2.3 附录一致，第 8/9 章按同一字段集使用。
+
+### 6.8 场景库与运行期设置端点（2026-11-11 加法回写，D-UC-1..6 / D-LLM-4）
+
+用户需求「玩家自己上传场景 JSON 玩新剧情 + 网页输入自己的 DeepSeek API Key」落地后的**加法端点**；
+既有端点与旧场景行为逐字不变（旧 golden/回放零影响，见 ADR `docs/decisions/2026-11-11-user-content-and-llm-runtime.md`）。
+
+- **场景库（资料库，不进事件溯源；Alembic 0005 `scenarios` 表，软删）**：
+  - `POST /api/v1/scenarios/validate`：body=场景 JSON 原文，只读预检，**永远 200** →
+    `{ok, errors:[{path,message}], warnings:[{path,message}], summary{rooms,items,npcs,objectives,endings,suggestions}}`；
+  - `POST /api/v1/scenarios`：导入（JSON 原文或 multipart，≤256KB，需 `Idempotency-Key`）→ 201
+    `{scenario_id, slug, title, summary, warnings}`；超限 413、幂等异参 409、未知 404；
+  - `GET /api/v1/scenarios`（`q`/`limit`≤100/`offset`）、`GET /api/v1/scenarios/{id}`（含 `definition` 原文）、
+    `DELETE /api/v1/scenarios/{id}`（204 空 body、软删、重复 404）。
+- **建局加法**：`POST /api/v1/games` body 可带 `scenario_id`（与 `card_id`/显式 `scenario` 互斥，可与
+  `world_book_id`/`seed` 组合）；服务先物化初始 `GameState` 再交 `GameEngine.create_game(scenario="custom",
+  initial_state=...)`，`game_created.params` **仅该路径**追加 `scenario_id` 且 `starting_room_id` 取初始状态玩家位置。
+- **运行期 LLM 设置**：`GET/PUT/DELETE /api/v1/settings/llm` 与 `POST /api/v1/settings/llm/test`；
+  状态 9 字段（`configured/enabled/source/provider/model/api_base/masked_key/has_saved_user_key/detail`），
+  key 只返回打码值；写端点**不要求 `Idempotency-Key`（按值幂等）**，非法字段 422 统一信封。
+- **职责边界**：场景 JSON 的解析/校验/派生 ID/初始状态在 `domain.user_scenario` 与 `ScenarioService`，
+  `GameEngine` 仍零 IO、仍是唯一写入者；运行期凭据由 `RuntimeLLMClient` 持有，服务层/领域层不感知密钥。

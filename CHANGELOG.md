@@ -7,6 +7,30 @@
 
 ### 新增
 
+- **UC 批次：玩家自上传场景 JSON + 酒馆级世界书 + 运行期 DeepSeek API Key（范围外，2026-11-11）**：
+  **玩家内容平台**——场景 JSON v1（`schema_version/slug/meta/player/rooms/items/npcs/goal/endings/suggestions`；
+  条件 DSL 白名单谓词 `in_room/has_item/has_item_tag/npc_state/hp_lte/hp_gte` + `all/any/not/always`，禁 eval；
+  `extra="forbid"` + 跨引用校验 + 结构化 `errors/warnings`（path+message））；确定性 ULID 派生
+  （`sha256(scenario_id|kind|key)`，玩家固定 `PLAYER_ID`）+ `build_initial_state` + `UserScenarioHooks`
+  （目标/结局/进入伤害/NPC 对话，兜底结局）；`scenarios` 表 + **Alembic 0005**（软删、每次导入新 `scn_` ID）+
+  `ScenarioService` + 5 端点（validate/import/list/get/delete；import 双接受 JSON 原文与 multipart）+
+  `POST /games {scenario_id}`（`scenario="custom"`，`game_created.params` 记 `scenario_id`，与 `card_id`/`scenario` 互斥、
+  可与 `world_book_id`/`seed` 组合）；网页 `/scenarios` 列表/导入（拖放+校验预览）/详情 + Home「场景」下拉 + 对局场景徽章 +
+  终端 `--list-scenarios`/`--scenario-id`；示例 `examples/scenarios/tiny-tower.json`、`ember-watch.json`。
+  **酒馆级世界书**——`sticky/cooldown/delay` 定时效果（0..100，按事件历史逐回合模拟，`history=None` 逐字等价旧实现，
+  `/view.lore` 与回合注入同口径）、正则键 `/pattern/flags`（Python `re.search`，仅 i/m/s，非法/超长降级字面量+warning，
+  输入截断 2000 字符）、包含组（`group/group_weight/group_override`：同组每回合至多 1 条，override→weight→order→uid）、
+  `position/depth` 参与 lore 块排序；`world_book_entries` 无新列（`raw_json` 还原）；导入 warnings 形状不变（新增诊断码）。
+  **运行期 DeepSeek API Key**——优先级「显式 `TEXTGAME_LLM_ENABLED=false` → `.env`/env 开发 key → 本机
+  `data/llm.credentials.json` → 离线」；`RuntimeLLMClient` 热切换（网页保存后**当回合生效**，无需重启）；
+  `GET/PUT/DELETE /api/v1/settings/llm` + `POST /api/v1/settings/llm/test`（状态 9 字段、打码 key、无幂等键）；
+  网页 `/settings`（保存并启用/测试连接/清除二次确认/安全提示）+ Home 未配置可关闭横幅；demo/console `--check`
+  装配前强制离线保证 golden 逐字可复现。验证：全量 pytest **2155 passed**、replay **68**（旧 golden 零改动）、
+  web **53 files/326 tests**、typecheck/build OK、浏览器 e2e **25 步/119 断言**、tracked `web/dist` 零漂移、
+  `demo --check` 7/7 与 `console --check` 4/4 逐字不变、ruff/mypy/lint-imports/check_docs 全绿、Alembic head 0005。
+  详见 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md) 与
+  [ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、
+  [场景 JSON 设计](docs/design/user-scenario-modules.md)。
 - **H4 批次：世界书 MVP + 前端炫酷化 + 剧情失败结局（不占 M1–M6 编号，2026-11-11）**：
   **世界书**——SillyTavern World Info（entries map/array/裸 map）/ Character Card V2 `data.character_book` / 本项目简化 schema
   三格式导入（multipart ≤256KB、`POST /world-books/validate` 只读预检、列表分页搜索、详情、软删、幂等/413/422/404/409，
@@ -37,7 +61,7 @@
 - **M2 单场景 MVP（5/5）**：`POST /api/v1/games` / `POST /api/v1/turns`（幂等键/CAS/错误码映射）、ToolRegistry 白名单与解析 Agent（Schema 校验/修复/确定性兜底）、RuleEngine + 模板叙事、SQLite 事件表/快照与重启恢复、首个 golden 回放（save-42 七回合）。
 - **M3 多角色（5/5）**：角色私有感知切片与 `actor_scope` 可见性矩阵、`ProposalQueue` + 纯函数 `Resolver`、确定性 `CharacterAgent`、多角色 CAS 提交、审计只增表与查询端点、10 回合多角色 golden 回放。
 - **M4 制造（4/4）**：配方契约（模板/实例分离）、确定性制造与自由制造校验链路、5 个制造 golden 回放与审计。
-- **M5 进行中（2/6）**：019 `LLMClient` 同步契约 + `LiteLLMClient` 治理（deadline/tenacity/RPM/幂等/日志/计量）+ 默认离线工厂；020 `llm/config/` JSON 分级 + 进程内 `TTLCache`。022 按用户决定缩范围为并发幂等（成本/预算/`llm_call_log` 不做，D-M5-10）。
+- **M5 API 调用治理（6/6）**：019 `LLMClient` 同步契约 + `LiteLLMClient` 治理（deadline/tenacity/RPM/幂等/日志/计量）+ 默认离线工厂；020 `llm/config/` JSON 分级 + 进程内 `TTLCache`；021 Schema 修复链终局（不迁 instructor）；022 并发同 `Idempotency-Key` 幂等；023 休眠状态机与批量合并；024 配置化回退链 + 进程内熔断。出口附加项（解析 free 分支/LLM 叙事/LLM 角色/裁判 Agent 接线）见 M5E-1/M5E-2；022 按用户决定缩范围（成本/预算/`llm_call_log` 不做，D-M5-10）。
 - **OSS-1 可玩终端入口（不占 M1–M6 编号）**：`python -m textgame.console`（自然语言连续游玩 + `:help/:inv/:status/:quit`）、`python -m textgame.demo --check`（固定 seed 七屏自检）、`scripts/quickstart.ps1|sh`、`examples/m2-demo.md`、README「5 分钟上手」、只读 `GET /api/v1/games/{id}/view` 与背包意图。
 - **CI-1（不占编号）**：修复公开仓库 CI 的 pytest-only 失败（`import litellm` 远端成本表下载被禁网守卫拦截）→ `LITELLM_LOCAL_MODEL_COST_MAP` 离线化 + pytest 失败摘要写入 Check 注解；本地 1179 passed、replay 61、远端 CI 全绿。
 - **文档/仓库修正（D1 批）**：ADR `docs/decisions/2026-11-10-022-scope-and-cost-out.md`（D-M5-10）；README 数字/目录树/LLM 配置/联网提示/终端示例；本 CHANGELOG 与 `CONTRIBUTING.md`；quickstart 只装运行时依赖（`--no-dev`）；`.gitignore` 补 `*.db`。

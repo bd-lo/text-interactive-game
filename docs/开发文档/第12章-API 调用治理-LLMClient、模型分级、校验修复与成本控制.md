@@ -165,3 +165,19 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 5. 批量合并只对无私有记忆的公共群演 NPC 开放（每批 ≤4 个），角色 Agent 默认串行；休眠策略用 `agent_invocation_log` 做可审计断言。
 6. 第一版预算按「单回合默认 2 次、最多 3 次调用；P95 首版 ≤8 s（M2 缓存命中目标 ≤3 s）」设 SLO；**成本类 SLO（单回合 ≤¥0.20 / 单会话 ≤¥3 / 单日 ≤¥200）经 2026-11-10 用户拍板不实现（D-M5-10）**，仅保留为设计口径与后续复评参考；「模型名/供应商」以配置化「待定」项留给 M5。
 7. M5 实施口径（ADR `docs/decisions/2026-11-10-m5-api-governance.md`）：同步签名（D-M5-1）、修复链 019–021 终局留 `validation.py`（D-M5-2，021 定稿不迁客户端/instructor）、`output_schema` 用模型类且不用 `schema` alias（D-M5-3）、配置 JSON-only（D-M5-4）、默认离线 `TEXTGAME_LLM_ENABLED=false` 且启用时缺 key 构造期失败（D-M5-6）、回退链/熔断配置 `fallbacks`/`circuit`（D-M5-11，024 落地）；**022 缩范围为并发幂等、成本/预算/`llm_call_log`/Alembic 0003 不做（D-M5-10，`docs/decisions/2026-11-10-022-scope-and-cost-out.md`）**。本章与 ADR 冲突时以 ADR 为准。
+
+### 12.10 运行期凭据与客户端热切换（2026-11-11，D-LLM-1..5）
+
+用户需求：本地开发默认用 `.env` 开发 key，干净克隆由玩家在网页输入自己的 DeepSeek API Key，
+默认离线仍可玩。实现口径（ADR `docs/decisions/2026-11-11-user-content-and-llm-runtime.md`）：
+
+- **优先级**：显式 `TEXTGAME_LLM_ENABLED=false` → 永远离线；否则「`.env`/环境变量 key（开发）→
+  本机 `data/llm.credentials.json`（玩家输入）→ 离线」；**有 key 即自动启用**（不再强制显式 true）。
+- **存储**：本机 JSON（`data/` 已 gitignore，`TEXTGAME_LLM_CREDENTIALS_FILE` 可覆盖），原子写 + POSIX 0600
+  尽力；损坏/版本不符视为未配置；不写数据库、不进日志，状态接口只返回打码 key。
+- **热切换**：新增 `RuntimeLLMClient`（实现 `LLMClient` 协议，内部委托当前离线/真实客户端），所有 Agent
+  （解析/叙事/角色/裁判/卡生成/制造）注入**同一实例**；设置端点保存后 `refresh()`，当回合生效、无需重启。
+  `main.py` 的 Agent 因此常驻 LLM 版本，离线时由各 Agent 内置回退产出确定性文案（与旧离线装配逐字等价）。
+- **确定性护栏**：`demo --check` / `console --check` 在装配前强制 `TEXTGAME_LLM_ENABLED=false`；
+  CI 浏览器 e2e 同样显式离线，保证 golden 与断言可复现。
+- **成本口径不变**：成本/预算/`llm_call_log` 仍按 D-M5-10 不做；运行期凭据只影响「是否/用谁的 key 调用」。

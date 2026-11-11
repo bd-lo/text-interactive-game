@@ -270,3 +270,32 @@ v1 不承诺「缺材料聚焦建议」的自适应（列入 P1）。
 | P4（技术债/文档） | 条件 DSL 扩展（flags/quests/时间）、编辑器、建议自适应、文档回写（ADR/PROGRESS/CHANGELOG/README/格式文档） | 四门全绿 + 文档数字校准 |
 
 > 本文件即 P0 的实现契约；实施中的偏离在 `docs/decisions/` 记 ADR 后回写本文件。
+
+---
+
+## 5. 实施回填（2026-11-11，P0/P1/P3 已交付）
+
+代码提交：`1b2cb8c`（后端：域层/服务/API/迁移 0005/组合根/终端）、`a2264de`（前端：场景库 UI/设置页/dist）。
+进度文档：`docs/progress/UC-2026-11-11-user-content-and-llm.md`；决策：`docs/decisions/2026-11-11-user-content-and-llm-runtime.md`。
+
+| 期 | 状态 | 交付 |
+| --- | --- | --- |
+| P0 内容主干 | ✅ 已交付 | 格式 v1 全部字段/校验/确定性 ID/建局；`scenario_service` + 5 端点；`POST /games {scenario_id}`；钩子接入 query/action/orchestrator；`examples/scenarios/tiny-tower.json`、`ember-watch.json`；终端 `--scenario-id/--list-scenarios` |
+| P1 体验 | ✅ 已交付 | `/scenarios` 列表/导入（拖放+校验预览）/详情；Home「场景」下拉；对局页场景徽章（URL query 带 `scenario_id`，`/view` 不加字段）；e2e 增 3 步（25/25 步、119/119 断言） |
+| P2 世界书联动 | ⏳ 部分 | 建局 `scenario_id + world_book_id` 已允许组合；世界书字段语义升级（timed effects/regex keys/inclusion group 等）见 `docs/design/world-book-format-compat.md` 回写（同批） |
+| P3 LLM 运行期凭据 | ✅ 已交付 | `.env` 开发 key 优先 → 本机 `data/llm.credentials.json` → 离线；`GET/PUT/DELETE /api/v1/settings/llm` + `POST /test`；`/settings` 页 + Home 未配置横幅；保存后当回合生效（`RuntimeLLMClient` 热切换） |
+| P4 技术债/文档 | ⏳ 进行中 | 条件 DSL 扩展（flags/quests）未做；本文件与 PROGRESS/CHANGELOG/README/ADR 已回写 |
+
+### 实施偏离登记（相对本文 §2/§3）
+
+1. **`/view` 不新增 `scenario_id`**：前端用 URL query（`/game/:id?scenario_id=scn_...`）回溯标题，
+   对局页取不到时回退「自定义场景」；`/view.scenario` 仍为 `"custom"`（加法字段留给后续，避免破契约测试）。
+2. **导入端点双接受**：`application/json` 原文（契约）与 `multipart/form-data`（前端现状）都接受；
+   validate 只接受 JSON 原文；DELETE 不要求 `Idempotency-Key`（按值幂等，重复删除 404）。
+3. **validate 永远 200**（含非法 JSON/超大，errors path=`"$"`）；仅 import 超 256KB 返回 413。
+4. **场景记录 `created_at/deleted_at` 用 `DateTime(timezone=True)`**（与既有 8 表一致，SQLite 存文本）。
+5. **条件 DSL 未实现 flag/quest/时间条件**（v1 只做房间/物品/标签/NPC 对话态/HP 与 all/any/not/always）；
+   目标/结局「缺失 when = 不满足」。
+6. **进入伤害的 hint** 写入 `ENVIRONMENT_DAMAGE` 事件 `result.hint`（当前模板叙事不消费，回放可审计）。
+7. **slug 不唯一**：每次导入生成新的 `scn_` ID（同一 JSON 可重复导入为不同存档场景），
+   派生实体 ID 含 `scenario_id` 因此互不冲突。

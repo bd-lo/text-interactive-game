@@ -6,9 +6,9 @@
 
 **默认离线可玩**：不需要 API Key、不需要 Node/pnpm、不需要联网（仅首次安装依赖需联网）。
 
-> **当前状态**：M1–M6 已完成；**H4 批次**已交付——**前端炫酷化**（复古 CRT + 余烬粒子 + 打字机 + 三档视觉设置，零新增运行时依赖）、**世界书（World Book / Lorebook）**（兼容 SillyTavern World Info 与 Character Card V2 `character_book`，UI 不参考酒馆）、剧情枯井环境伤害与「倒下」结局、叙事来源徽标。
-> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md) 与 [H4 进度文档](docs/progress/H4-2026-11-11-worldbook-visual.md)（H4 时点：pytest 2007 passed / replay 68 / web 241 tests / 世界书与伤害 47 例；数字以 CI 与实际输出为准）。
-> 本批设计文档：[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)、[ADR D-H4-1..6](docs/decisions/2026-11-11-h4-worldbook-and-visual.md)。
+> **当前状态**：M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。此前 H4 批次：前端炫酷化（CRT/余烬粒子/打字机/三档视觉，零新增运行时依赖）、剧情枯井环境伤害与「倒下」结局、叙事来源徽标。
+> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（UC 时点：pytest **2155 passed** / replay 68 / web **53 files/326 tests** / 浏览器 e2e 25 步/119 断言；数字以 CI 与实际输出为准）。
+> 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)。
 
 ![网页版首页：存档续玩 + 场景/世界书选择 + CRT 与余烬粒子](docs/assets/web-home.png)
 
@@ -120,13 +120,61 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **兼容性**：无世界书的旧存档照常可玩（`/view.world_book` 与 `lore` 为 null），旧 golden/回放零影响。
 - **限制**：不执行任何来自导入内容的脚本/命令；`regex key`/向量检索/包容组语义/计时效果本轮不支持（见兼容文档 §5）。
 
+## 玩家自上传场景（Scenario JSON）
+
+剧情不再固定：**玩家自己上传一份场景 JSON 就能开新局**（不需要改代码、也不需要等我们更新内容）。
+
+- **怎么玩**：网页「场景库」(`/scenarios`) → 导入/粘贴 JSON → 校验预览（错误逐条给 JSON 路径）→ 导入 →
+  「按此场景开局」；首页「新建对局」的场景下拉同时列出内置 4 个场景与已上传场景。
+  终端：`--list-scenarios` 查看已上传场景、`--scenario-id <ID>` 直接开局。
+- **格式**：`schema_version/slug/meta/player/rooms/items/npcs/goal/endings/suggestions`，条件 DSL 只认白名单谓词
+  （`in_room/has_item/has_item_tag/npc_state/hp_lte/hp_gte` + `all/any/not/always`，禁 eval）。完整字段、限额、
+  作者向最小示例见 [docs/design/user-scenario-modules.md](docs/design/user-scenario-modules.md) §2。
+- **示例**（可直接导入试玩）：
+  [examples/scenarios/tiny-tower.json](examples/scenarios/tiny-tower.json)（两房间最小场景）、
+  [examples/scenarios/ember-watch.json](examples/scenarios/ember-watch.json)（5 房间/守夜人对话/枯井进入伤害/胜利+倒下双结局）。
+- **支持的内容**：房间与出口、物品（`heal`/`hp_delta` 等既有道具效果）、NPC 关键词对话（可写 `dialogue_state` 供目标判定）、
+  目标链（条件满足即完成）、显式结局（按 `priority` 取第一个满足项，未写时按「目标全完成=胜利 / HP≤0=倒下」兜底）、
+  进入房间伤害、建议文案。**不支持**自定义配方/制造链、战斗系统、脚本表达式、GM 层/多人——边界见设计文档 §4。
+- **确定性**：场景实体内 ID 由 `sha256(scenario_id|kind|key)` 派生（同 JSON 同存档状态可复算），
+  目标/结局读时纯求值，不新增 `EventType`、不写 `GameState` 字段；旧 4 场景 golden/回放零影响。
+- **API**（写操作带 `Idempotency-Key`；导入 ≤256KB，非法 JSON/字段给结构化 errors，过大 413，未知 id 404）：
+  ```bash
+  curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/scenarios/validate \
+    -H 'Content-Type: application/json' --data-binary @examples/scenarios/ember-watch.json   # 只读预检
+  curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/scenarios \
+    -H 'Idempotency-Key: demo-scn-0001' -H 'Content-Type: application/json' \
+    --data-binary @examples/scenarios/ember-watch.json                                        # → 201 {scenario_id,...}
+  curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/games \
+    -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-scn-game-0001' \
+    -d '{"scenario_id":"scn_..."}'                                                           # 按上传场景开局
+  ```
+
+## 自己的 DeepSeek API Key（设置页）
+
+- **本地开发机**：把 `.env` 里的 `TEXTGAME_LLM_API_KEY` 填上（见 [.env.example](.env.example)），启动后**自动使用开发 key**，
+  不需要任何额外输入；`TEXTGAME_LLM_ENABLED=false` 可显式关闭（永远离线）。
+- **干净克隆 / 玩家机器**：没有 `.env` 时默认**离线模板叙事，仍然可玩**；首页会出现「未配置大模型」横幅 →
+  进入「设置」页填自己的 DeepSeek API Key → **保存后当回合生效**（无需重启）。
+- 设置页还支持：测试连接（返回延迟/中文失败原因）、清除本机 key、查看当前来源（开发环境 / 本机保存 / 未配置）与打码 key。
+- 存储与安全：key 只保存在本机 `data/llm.credentials.json`（已 gitignore；可用 `TEXTGAME_LLM_CREDENTIALS_FILE` 改路径），
+  不写数据库、不进日志、接口只回打码值；`.env` 开发 key 永远优先于本机保存的 key。
+
 ## 常见问题（FAQ）
 
 - **PowerShell 报「无法加载文件 … 未对文件进行数字签名」/ 执行策略**：用 `powershell -ExecutionPolicy Bypass -File .\scripts\play.ps1` 或 `pwsh -File .\scripts\play.ps1`。仓库脚本已按 **UTF-8 with BOM** 保存，Windows PowerShell 5.1 与 PowerShell 7 都能正确解析中文。
 - **Windows + 中文仓库路径**：支持（本机开发路径即 `D:\ProgramData\游戏开发`）。历史注意点：Python 3.10 下 editable 安装的 `.pth` 会被 GBK `site.py` 读取失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（CI 的 ubuntu/UTF-8 不受影响）。`pre-commit install` 生成的 hook 在 Git Bash 下可能找不到 `pre-commit`，用 `uv run pre-commit run --all-files` 手动跑。
 - **第一次运行为什么慢**：`uv sync` 会下载 CPython 3.12 与 `uv.lock` 锁定依赖（运行时约 98 个包、数百 MB 磁盘）；已同步过的环境之后秒级启动。只玩终端/网页用 `--no-dev` 更快；跑测试/质量门才需要 dev 依赖。
 - **存档在哪里**：默认 `data/textgame.db`（已 gitignore，不会误提交）；终端版默认自动继续同库最近存档，`--new` 强制新开、`--continue` 强制继续；`--db <路径>` 或 `--db sqlite:///…` 可指定别处。
-- **怎么开真实 LLM 叙事（可选）**：把 [.env.example](.env.example) 复制为 `.env`，填 `TEXTGAME_LLM_API_KEY`，并设 `TEXTGAME_LLM_ENABLED=true`；或直接 `.\scripts\play.ps1 -Llm`。连通性自检：`uv run python -m textgame.llm.smoke`（缺 Key 退出码 2，API 失败退出码 1）。**默认离线**，不配置就一直可玩且零联网。
+- **怎么开真实 LLM 叙事（可选）**：本地开发机把 [.env.example](.env.example) 复制为 `.env` 并填 `TEXTGAME_LLM_API_KEY`
+  即可自动启用（或用 `.\scripts\play.ps1 -Llm`）；干净克隆的玩家在自己浏览器里打开「设置」页填入 DeepSeek API Key，
+  保存后当回合生效。连通性自检：`uv run python -m textgame.llm.smoke`（缺 Key 退出码 2，API 失败退出码 1）。
+  **默认离线可玩**，不配置就一直离线且零联网。
+- **上传的场景 JSON 报错了怎么看？** 导入页会先调 `POST /api/v1/scenarios/validate` 做只读预检：`errors` 逐条给
+  JSON 路径（如 `rooms[2].exits.east`）与中文原因；`warnings` 只提示不阻断（例如物品永远拿不到、NPC 没写对话）。
+  先用 [examples/scenarios/tiny-tower.json](examples/scenarios/tiny-tower.json) 验证格式，再逐步加内容。
+- **保存了 API Key 为什么还是模板叙事？** 先看「设置」页状态卡：`source=env` 表示 `.env` 开发 key 优先（本机保存的 key 不生效）；
+  `TEXTGAME_LLM_ENABLED=false` 时永远离线。另外自检/演示命令（`demo/console --check`）会强制离线以保证 golden 逐字可复现。
 - **世界书导入了但没触发？** 检查条目 `enabled`、`constant`、`keys` 是否出现在最近 4 条上下文/当前房间/可见实体/本回合输入中；看导入返回的 `warnings`（未支持字段会被忽略）；`group`/`vectorized`/timed effects/regex key 本轮未实现（见兼容文档）。先用「简化 schema」最小 JSON 验证格式。
 - **特效太晃/卡顿？** 右上角 **✦ 视觉效果** 选「低功耗」或「关闭特效」（持久化）；系统开启「减少动态效果」会自动降级；特效层懒加载，不影响首屏可读性。
 - **端口被占用 / 网页打不开**：`play` 脚本会提示换端口（`-Port 8001` / `--port 8001`）。若 `/` 返回 JSON 404，通常是 `web/dist` 缺失（源码裁剪或未构建）：启动日志会有 WARNING，按 README「网页版」里的构建命令重建即可；终端版始终可用。
@@ -136,10 +184,14 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 ## 玩法与场景
 
 - 自然语言输入 + 少量本地命令（`:help/:look/:inv/:status/:quit`）；回合失败会给出可重试提示与建议动作。
-- 场景选择：**`story`（余烬哨站剧情，有目标与结局，推荐首玩）** / `m2`（单场景，默认，保持旧契约）/ `m3`（多角色：两名拾荒者同回合抢同一瓶药水）/ `m4`（制造：配方与自由制造校验）。
+- 场景选择：**`story`（余烬哨站剧情，有目标与结局，推荐首玩）** / `m2`（单场景，默认，保持旧契约）/ `m3`（多角色：两名拾荒者同回合抢同一瓶药水）/ `m4`（制造：配方与自由制造校验）；**更多剧情由玩家自己上传场景 JSON**（见上文「玩家自上传场景」）。
   ```bash
   uv run --no-dev python -m textgame.console --new --scenario story
+  uv run --no-dev python -m textgame.console --list-scenarios          # 查看已上传场景
+  uv run --no-dev python -m textgame.console --scenario-id scn_...     # 按上传场景开局
   ```
+- **AI 叙事（可选）**：在网页「设置」页填自己的 DeepSeek API Key（本地开发机直接读 `.env` 开发 key），
+  保存后即时生效；不配也完全可玩（模板叙事 + 确定性规则）。
 - 剧情场景首屏会显示目标与子目标完成态（如「【目标】让信号灯亮起来 · 0/3」）；走到结局时打印结局屏，输入 `:quit` 退出。终端 `--list` 可查看同库最近存档（含场景/回合/是否已结局）。
 - **剧情失败结局**：枯井「寒气」每次进入 -6 HP——连续两次进井即 HP→0 触发「倒下」结局；先找药水/烈酒回血可以再挑战（失败结局同样有专属文案，不是卡死）。
 - **视觉风格**：复古 CRT（扫描线/暗角/辉光/微噪点）+ 余烬粒子 + 打字机叙事 + 面板/目标/结局动效；三档视觉设置可关；375px 可用、正文对比度不降。来源与许可证见 [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)（仅 MIT 技法参考，零新增运行时依赖）。
