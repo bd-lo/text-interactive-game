@@ -34,7 +34,7 @@ from textgame.domain.hashing import canonical_json, state_hash
 from textgame.domain.models import GameState
 from textgame.domain.scenario import PLAYER_ID, ROOM_CELLAR, ROOM_ENTRY, build_initial_state
 from textgame.persistence import legacy_upgrade as legacy_upgrade_module
-from textgame.persistence.database import init_schema
+from textgame.persistence.database import ensure_schema, init_schema, prepare_db
 from textgame.persistence.legacy_upgrade import (
     LegacyUpgradeError,
     LegacyUpgradeReport,
@@ -352,7 +352,7 @@ def test_upgrade_m2_legacy_database_end_to_end(tmp_path: Path) -> None:
 
     assert report.action == "upgraded_legacy"
     assert report.from_revision is None
-    assert report.to_revision == "0005"
+    assert report.to_revision == "0006"
     assert report.changed is True
     assert report.backup_path is not None
     backup = Path(report.backup_path)
@@ -364,7 +364,7 @@ def test_upgrade_m2_legacy_database_end_to_end(tmp_path: Path) -> None:
 
     engine = create_engine(_db_url(db_path))
     try:
-        assert _alembic_revision(engine) == "0005"
+        assert _alembic_revision(engine) == "0006"
         _assert_schema_matches_metadata(engine, tmp_path)
 
         repo = SqliteRepository(engine)
@@ -449,7 +449,7 @@ def test_upgrade_m2_legacy_database_is_idempotent(tmp_path: Path) -> None:
     assert second.action == "noop"
     assert second.changed is False
     assert second.backup_path is None
-    assert second.from_revision == "0005"
+    assert second.from_revision == "0006"
     assert _backups(db_path) == backups_after_first
 
 
@@ -469,7 +469,7 @@ def test_upgrade_from_stamped_0001_to_head_preserves_data(tmp_path: Path) -> Non
     assert report.backup_path is not None
     engine = create_engine(db_url)
     try:
-        assert _alembic_revision(engine) == "0005"
+        assert _alembic_revision(engine) == "0006"
         _assert_schema_matches_metadata(engine, tmp_path)
         repo = SqliteRepository(engine)
         record = repo.load(_GAME_ID)
@@ -497,7 +497,7 @@ def test_upgrade_m3_create_all_schema_without_alembic_version(tmp_path: Path) ->
     assert not any("ADD COLUMN version" in step for step in report.steps)
     engine = create_engine(db_url)
     try:
-        assert _alembic_revision(engine) == "0005"
+        assert _alembic_revision(engine) == "0006"
         _assert_schema_matches_metadata(engine, tmp_path)
         repo = SqliteRepository(engine)
         record = repo.load(_GAME_ID)
@@ -527,7 +527,7 @@ def test_upgrade_m4_create_all_schema_stamps_head(tmp_path: Path) -> None:
     assert _backups(db_path) == set()
     engine = create_engine(_db_url(db_path))
     try:
-        assert _alembic_revision(engine) == "0005"
+        assert _alembic_revision(engine) == "0006"
         _assert_schema_matches_metadata(engine, tmp_path)
         # 可直接多存档写入
         repo = SqliteRepository(engine)
@@ -551,7 +551,7 @@ def test_upgrade_fresh_database_initializes_schema(tmp_path: Path) -> None:
     assert report.backup_path is None
     engine = create_engine(_db_url(db_path))
     try:
-        assert _alembic_revision(engine) == "0005"
+        assert _alembic_revision(engine) == "0006"
         _assert_schema_matches_metadata(engine, tmp_path)
     finally:
         engine.dispose()
@@ -606,7 +606,7 @@ def test_cli_success_and_failure(
     assert main(["--db-url", _db_url(db_path)]) == 0
     output = capsys.readouterr().out
     assert "upgraded_legacy" in output
-    assert '"to_revision": "0005"' in output
+    assert '"to_revision": "0006"' in output
 
     # 失败路径：返回 1 且 stderr 有明确错误
     def _boom(*_args: Any, **_kwargs: Any) -> None:
@@ -618,8 +618,43 @@ def test_cli_success_and_failure(
 
 
 def test_report_as_dict_is_json_friendly() -> None:
-    report = LegacyUpgradeReport(db_url="sqlite:///x.db", action="noop", from_revision="0005")
+    report = LegacyUpgradeReport(db_url="sqlite:///x.db", action="noop", from_revision="0006")
     payload = report.as_dict()
     assert payload["changed"] is False
     assert payload["steps"] == []
-    assert payload["to_revision"] == "0005"
+    assert payload["to_revision"] == "0006"
+
+
+# ---------------------------------------------------------------------------
+# R-05：启动期 ensure_schema 自动升级
+# ---------------------------------------------------------------------------
+def test_ensure_schema_auto_upgrades_m2_database(tmp_path: Path) -> None:
+    """R-05：启动守卫 detect 到 M2 旧库 → 自动升级到 head，数据/哈希保留。"""
+    db_path = tmp_path / "auto-upgrade.db"
+    seeded = _write_m2_legacy_database(db_path)
+    db_url = _db_url(db_path)
+    engine, _factory = prepare_db(db_url)
+    try:
+        ensure_schema(engine, db_url=db_url)
+
+        assert _alembic_revision(engine) == "0006"
+        record = SqliteRepository(engine).load(_GAME_ID)
+        assert record is not None
+        assert state_hash(record.state) == state_hash(seeded.state)
+    finally:
+        engine.dispose()
+
+
+def test_ensure_schema_is_noop_for_head_database(tmp_path: Path) -> None:
+    """R-05：head 形状库 ensure_schema 不备份、不改数据（幂等）。"""
+    db_path = tmp_path / "healthy.db"
+    db_url = _db_url(db_path)
+    engine, _factory = prepare_db(db_url)
+    try:
+        init_schema(engine)
+        ensure_schema(engine, db_url=db_url)
+        assert _backups(db_path) == set()
+        ensure_schema(engine, db_url=db_url)
+        assert _backups(db_path) == set()
+    finally:
+        engine.dispose()

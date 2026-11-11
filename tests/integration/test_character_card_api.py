@@ -550,16 +550,28 @@ def test_import_same_key_different_params_returns_409(card_harness: CardHarness)
     _assert_error(resp, 409, "CONFLICT")
 
 
-def test_import_failure_is_replayed_with_same_key(card_harness: CardHarness) -> None:
-    """首次失败也进幂等缓存：同键同参重试得到相同失败；异参 → 409。"""
+def test_import_failure_is_not_replayed_with_same_key(card_harness: CardHarness) -> None:
+    """R-20：首次 403 不缓存；同键重试会重新校验，修正后可直接成功。"""
     bad = _json_bytes(_card(background="<script>x</script>"))
     first = _import(card_harness.client, bad, key="import-fail-key-0001")
     _assert_error(first, 403, "NOT_ALLOWED")
     replay = _import(card_harness.client, bad, key="import-fail-key-0001")
     _assert_error(replay, 403, "NOT_ALLOWED")
     changed = _import(card_harness.client, _json_bytes(_card()), key="import-fail-key-0001")
-    _assert_error(changed, 409, "CONFLICT")
-    assert card_harness.client.get("/api/v1/character-cards").json()["total"] == 0
+    assert changed.status_code == 201, changed.text
+    assert card_harness.client.get("/api/v1/character-cards").json()["total"] == 1
+
+
+def test_import_validation_failure_is_not_cached(card_harness: CardHarness) -> None:
+    """R-20：422 校验失败不缓存；修正文件后同键可直接重试（不需要先换键）。"""
+    bad = _json_bytes(_card(hp=99))
+    first = _import(card_harness.client, bad, key="import-422-retry-0001")
+    _assert_error(first, 422, "SCHEMA_VIOLATION")
+
+    fixed = _import(card_harness.client, _json_bytes(_card()), key="import-422-retry-0001")
+
+    assert fixed.status_code == 201, fixed.text
+    assert card_harness.client.get("/api/v1/character-cards").json()["total"] == 1
 
 
 # ---------------------------------------------------------------------------

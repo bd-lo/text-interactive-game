@@ -26,6 +26,7 @@ from textgame.domain.crafting import (
     build_craft_state_slice,
     calculate_craft_result,
     instantiate_craft_result,
+    item_template_key,
     recipe_from_draft,
 )
 from textgame.domain.events import Event, EventType
@@ -33,6 +34,7 @@ from textgame.domain.hashing import params_hash
 from textgame.domain.models import GameState, Item
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.rules.dice import DerivedRandom
+from textgame.services.free_craft import FreeCraftSwitch
 from textgame.services.ports import CraftGenerator
 from textgame.services.recipe_catalog import RecipeCatalog
 from textgame.services.tool_context import ToolContext
@@ -55,7 +57,7 @@ def _validation_summary(exc: ValidationError) -> str:
 
 
 class CraftService:
-    """制造服务：RecipeCatalog 注入；generator/free_craft_enabled 控制自由制造路径。"""
+    """制造服务：RecipeCatalog 注入；generator/free_craft 开关控制自由制造路径。"""
 
     def __init__(
         self,
@@ -63,11 +65,16 @@ class CraftService:
         *,
         generator: CraftGenerator | None = None,
         free_craft_enabled: bool = False,
+        free_craft_switch: FreeCraftSwitch | None = None,
     ) -> None:
-        """注入配方目录与自由制造生成器/开关；构造不读库、不联网。"""
+        """注入配方目录与自由制造生成器/开关；构造不读库、不联网。
+
+        ``free_craft_switch`` 存在时优先使用共享运行期开关（网页设置页热切换）；
+        否则用 ``free_craft_enabled`` 创建仅本服务可见的内部开关（保持旧测试/装配兼容）。
+        """
         self._recipes = recipes
         self._generator = generator
-        self._free_craft_enabled = free_craft_enabled
+        self._free_craft_switch = free_craft_switch or FreeCraftSwitch(enabled=free_craft_enabled)
 
     def list_recipes(self, ctx: ToolContext) -> Result:
         """只读配方摘要（零事件）：data={"recipes": [...]}，按 recipe_id 升序。"""
@@ -147,10 +154,10 @@ class CraftService:
     # ------------------------------------------------------------------
     def _craft_free(self, ctx: ToolContext, state: GameState, req: CraftRequest) -> Result:
         """自由制造校验路径：Schema → 状态一致性 → 折算临时 Recipe → 同一纯函数重算。"""
-        if not self._free_craft_enabled or self._generator is None:
+        if not self._free_craft_switch.enabled or self._generator is None:
             return Result.fail(
                 ErrorCode.NOT_ALLOWED,
-                "free craft is disabled (TEXTGAME_FREE_CRAFT_ENABLED=false; D-M4-6)",
+                "free craft is disabled (TEXTGAME_FREE_CRAFT_ENABLED=false or web Settings; D-M4-6)",
             )
         description = req.free_description
         if description is None:  # CraftRequest 已交叉校验，防御性兜底
@@ -247,9 +254,12 @@ class CraftService:
         grouped: dict[str, CraftItemView] = {}
         for item_id in character.inventory:
             item = state.items.get(item_id)
-            if item is None or not item.tags:
-                raise ValueError(f"inventory item {item_id!r} has no template tag")
-            template_id = item.tags[0]
+            if item is None:
+                raise ValueError(f"inventory item {item_id!r} has no definition in state.items")
+            template_id = item_template_key(item)
+            if template_id is None:
+                # 语义标签物品不是可制造材料（R-01），不出现在生成器私有视图里。
+                continue
             existing = grouped.get(template_id)
             if existing is None:
                 grouped[template_id] = CraftItemView(

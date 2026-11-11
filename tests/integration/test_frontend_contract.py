@@ -68,6 +68,8 @@ EXPECTED_FRONTEND_PATHS = {
     # LLM 运行期设置（DeepSeek API Key 输入/测试/清除）
     "/api/v1/settings/llm",
     "/api/v1/settings/llm/test",
+    # 自由制造开关（R-19 前端二次确认 + 本机持久化）
+    "/api/v1/settings/free-craft",
     # 启动器控制面（网页「退出游戏」/ 心跳 / 状态；Task A 冻结契约）
     "/api/v1/app/status",
     "/api/v1/app/heartbeat",
@@ -131,6 +133,8 @@ RESPONSE_INTERFACES = {
     "LlmConnectionTest": "LlmTestResponse",
     "LlmSettingsSaveResponse": "LlmSaveResponse",
     "LlmSettingsClearResponse": "LlmDeleteResponse",
+    # 自由制造开关
+    "FreeCraftSettingsStatus": "FreeCraftStatusResponse",
     # 启动器控制面（GET /app/status + POST /app/heartbeat + POST /app/shutdown）
     "LauncherStatus": "AppStatusResponse",
     "LauncherHeartbeat": "AppHeartbeatResponse",
@@ -143,6 +147,7 @@ REQUEST_INTERFACES = {
     "TurnRequest": "TurnRequestBody",
     "CardGenerateRequest": "CardGenerateBody",
     "LlmSettingsSaveRequest": "LlmSaveRequestBody",
+    "FreeCraftSettingsSaveRequest": "FreeCraftSaveRequestBody",
     "LauncherShutdownRequest": "AppShutdownBody",
 }
 
@@ -836,6 +841,42 @@ def test_llm_settings_endpoints_consistency() -> None:
     for method in ("put", "delete"):
         params = paths["/api/v1/settings/llm"][method].get("parameters", [])
         assert all(parameter.get("name") != "Idempotency-Key" for parameter in params)
+
+
+def test_free_craft_settings_endpoints_consistency() -> None:
+    """自由制造开关：GET/PUT 路径/请求体与前端一致；写端点无 Idempotency-Key。"""
+    api_paths = _frontend_api_paths()
+    expected = {
+        "getFreeCraftSettings": "/api/v1/settings/free-craft",
+        "saveFreeCraftSettings": "/api/v1/settings/free-craft",
+    }
+    for name, path in expected.items():
+        assert api_paths[name] == path, f"前端 API_PATHS.{name} 未指向 {path}"
+
+    paths = _openapi()["paths"]
+    assert set(paths["/api/v1/settings/free-craft"]) == {"get", "put"}
+
+    schemas = _openapi()["components"]["schemas"]
+    status_schema = schemas["FreeCraftStatusResponse"]
+    assert set(status_schema["properties"]) == {
+        "enabled",
+        "available",
+        "llm_configured",
+        "llm_enabled",
+        "risk_accepted",
+        "source",
+        "detail",
+    }
+    save_schema = schemas["FreeCraftSaveRequestBody"]
+    assert set(save_schema["properties"]) == {
+        "enabled",
+        "accept_resolver_llm_risk",
+    }
+    assert save_schema["required"] == ["enabled"]
+
+    put_operation = paths["/api/v1/settings/free-craft"]["put"]
+    params = put_operation.get("parameters", [])
+    assert all(parameter.get("name") != "Idempotency-Key" for parameter in params)
 
 
 def test_launcher_control_endpoints_consistency() -> None:

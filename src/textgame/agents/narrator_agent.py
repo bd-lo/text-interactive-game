@@ -32,6 +32,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from textgame.agents.dto import ParseOutcome
+from textgame.domain.crafting import item_template_key
 from textgame.domain.events import Event, EventType
 from textgame.domain.models import GameState, Room
 from textgame.domain.scenario import DIRECTION_NAMES, PLAYER_ID
@@ -253,7 +254,13 @@ def _event_fact(event: Event, state: GameState) -> dict[str, Any]:
         fact["npc_reply"] = reply.strip()[:_MAX_REPLY_CHARS]
     produced = event.result.get("produced_items")
     if isinstance(produced, Sequence) and not isinstance(produced, str):
-        names = [name for name in (_item_name(state, item_id) for item_id in produced) if name]
+        # 制造事件的 produced_items 是完整 Item dict（CraftService._build_event）；
+        # 兼容旧事件里的纯 item_id 列表（R-15：否则叙事拿不到产物名）。
+        names: list[str] = []
+        for entry in produced:
+            name = entry.get("name") if isinstance(entry, Mapping) else _item_name(state, entry)
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
         if names:
             fact["produced_items"] = names
     craft = event.result.get("craft")
@@ -323,13 +330,17 @@ def _player_summary(state: GameState) -> dict[str, Any]:
 
 
 def _inventory_summary(state: GameState, inventory: Sequence[str]) -> list[dict[str, Any]]:
-    """行囊聚合为 ``[{name, qty}]``（同模板实例合并，与 QueryService 口径一致）。"""
+    """行囊聚合为 ``[{name, qty}]``（同模板实例合并，与 QueryService 口径一致）。
+
+    R-01：只按合法模板键合并，语义标签（如两件 ``consumable``）不再互相合并；无法识别
+    模板键的物品各自计一项。
+    """
     grouped: dict[str, dict[str, Any]] = {}
     for item_id in inventory:
         item = state.items.get(item_id)
         if item is None:
             continue
-        template_key = item.tags[0] if item.tags else item.id
+        template_key = item_template_key(item) or item.id
         entry = grouped.get(template_key)
         if entry is None:
             grouped[template_key] = {"name": item.name, "qty": 1}

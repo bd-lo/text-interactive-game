@@ -43,14 +43,29 @@ from sqlalchemy import Engine, create_engine, inspect, text
 
 from .tables import Base
 
-_HEAD_REVISION = "0005"
+_HEAD_REVISION = "0006"
 _BASELINE_REVISION = "0001"
 _LEGACY_TABLES = frozenset({"events", "snapshots", "game_state_current", "idempotency"})
 _COMPOSITE_EVENT_PK = ("game_id", "seq")
 _BASELINE_EVENT_PK = ("seq",)
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
-_ALEMBIC_DIR = _REPO_ROOT / "alembic"
+
+
+def _resolve_migration_paths() -> tuple[Path, Path]:
+    """定位 Alembic 配置与迁移目录：源码 checkout 优先，其次 wheel 内嵌副本（R-05）。"""
+    candidates = (
+        Path(__file__).resolve().parents[3],  # 仓库根（源码运行/editable）
+        Path(__file__).resolve().parents[1],  # 包内 ``textgame/alembic*``（wheel）
+    )
+    for root in candidates:
+        ini = root / "alembic.ini"
+        directory = root / "alembic"
+        if ini.is_file() and directory.is_dir():
+            return ini, directory
+    return _REPO_ROOT / "alembic.ini", _REPO_ROOT / "alembic"
+
+
+_ALEMBIC_INI, _ALEMBIC_DIR = _resolve_migration_paths()
 
 UpgradeAction = Literal[
     "noop",  # 已是 head
@@ -167,6 +182,12 @@ def _verify_head(engine: Engine) -> None:
         raise LegacyUpgradeError("升级后 snapshots 仍缺少 version 列")
     if not state.has_audit_events:
         raise LegacyUpgradeError("升级后仍缺少 audit_events 表")
+    snapshot_unique = {
+        tuple(str(column) for column in constraint["column_names"])
+        for constraint in inspect(engine).get_unique_constraints("snapshots")
+    }
+    if ("game_id", "snapshot_version") not in snapshot_unique:
+        raise LegacyUpgradeError("升级后 snapshots 缺少 (game_id, snapshot_version) 唯一约束")
     inspector = inspect(engine)
     missing_world_books = {"world_books", "world_book_entries"} - set(inspector.get_table_names())
     if missing_world_books:
@@ -325,7 +346,7 @@ def _upgrade_with_backup(
 # ---------------------------------------------------------------------------
 def upgrade_legacy_database(db_url: str) -> LegacyUpgradeReport:
     """把旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡 + 0004 世界书两表
-    + 0005 玩家自上传场景表），返回升级报告。
+    + 0005 玩家自上传场景表 + 0006 快照唯一约束），返回升级报告。
 
     幂等：head 库直接 no-op；失败时恢复备份并抛 :class:`LegacyUpgradeError`。
     """
@@ -371,7 +392,7 @@ def upgrade_legacy_database(db_url: str) -> LegacyUpgradeReport:
         )
     if state.revision is not None:
         raise LegacyUpgradeError(
-            f"未知 Alembic 版本 {state.revision!r}（仅支持 0001–0005），请人工确认数据库来源"
+            f"未知 Alembic 版本 {state.revision!r}（仅支持 0001–0006），请人工确认数据库来源"
         )
     if not state.tables:
         raise LegacyUpgradeError("SQLite 文件存在但没有任何表，无法判断是否为存档库")
@@ -389,6 +410,14 @@ def upgrade_legacy_database(db_url: str) -> LegacyUpgradeReport:
             stamp_revision = "0003"
         elif "scenarios" not in state.tables:
             stamp_revision = "0004"
+        else:
+            snapshot_unique = {
+                tuple(str(column) for column in constraint["column_names"])
+                for constraint in inspect(engine).get_unique_constraints("snapshots")
+            }
+            if ("game_id", "snapshot_version") not in snapshot_unique:
+                # R-10：旧 create_all 库缺唯一约束 → 先 stamp 0005，再由 0006 重建表。
+                stamp_revision = "0005"
         if stamp_revision is not None:
             return _upgrade_with_backup(
                 db_url,
@@ -435,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI 入口：``python -m textgame.persistence.legacy_upgrade --db-url ...``。"""
     parser = argparse.ArgumentParser(
         prog="python -m textgame.persistence.legacy_upgrade",
-        description="把 textgame 的旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡 + 0004 世界书表 + 0005 场景表）",
+        description="把 textgame 的旧 SQLite 存档库升级到 Alembic head（0002 复合主键 + 0003 人物卡 + 0004 世界书表 + 0005 场景表 + 0006 快照唯一约束）",
     )
     parser.add_argument(
         "--db-url",

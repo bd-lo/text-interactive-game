@@ -312,7 +312,8 @@ def test_m4_golden_tamper_detection(case_id: str) -> None:
         for event in real_events
     ]
     log = EventLog(_SAVE_SEED)
-    log.append(tampered)
+    log.append(real_events)
+    log._events[craft_event.seq - 1] = tampered[craft_event.seq - 1]
 
     with pytest.raises(ReplayMismatchError) as excinfo:
         log.replay()

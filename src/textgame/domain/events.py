@@ -122,6 +122,19 @@ class EventLog:
         self._events: list[Event] = []
         self._last_seq: int = 0
 
+    @classmethod
+    def resume(cls, save_seed: str, *, last_seq: int) -> EventLog:
+        """创建**尾部续写**日志（R-21）：只用于给新事件盖章/追加，不用于 ``replay``。
+
+        调用方需保证 ``last_seq`` 是已提交事件的最后序号；``append`` 仍会校验新事件的
+        ``seq`` 连续性与 ``rng_seed``，但看不到历史事件（完整性校验由调用方单独执行）。
+        """
+        if last_seq < 0:
+            raise ValueError(f"last_seq must be >= 0, got {last_seq}")
+        log = cls(save_seed)
+        log._last_seq = last_seq
+        return log
+
     @property
     def last_seq(self) -> int:
         """最后一条已追加事件的 seq；空日志为 0。"""
@@ -174,7 +187,9 @@ class EventLog:
         """追加一批盖章事件；任一条校验失败则整体拒绝 (不部分写入)。
 
         校验：事件已盖章、``seq`` 紧接当前 ``_last_seq`` 且连续、``id`` 等于
-        ``f"evt_{seq:06d}"``、``ts`` 为 UTC-aware (第 5 章 5.3、第 14 章 14.2)。
+        ``f"evt_{seq:06d}"``、``ts`` 为 UTC-aware、``rng_seed`` 等于
+        ``derive_seed(save_seed, turn_id, actor_id, method, seq)``（第 5 章 5.3、第 14 章
+        14.2、第 18 章 18.3；R-06：坏事件在入库口即拒绝，不依赖 replay 事后发现）。
         """
         for index, event in enumerate(events):
             expected_seq = self._last_seq + index + 1
@@ -196,6 +211,18 @@ class EventLog:
             )
             if not utc_aware:
                 raise ValueError(f"event at seq={expected_seq} ts must be UTC-aware")
+            expected_seed = DerivedRandom.derive_seed(
+                self._save_seed,
+                event.turn_id,
+                event.actor_id,
+                event.method,
+                expected_seq,
+            )
+            if event.rng_seed != expected_seed:
+                raise ValueError(
+                    f"event at seq={expected_seq} has rng_seed={event.rng_seed!r}, "
+                    f"expected {expected_seed!r}"
+                )
         self._events.extend(events)
         self._last_seq += len(events)
 

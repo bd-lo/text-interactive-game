@@ -9,6 +9,7 @@ DeterministicCharacterAgent/AuditService 全接线），供 013/014 集成与回
 import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -189,6 +190,18 @@ def _isolate_llm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "false")
     monkeypatch.delenv("TEXTGAME_LLM_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_free_craft_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """测试不读写开发者本机 ``data/free_craft.json``，也不继承本机自由制造 env。
+
+    需要验证持久化的用例可自行覆盖 ``TEXTGAME_FREE_CRAFT_SETTINGS_FILE`` 或直接构造
+    ``FreeCraftSettingsStore(path=...)``。
+    """
+    monkeypatch.setenv("TEXTGAME_FREE_CRAFT_SETTINGS_FILE", str(tmp_path / "free_craft.json"))
+    monkeypatch.delenv("TEXTGAME_FREE_CRAFT_ENABLED", raising=False)
+    monkeypatch.delenv("TEXTGAME_ALLOW_RESOLVER_LLM", raising=False)
 
 
 @pytest.fixture

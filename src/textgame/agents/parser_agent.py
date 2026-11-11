@@ -29,6 +29,8 @@ from textgame.services.tool_context import ToolContext
 M2_TOOL_WHITELIST: frozenset[str] = frozenset(
     {"get_room_view", "get_inventory", "move_to", "take_item", "use_item", "talk_to"}
 )
+#: 解析 Agent 的 Prompt 版本（第 12 章 §12.5；改动 Prompt 必须递增）。
+PROMPT_VERSION = "parse@v1"
 _TOOL_NAME_PATTERN = r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
 _CONFIDENCE_FLOOR = 0.6
 _MAX_CANDIDATE_NARRATIVE = 200
@@ -85,12 +87,16 @@ class IntentParseAgent:
         tool_whitelist: frozenset[str] | None = None,
         tool_specs: Sequence[ToolSpec] = (),
     ) -> None:
-        """``tool_whitelist`` 缺省为 M2 六工具；``tool_specs`` 仅用于 Prompt 中的工具 Schema。"""
+        """``tool_whitelist`` 缺省从 ``tool_specs`` 派生（R-07：含 inspect_item/craft_item），
+        无 specs 时退回 M2 六工具；``tool_specs`` 同时用于 Prompt 中的工具 Schema。"""
         self._llm = llm
         self._fallback = fallback
-        self._whitelist = (
-            frozenset(tool_whitelist) if tool_whitelist is not None else M2_TOOL_WHITELIST
-        )
+        if tool_whitelist is not None:
+            self._whitelist = frozenset(tool_whitelist)
+        elif tool_specs:
+            self._whitelist = frozenset(spec.name for spec in tool_specs)
+        else:
+            self._whitelist = M2_TOOL_WHITELIST
         self._tool_specs = tuple(tool_specs)
 
     def parse(
@@ -173,6 +179,7 @@ class IntentParseAgent:
             agent_id=_AGENT_ID,
             turn_id=ctx.turn_id,
             idempotency_key=ctx.idempotency_key,
+            prompt_version=PROMPT_VERSION,
             model_tier=ModelTier.ECONOMY,
             messages=messages,
             timeout_s=20.0,

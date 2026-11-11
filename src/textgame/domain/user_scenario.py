@@ -24,7 +24,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from textgame.domain.models import NPC, Character, GameState, Item, RngState, Room
 from textgame.domain.scenario import PLAYER_ID
@@ -48,6 +48,10 @@ __all__ = [
 #: 场景定义 schema 版本（本期只接受 1；更高版本给明确错误而不是静默降级）。
 SCHEMA_VERSION = 1
 
+#: 导入 dry-run 用的固定 scenario_id / save_seed（只派生合法 ID，不影响校验语义）。
+_DRY_RUN_SCENARIO_ID = "scn_00000000000000000000000000"
+_DRY_RUN_SAVE_SEED = "import-dry-run"
+
 #: 导入上限（与人物卡导入同量级；避免单份定义把事件/内存撑爆）。
 MAX_DEFINITION_BYTES = 256 * 1024
 
@@ -62,6 +66,12 @@ _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 _DIRECTIONS: frozenset[str] = frozenset(
     {"north", "south", "east", "west", "up", "down", "in", "out"}
+)
+
+#: 玩家属性允许的键（与 ``Character._known_attribute_keys`` 同口径；R-02）。
+#: ``max_hp`` 由 ``PlayerSpec.max_hp`` 单独声明并在建局时覆盖，这里允许出现但不以其为准。
+_PLAYER_ATTRIBUTE_KEYS: frozenset[str] = frozenset(
+    {"str", "dex", "con", "int", "wis", "cha", "max_hp"}
 )
 
 #: 条件 DSL 允许的唯一键（未知名 = 校验错误，绝不执行任意代码）。
@@ -299,6 +309,19 @@ class PlayerSpec(BaseModel):
     location: str = Field(pattern=_KEY_PATTERN)
     inventory: list[str] = Field(default_factory=list, max_length=32)
 
+    @field_validator("attributes")
+    @classmethod
+    def _attributes_sane(cls, value: dict[str, int]) -> dict[str, int]:
+        """R-02：属性键/值域必须与 ``Character`` 一致，否则导入成功但建局 500。"""
+        unknown = set(value) - _PLAYER_ATTRIBUTE_KEYS
+        if unknown:
+            raise ValueError(
+                f"未知属性键 {sorted(unknown)}（只允许 str/dex/con/int/wis/cha/max_hp）"
+            )
+        if any(not (-10 <= int(number) <= 100) for number in value.values()):
+            raise ValueError("属性值必须在 [-10, 100] 之间")
+        return value
+
     @model_validator(mode="after")
     def _hp_within_max(self) -> PlayerSpec:
         """``hp`` 不得超过 ``max_hp``（超了直接报错，避免开局即异常状态）。"""
@@ -409,6 +432,11 @@ def _format_loc(loc: tuple[Any, ...]) -> str:
     return rendered or "$"
 
 
+def _reject_non_finite(value: str) -> Any:
+    """``json.loads(parse_constant=...)``：拒绝 NaN/Infinity（R-11，避免后置 500）。"""
+    raise ValueError(f"JSON 不允许非有限数值: {value}")
+
+
 def _parse_json_body(raw: str | bytes) -> tuple[Any, ScenarioIssue | None]:
     """读取并解析 JSON；返回 ``(payload, issue)``（issue 非空 = 阻断错误）。"""
     data = raw.encode("utf-8") if isinstance(raw, str) else raw
@@ -421,11 +449,13 @@ def _parse_json_body(raw: str | bytes) -> tuple[Any, ScenarioIssue | None]:
     except UnicodeDecodeError as exc:
         return None, ScenarioIssue("$", f"文件不是合法 UTF-8 编码：{exc}")
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, parse_constant=_reject_non_finite)
     except json.JSONDecodeError as exc:
         return None, ScenarioIssue(
             "$", f"不是合法 JSON：第 {exc.lineno} 行第 {exc.colno} 列 {exc.msg}"
         )
+    except ValueError as exc:
+        return None, ScenarioIssue("$", f"场景 JSON 含非法数值：{exc}")
     if not isinstance(payload, dict):
         return None, ScenarioIssue("$", "顶层必须是 JSON 对象（不以 [ 或字符串开头）")
     return payload, None
@@ -493,6 +523,7 @@ def _check_references(definition: ScenarioDefinition) -> list[ScenarioIssue]:
     _dupes(room_keys, "rooms.key")
     _dupes(item_keys, "items.key")
     _dupes(npc_keys, "npcs.key")
+    _dupes(definition.player.inventory, "player.inventory")
     if definition.goal is not None:
         _dupes([obj.key for obj in definition.goal.objectives], "goal.objectives.key")
     _dupes([ending.key for ending in definition.endings], "endings.key")
@@ -513,6 +544,7 @@ def _check_references(definition: ScenarioDefinition) -> list[ScenarioIssue]:
             errors.append(ScenarioIssue(f"player.inventory[{index}]", f'未知物品 key "{key}"'))
 
     placed: dict[str, str] = {}
+    inventory_keys = set(definition.player.inventory)
     for room_index, room in enumerate(definition.rooms):
         for direction, target in room.exits.items():
             if direction not in _DIRECTIONS:
@@ -528,11 +560,27 @@ def _check_references(definition: ScenarioDefinition) -> list[ScenarioIssue]:
                         f"rooms[{room_index}].exits.{direction}", f'未知房间 key "{target}"'
                     )
                 )
+            elif target == room.key:
+                # R-02：Room 模型禁止自指出口，必须在导入阶段报错而不是建局时 500。
+                errors.append(
+                    ScenarioIssue(
+                        f"rooms[{room_index}].exits.{direction}",
+                        f'房间 "{room.key}" 不能把出口指向自己',
+                    )
+                )
         for item_index, key in enumerate(room.items):
             if key not in items:
                 errors.append(
                     ScenarioIssue(
                         f"rooms[{room_index}].items[{item_index}]", f'未知物品 key "{key}"'
+                    )
+                )
+            elif key in inventory_keys:
+                # R-02：同一 item 同时放背包和房间会让同一个 item_id 出现两处，拿取后造重复实例。
+                errors.append(
+                    ScenarioIssue(
+                        f"rooms[{room_index}].items[{item_index}]",
+                        f'物品 "{key}" 已经在玩家行囊里，不能再放到房间',
                     )
                 )
             elif key in placed:
@@ -637,6 +685,15 @@ def parse_definition(raw: str | bytes) -> ParsedDefinition:
     if errors:
         return ParsedDefinition(
             definition=None, errors=errors, warnings=(), summary=_summary_of(definition)
+        )
+    # R-02：导入阶段就做一次建局 dry-run，把 Character/Room 等模型约束提前暴露为 422。
+    build_errors = _build_dry_run_issues(definition)
+    if build_errors:
+        return ParsedDefinition(
+            definition=None,
+            errors=tuple(build_errors),
+            warnings=(),
+            summary=_summary_of(definition),
         )
     placed = {key for room in definition.rooms for key in room.items}
     warnings = tuple(_collect_warnings(definition, placed=placed))
@@ -775,6 +832,27 @@ def build_initial_state(
         quests={},
         rng_state=RngState(save_seed=save_seed, last_seq=0),
     )
+
+
+def _build_dry_run_issues(definition: ScenarioDefinition) -> list[ScenarioIssue]:
+    """建局 dry-run（R-02）：把 ``build_initial_state`` 的模型约束转成导入期错误。
+
+    只做纯函数调用，不写库、不联网；固定 scenario_id/save_seed 仅用于派生合法 ID，
+    不影响校验结果。错误路径优先映射回玩家可理解的 ``player.attributes``。
+    """
+    try:
+        ids = derive_ids(_DRY_RUN_SCENARIO_ID, definition)
+        build_initial_state(definition, ids, save_seed=_DRY_RUN_SAVE_SEED)
+    except ValidationError as exc:
+        issues: list[ScenarioIssue] = []
+        for error in exc.errors():
+            loc = tuple(error.get("loc", ()))
+            path = "player.attributes" if "attributes" in loc else _format_loc(loc)
+            issues.append(ScenarioIssue(path, str(error.get("msg", "建局状态非法"))))
+        return issues[:_MAX_ERRORS]
+    except ValueError as exc:
+        return [ScenarioIssue("$", f"场景无法建局：{exc}")]
+    return []
 
 
 # ---------------------------------------------------------------------------

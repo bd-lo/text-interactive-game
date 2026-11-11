@@ -316,6 +316,18 @@ def test_import_invalid_definition_422_with_paths(scenario_harness: ScenarioHarn
     assert scenario_harness.client.get(_IMPORT_PATH).json()["total"] == 0
 
 
+def test_import_unknown_attribute_422_with_field_paths(scenario_harness: ScenarioHarness) -> None:
+    """R-02：未知玩家属性在导入阶段返回 422（不是建局 500），路径指向 player.attributes。"""
+    definition = _tiny()
+    definition["player"]["attributes"] = {"luck": 1}
+    resp = _import(scenario_harness.client, _raw(definition), key="scn-api-bad-attr-0001")
+    body = _assert_error(resp, 422, "INVALID_INPUT")
+    violations = body.get("violations")
+    assert isinstance(violations, list) and violations
+    assert any(item["path"] == "player.attributes" for item in violations)
+    assert scenario_harness.client.get(_IMPORT_PATH).json()["total"] == 0
+
+
 def test_import_invalid_json_and_duplicate_keys_422(scenario_harness: ScenarioHarness) -> None:
     """非法 JSON / 重复键 → 422 INVALID_INPUT 信封（不落库）。"""
     bad_json = _import(scenario_harness.client, b"{not json", key="scn-api-bad-0002")

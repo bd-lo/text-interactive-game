@@ -281,7 +281,8 @@ def test_m3_golden_tamper_detection() -> None:
         for event in real_events
     ]
     log = EventLog(_SAVE_SEED)
-    log.append(tampered)
+    log.append(real_events)
+    log._events[2] = tampered[2]  # seq=3 → 下标 2；白盒注入模拟已入库事件被改
     with pytest.raises(ReplayMismatchError) as excinfo:
         log.replay()
     assert excinfo.value.seq == 3

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from textgame.domain.crafting import CraftMode, CraftRequest, build_craft_state_slice
 from textgame.domain.hashing import state_hash
 from textgame.domain.models import GameState, Item
 from textgame.domain.scenario import (
@@ -33,6 +34,11 @@ from textgame.domain.scenario_story import (
     story_goal,
     story_reply,
 )
+from textgame.persistence.memory import InMemoryRepository
+from textgame.services.craft_service import CraftService
+from textgame.services.query_service import QueryService
+from textgame.services.recipe_catalog import RecipeCatalog
+from textgame.services.tool_context import ToolContext
 
 _SAVE_SEED = "save-42"
 _ID_PREFIX = "01J9Z3K4Q7X8Y9Z0ABCDEFGHK"
@@ -230,13 +236,14 @@ def test_item_catalog_matches_spec() -> None:
     by_name = {item.name: item for item in items}
 
     assert {"火把", "火石", "治疗药水", "铜线", "锻锤", "结霜的烈酒"} <= set(by_name)
+    # R-01：tags[0] 统一为模板键，语义标签后置（否则背包合并/制造聚合会出错）。
     assert by_name["火把"].tags == ["item.torch", "quest", "light"]
-    assert by_name["火石"].tags == ["quest", "material"]
-    assert by_name["治疗药水"].tags == ["consumable"]
+    assert by_name["火石"].tags == ["item.flint", "quest", "material"]
+    assert by_name["治疗药水"].tags == ["item.potion", "consumable"]
     assert by_name["治疗药水"].stats == {"heal": 8}
-    assert by_name["结霜的烈酒"].tags == ["consumable"]
+    assert by_name["结霜的烈酒"].tags == ["item.liquor", "consumable"]
     assert by_name["结霜的烈酒"].stats == {"hp_delta": -4}
-    assert by_name["锻锤"].tags == ["tool"]
+    assert by_name["锻锤"].tags == ["item.forge_hammer", "tool"]
 
     copper = [item for item in items if item.name == "铜线"]
     assert len(copper) == 2
@@ -413,3 +420,68 @@ def test_pure_functions_are_repeatable() -> None:
     assert story_ending(victory) == story_ending(victory)
     assert story_reply(STORY_WATCHMAN_ID, "信号") == story_reply(STORY_WATCHMAN_ID, "信号")
     assert is_story_state(state) is True
+
+
+# ---------------------------------------------------------------------------
+# R-01：背包聚合/制造视图不把语义标签当模板键
+# ---------------------------------------------------------------------------
+def _ids_by_name(state: GameState) -> dict[str, list[str]]:
+    """物品名 → 实例 id 列表（铜线有两件）。"""
+    grouped: dict[str, list[str]] = {}
+    for item in state.items.values():
+        grouped.setdefault(item.name, []).append(item.id)
+    return grouped
+
+
+def test_inventory_does_not_merge_semantic_tags() -> None:
+    """R-01：药水与烈酒都带 consumable，但不得合并成一项 qty=2。"""
+    state = _state()
+    ids = _ids_by_name(state)
+    state = _with_inventory(state, ids["治疗药水"][0], ids["结霜的烈酒"][0])
+
+    inventory = QueryService(InMemoryRepository()).get_inventory(state, PLAYER_ID)["items"]
+
+    assert sorted(entry["name"] for entry in inventory) == ["治疗药水", "结霜的烈酒"]
+    assert all(entry["qty"] == 1 for entry in inventory)
+
+
+def test_story_craft_succeeds_with_semantic_items_in_inventory() -> None:
+    """R-01：背包同时有药水/火石/锻锤时，打造信号火把仍成功（不再 ValidationError）。"""
+    state = _state()
+    ids = _ids_by_name(state)
+    state = _with_inventory(
+        state,
+        ids["火把"][0],
+        ids["铜线"][0],
+        ids["铜线"][1],
+        ids["治疗药水"][0],
+        ids["火石"][0],
+        ids["锻锤"][0],
+    )
+
+    state_slice = build_craft_state_slice(state, PLAYER_ID)
+    assert state_slice.inventory["item.copper_wire"] == 2
+    assert "item.potion" in state_slice.inventory
+    assert "item.flint" in state_slice.inventory
+    assert "item.forge_hammer" in state_slice.inventory
+
+    service = CraftService(RecipeCatalog.load_builtin())
+    ctx = ToolContext(
+        actor_id=PLAYER_ID,
+        actor_tags=frozenset({"player"}),
+        turn_id=state.turn + 1,
+        save_seed=state.rng_state.save_seed,
+        idempotency_key="story-craft-key-01",
+        caller="player",
+    )
+    result = service.craft(
+        ctx,
+        state,
+        CraftRequest(mode=CraftMode.RECIPE, recipe_id="recipe.signal_torch"),
+        idempotency_key=ctx.idempotency_key,
+    )
+
+    assert result.ok is True, result.message
+    assert len(result.events) == 1
+    produced = result.events[0].result["produced_items"]
+    assert [item["name"] for item in produced] == ["信号火把"]

@@ -51,6 +51,7 @@ from textgame.domain.scenario import PLAYER_ID
 from textgame.domain.scenario import build_initial_state as build_m2_initial_state
 from textgame.llm.client import ChatMessage, LLMClient, LLMRequest, ModelTier
 from textgame.llm.validation import complete_json_with_repair
+from textgame.services.idempotency_locks import idempotency_lock
 from textgame.services.ports import IdempotencyRecord
 
 #: 上传/保存请求体大小上限（第 5/6/23 章：≤64KB；超限 HTTP 413）。
@@ -181,11 +182,15 @@ class CardDraftGenerator(Protocol):
 
 
 class GenerateRateLimiter:
-    """进程内滑动窗口限流（单机 Q6=A，第 23 章 §23.6：按 IP+session，5 次/60s）。
+    """进程内滑动窗口限流（单机 Q6=A，第 23 章 §23.6：按 IP，5 次/60s）。
 
     进程内语义：多 worker/多进程各自计数（本地单机无账号；部署多用户时再加鉴权与共享
     限流）。``clock`` 可注入（默认 ``time.monotonic``），便于测试窗口边界与 Retry-After。
+    R-09：``_hits`` 有界（最多 ``_MAX_KEYS`` 个主体，过期/空键及时清理），客户端轮换
+    ``X-Session-Id`` 不再绕过配额。
     """
+
+    _MAX_KEYS = 1024
 
     def __init__(
         self,
@@ -209,13 +214,31 @@ class GenerateRateLimiter:
         """登记一次请求；允许返回 ``None``，超限返回建议 ``Retry-After`` 秒数（≥1）。"""
         now = self._clock()
         with self._lock:
-            hits = self._hits.setdefault(key, deque())
+            hits = self._hits.get(key)
+            if hits is None:
+                self._evict_if_needed(now)
+                hits = deque()
+                self._hits[key] = hits
             while hits and now - hits[0] >= self._window_s:
                 hits.popleft()
             if len(hits) >= self._limit:
                 return max(1, math.ceil(self._window_s - (now - hits[0])))
             hits.append(now)
             return None
+
+    def _evict_if_needed(self, now: float) -> None:
+        """键数达到上限时先清理过期/空键，再按插入顺序淘汰最旧键（有界内存）。"""
+        if len(self._hits) < self._MAX_KEYS:
+            return
+        stale = [
+            existing
+            for existing, hits in self._hits.items()
+            if not hits or now - hits[-1] >= self._window_s
+        ]
+        for existing in stale:
+            self._hits.pop(existing, None)
+        while len(self._hits) >= self._MAX_KEYS:
+            self._hits.pop(next(iter(self._hits)), None)
 
 
 class LLMCardDraftGenerator:
@@ -425,6 +448,11 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise _DuplicateJsonKeyError(key)
         result[key] = value
     return result
+
+
+def _reject_non_finite(value: str) -> Any:
+    """``json.loads(parse_constant=...)``：拒绝 NaN/Infinity（R-11）。"""
+    raise ValueError(f"JSON 不允许非有限数值: {value}")
 
 
 def _json_depth(value: Any) -> int:
@@ -696,7 +724,7 @@ class CardService:
             raise CardServiceError(ErrorCode.INVALID_INPUT, "options 必须是 JSON 对象")
         normalized = dict(options)
         try:
-            encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+            encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise CardServiceError(
                 ErrorCode.INVALID_INPUT, "options 必须是可序列化的 JSON 对象"
@@ -819,7 +847,11 @@ class CardService:
                 ErrorCode.INVALID_INPUT, "人物卡 JSON 必须为 UTF-8 编码"
             ) from exc
         try:
-            payload = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+            payload = json.loads(
+                text,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_non_finite,
+            )
         except _DuplicateJsonKeyError as exc:
             raise CardServiceError(ErrorCode.INVALID_INPUT, f"JSON 含重复键: {exc}") from exc
         except json.JSONDecodeError as exc:
@@ -827,6 +859,8 @@ class CardService:
                 ErrorCode.INVALID_INPUT,
                 f"JSON 语法错误: {exc.msg} (line {exc.lineno} column {exc.colno})",
             ) from exc
+        except ValueError as exc:
+            raise CardServiceError(ErrorCode.INVALID_INPUT, str(exc)) from exc
         except RecursionError as exc:
             raise CardServiceError(ErrorCode.INVALID_INPUT, "JSON 嵌套过深") from exc
         try:
@@ -924,6 +958,16 @@ class CardService:
         request_hash: str,
         operation: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
+        """R-04：同 ``Idempotency-Key`` 的卡片写请求在进程内串行（单进程部署）。"""
+        with idempotency_lock(store_key):
+            return self._idempotent_unlocked(store_key, request_hash, operation)
+
+    def _idempotent_unlocked(
+        self,
+        store_key: str,
+        request_hash: str,
+        operation: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
         """同键同参回放首次响应（含失败响应）；同键异参 → 409 ``CONFLICT``。
 
         幂等记录复用既有 ``idempotency`` 表/端口（``IdempotencyRecord``），只加卡片库专用
@@ -960,7 +1004,19 @@ class CardService:
     def _save_error_idempotent(
         self, store_key: str, request_hash: str, exc: CardServiceError
     ) -> None:
-        """缓存可重放的业务失败（同键同参重试得到首次的失败响应）。"""
+        """缓存可重放的业务失败（同键同参重试得到首次的失败响应）。
+
+        R-20：4xx 校验/业务拒绝不缓存——玩家修正文件后可立即用同一键重试；
+        只缓存 5xx（瞬时故障可原样重放）。403 内容安全拒绝同样不缓存。
+        """
+        if exc.http_status is not None and 400 <= exc.http_status < 500:
+            return
+        if exc.error_code in {
+            ErrorCode.INVALID_INPUT,
+            ErrorCode.SCHEMA_VIOLATION,
+            ErrorCode.NOT_ALLOWED,
+        }:
+            return
         payload = {
             "__error__": {
                 "code": exc.error_code.value,

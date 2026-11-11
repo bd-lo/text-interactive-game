@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -26,9 +27,12 @@ from textgame.domain.scenario import (
     build_m4_state,
 )
 from textgame.domain.scenario_story import build_story_state
+from textgame.services.idempotency_locks import snapshot_lock
 from textgame.services.ports import CommitPayload, GameRepository, SnapshotRecord
 
 Scenario = Literal["m2", "m3", "m4", "story", "custom"]
+
+logger = logging.getLogger(__name__)
 
 _INITIAL_SNAPSHOT_VERSION = 1
 _GAME_ID_PREFIX = "game_"
@@ -51,6 +55,8 @@ class GameEngine:
         self._repo = repo
         self._snapshot_every_turns = snapshot_every_turns
         self._snapshot_every_events = snapshot_every_events
+        # R-21：每个存档首次写入时做一次全量 replay 完整性校验；之后按尾部增量续写。
+        self._verified_games: set[str] = set()
 
     def create_game(
         self,
@@ -113,6 +119,17 @@ class GameEngine:
             base_state = build_story_state(save_seed=save_seed)
         else:
             base_state = build_initial_state(save_seed=save_seed)
+        # R-06：初始状态的种子必须是本存档实际使用的种子，否则首事件/后续事件无法 replay。
+        if base_state.rng_state.save_seed != save_seed:
+            return Result.fail(
+                ErrorCode.SCHEMA_VIOLATION,
+                "initial_state.rng_state.save_seed 与 save_seed 不一致（回放不可复算）",
+            )
+        if PLAYER_ID not in base_state.characters:
+            return Result.fail(
+                ErrorCode.SCHEMA_VIOLATION,
+                f"initial_state 缺少玩家槽位 {PLAYER_ID}",
+            )
         # 用户上传场景（scenario="custom"）的出生房间来自物化状态，而不是内置常量；
         # 其它场景/人物卡路径保持 ROOM_ENTRY，旧事件 params 逐字不变（golden 零影响）。
         starting_room_id = ROOM_ENTRY
@@ -165,13 +182,15 @@ class GameEngine:
                 ErrorCode.CONFLICT,
                 "创建存档失败：同一 game_id 的存档已存在或并发写入冲突",
             )
-        self._save_snapshot(
-            new_game_id,
-            new_state,
-            snapshot_version=_INITIAL_SNAPSHOT_VERSION,
-            last_seq=1,
-            version=1,
-        )
+        with snapshot_lock(new_game_id):
+            self._save_snapshot(
+                new_game_id,
+                new_state,
+                snapshot_version=_INITIAL_SNAPSHOT_VERSION,
+                last_seq=1,
+                version=1,
+            )
+        self._verified_games.add(new_game_id)
         return Result.success(
             data={
                 "game_id": new_game_id,
@@ -216,11 +235,16 @@ class GameEngine:
                 )
 
         save_seed = record.state.rng_state.save_seed
-        log = EventLog(save_seed)
-        try:
-            log.append(self._repo.read_events(game_id))
-        except ValueError as exc:
-            return Result.fail(ErrorCode.INTERNAL, f"event log is corrupted: {exc}")
+        if game_id not in self._verified_games:
+            # 首次写入：全量读取并 replay 一次（R-06/R-21），之后只读尾部增量。
+            verifier = EventLog(save_seed)
+            try:
+                verifier.append(self._repo.read_events(game_id))
+                verifier.replay()
+            except ValueError as exc:
+                return Result.fail(ErrorCode.INTERNAL, f"event log is corrupted: {exc}")
+            self._verified_games.add(game_id)
+        log = EventLog.resume(save_seed, last_seq=record.last_seq)
         try:
             stamped = log.stamp(drafts)
         except ValueError as exc:
@@ -251,8 +275,22 @@ class GameEngine:
     def _maybe_save_snapshot(
         self, game_id: str, state: GameState, *, last_seq: int, version: int
     ) -> None:
-        """按阈值追加派生快照；快照只是缓存，写失败不影响提交正确性。"""
-        latest = self._repo.latest_snapshot(game_id)
+        """按阈值追加派生快照；快照只是缓存，**任何失败都不影响提交正确性**（R-03）。
+
+        R-10：同一 ``game_id`` 的「读最新版本 → 计算下一版本 → 写入」在分段锁内串行，
+        避免并发提交算出同一个 ``snapshot_version`` 并插入两条。
+        """
+        with snapshot_lock(game_id):
+            self._maybe_save_snapshot_locked(game_id, state, last_seq=last_seq, version=version)
+
+    def _maybe_save_snapshot_locked(
+        self, game_id: str, state: GameState, *, last_seq: int, version: int
+    ) -> None:
+        try:
+            latest = self._repo.latest_snapshot(game_id)
+        except Exception:
+            logger.warning("读取最新快照失败（跳过本次快照），game_id=%s", game_id, exc_info=True)
+            return
         if latest is None:
             self._save_snapshot(
                 game_id,
@@ -276,19 +314,31 @@ class GameEngine:
     def _save_snapshot(
         self, game_id: str, state: GameState, *, snapshot_version: int, last_seq: int, version: int
     ) -> None:
-        """写一条快照记录（``state_hash`` 由 ``domain.hashing`` 统一计算）。"""
-        self._repo.save_snapshot(
-            SnapshotRecord(
-                game_id=game_id,
-                snapshot_version=snapshot_version,
-                turn_id=state.turn,
-                last_seq=last_seq,
-                state=state,
-                state_hash=state_hash(state),
-                schema_version=1,
-                version=version,
+        """写一条快照记录（``state_hash`` 由 ``domain.hashing`` 统一计算）。
+
+        快照是派生缓存：SQLite locked / 磁盘满 / 状态不可 JSON 化等异常只记 WARNING，
+        绝不把「已提交成功的回合」报告成失败（R-03）。
+        """
+        try:
+            self._repo.save_snapshot(
+                SnapshotRecord(
+                    game_id=game_id,
+                    snapshot_version=snapshot_version,
+                    turn_id=state.turn,
+                    last_seq=last_seq,
+                    state=state,
+                    state_hash=state_hash(state),
+                    schema_version=1,
+                    version=version,
+                )
             )
-        )
+        except Exception:
+            logger.warning(
+                "快照写入失败（已提交状态不受影响），game_id=%s snapshot_version=%s",
+                game_id,
+                snapshot_version,
+                exc_info=True,
+            )
 
 
 __all__ = ["GameEngine"]

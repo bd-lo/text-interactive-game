@@ -460,6 +460,60 @@ def _looks_like_tavern_entry(entry: Any) -> bool:
 # ---------------------------------------------------------------------------
 # 正则键（Python ``re``；与 SillyTavern/JS 正则的差异见兼容文档）
 # ---------------------------------------------------------------------------
+#: 灾难性回溯（ReDoS）启发式：组内已有量词、组本身再被量词修饰（如 ``(a+)+``）。
+#: Python ``re`` 无超时，导入期直接拒绝这类高风险 pattern（R-12）；正常 ``(ab)+`` 不受影响。
+_NESTED_QUANTIFIER_RE = re.compile(r"\((?:[^()]|\\.)*[+*][^()]*\)\s*(?:[+*]|\{\d*,?\d*\})")
+
+
+def _has_nested_repeat(pattern: str) -> bool:
+    """用 ``re`` 解析树检测「重复内部又含重复」（R-12 强化）。
+
+    正则启发式可能漏掉 ``(?:a+){2,}`` 等写法；解析树按 SUBPATTERN/BRANCH/REPEAT 遍历，
+    只要 REPEAT 嵌套 REPEAT 就拒绝。保守误拒（如 ``(ab{2})+``）可接受：作者可改写为
+    等价的安全正则。
+    """
+    try:
+        from importlib import import_module
+
+        try:
+            sre_parse = import_module("re._parser")  # Python 3.11+
+        except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+            sre_parse = import_module("sre_parse")
+    except Exception:  # pragma: no cover - 极端解释器差异
+        return False
+    try:
+        parsed = sre_parse.parse(pattern)
+    except Exception:
+        return False
+    repeat_ops = {
+        op
+        for op in (
+            getattr(sre_parse, "MAX_REPEAT", None),
+            getattr(sre_parse, "MIN_REPEAT", None),
+            getattr(sre_parse, "POSSESSIVE_REPEAT", None),
+        )
+        if op is not None
+    }
+
+    def walk(tokens: Any, inside_repeat: bool) -> bool:
+        for op, value in tokens:
+            if op in repeat_ops:
+                if inside_repeat:
+                    return True
+                if walk(value[2], True):
+                    return True
+            elif op is getattr(sre_parse, "SUBPATTERN", None):
+                if walk(value[-1], inside_repeat):
+                    return True
+            elif op is getattr(sre_parse, "BRANCH", None):
+                for alternative in value[1]:
+                    if walk(alternative, inside_repeat):
+                        return True
+        return False
+
+    return walk(parsed, False)
+
+
 def _looks_like_regex_key(key: str) -> bool:
     """键是否为 ``/pattern/flags`` 形式（正则键）。
 
@@ -492,6 +546,8 @@ def _compile_regex_key(key: str, case_sensitive: bool = False) -> re.Pattern[str
     pattern, flags_text = parsed
     if len(pattern) > _MAX_REGEX_KEY_CHARS:
         return None
+    if _NESTED_QUANTIFIER_RE.search(pattern) is not None or _has_nested_repeat(pattern):
+        return None
     flags = 0
     for flag in flags_text.lower():
         if flag not in _SUPPORTED_REGEX_FLAGS:
@@ -513,6 +569,8 @@ def _regex_key_issue(key: str) -> str | None:
     pattern, flags_text = parsed
     if len(pattern) > _MAX_REGEX_KEY_CHARS:
         return f"pattern 长度 {len(pattern)} 超过上限 {_MAX_REGEX_KEY_CHARS}"
+    if _NESTED_QUANTIFIER_RE.search(pattern) is not None or _has_nested_repeat(pattern):
+        return "正则包含嵌套量词（可能灾难性回溯），已拒绝"
     unsupported = sorted(
         {flag for flag in flags_text.lower() if flag not in _SUPPORTED_REGEX_FLAGS}
     )

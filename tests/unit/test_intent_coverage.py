@@ -388,3 +388,23 @@ def test_empty_input_returns_unknown() -> None:
 
     assert outcome.tool is None
     assert outcome.confidence == 0.0
+
+
+# ---------------------------------------------------------------------------
+# R-17：in/out 出口可导航 + 中文提示不泄漏英文
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(("text", "direction"), [("里面", "in"), ("进去", "in"), ("出去", "out")])
+def test_in_out_alias_maps_to_move(text: str, direction: str) -> None:
+    """``in``/``out`` 的安全中文别名应解析为 move_to（不再只有 LLM 能走）。"""
+    outcome = _parse(text, perception=_entry())
+
+    assert outcome.tool == "move_to"
+    assert outcome.args == {"direction": direction}
+
+
+def test_in_out_exit_ref_navigation() -> None:
+    """``exit_refs`` 里的 ``in``/``out`` 方向可被房间名导航命中。"""
+    perception = _perception(exit_refs=(_ref("room", "in", "里间"), _ref("room", "out", "外院")))
+
+    assert _parse("往里间走", perception=perception).args == {"direction": "in"}
+    assert _parse("去外院", perception=perception).args == {"direction": "out"}

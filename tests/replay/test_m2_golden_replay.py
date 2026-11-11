@@ -280,7 +280,8 @@ def test_m2_golden_detects_tampered_rng_seed() -> None:
     tampered[tamper_index] = original.model_copy(update={"rng_seed": 0})
 
     log = EventLog(_SAVE_SEED)
-    log.append(tampered)  # append 只校验 seq/id/ts, 不校验种子与派生规则一致
+    log.append(events)  # append 校验 seq/id/ts/rng_seed；篡改用白盒注入模拟已入库被改
+    log._events[tamper_index] = tampered[tamper_index]
     with pytest.raises(ReplayMismatchError) as exc_info:
         log.replay()
 

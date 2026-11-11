@@ -331,8 +331,10 @@ def test_sixth_request_returns_429_with_retry_after(generate_harness: GenerateHa
     assert "频繁" in body["message"]
 
 
-def test_rate_limit_is_per_ip_and_session(generate_harness: GenerateHarness) -> None:
-    """限流主体为 IP+session：另一 session 不共享配额，原 session 仍被限流。"""
+def test_rate_limit_is_per_ip_and_cannot_be_bypassed_by_session(
+    generate_harness: GenerateHarness,
+) -> None:
+    """R-09：限流主体只有 IP；轮换 ``X-Session-Id`` 不能绕过配额。"""
     for index in range(5):
         _generate_ok(
             generate_harness,
@@ -346,7 +348,7 @@ def test_rate_limit_is_per_ip_and_session(generate_harness: GenerateHarness) -> 
         brief="B 会话旅人",
         session="session-b",
     )
-    assert other.status_code == 200, other.text
+    _assert_error(other, 429, "OUT_OF_RANGE")
     blocked = _generate(
         generate_harness,
         key="gen-session-a-key-9999",

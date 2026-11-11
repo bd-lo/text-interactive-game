@@ -37,6 +37,7 @@ from textgame.domain.world_book import (
     parse_entry_extras,
     parse_import_payload,
 )
+from textgame.services.idempotency_locks import idempotency_lock
 from textgame.services.ports import IdempotencyRecord
 
 #: 上传文件大小上限（H4-CONTRACT §2：JSON ≤256KB；超限 HTTP 413）。
@@ -188,6 +189,11 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise _DuplicateJsonKeyError(key)
         result[key] = value
     return result
+
+
+def _reject_non_finite(value: str) -> Any:
+    """``json.loads(parse_constant=...)``：拒绝 NaN/Infinity（R-11）。"""
+    raise ValueError(f"JSON 不允许非有限数值: {value}")
 
 
 def _json_depth(value: Any) -> int:
@@ -511,6 +517,21 @@ class WorldBookService:
         errors: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
         preview = {"name": "", "entry_count": 0, "detected_format": "unknown"}
+        try:
+            # R-11：validate 的 payload 已由 FastAPI 解析（可能含 NaN/Infinity）；这里统一拒绝。
+            encoded_payload = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            errors.append(_schema_issue(["payload"], "value_error", f"payload 含非法数值：{exc}"))
+            return {"valid": False, "errors": errors, "warnings": warnings, "preview": preview}
+        if len(encoded_payload.encode("utf-8")) > MAX_UPLOAD_BYTES:
+            errors.append(
+                _schema_issue(
+                    ["payload"],
+                    "value_error",
+                    f"payload 超过 {MAX_UPLOAD_BYTES // 1024}KB 上限",
+                )
+            )
+            return {"valid": False, "errors": errors, "warnings": warnings, "preview": preview}
         if not isinstance(payload, dict):
             errors.append(_schema_issue(["payload"], "value_error", "世界书 JSON 根必须是对象"))
             return {"valid": False, "errors": errors, "warnings": warnings, "preview": preview}
@@ -650,7 +671,11 @@ class WorldBookService:
                 ErrorCode.INVALID_INPUT, "世界书 JSON 必须为 UTF-8 编码"
             ) from exc
         try:
-            payload = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+            payload = json.loads(
+                text,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_non_finite,
+            )
         except _DuplicateJsonKeyError as exc:
             raise WorldBookServiceError(ErrorCode.INVALID_INPUT, f"JSON 含重复键: {exc}") from exc
         except json.JSONDecodeError as exc:
@@ -658,6 +683,8 @@ class WorldBookService:
                 ErrorCode.INVALID_INPUT,
                 f"JSON 语法错误: {exc.msg} (line {exc.lineno} column {exc.colno})",
             ) from exc
+        except ValueError as exc:
+            raise WorldBookServiceError(ErrorCode.INVALID_INPUT, str(exc)) from exc
         except RecursionError as exc:
             raise WorldBookServiceError(ErrorCode.INVALID_INPUT, "JSON 嵌套过深") from exc
         try:
@@ -738,6 +765,16 @@ class WorldBookService:
         request_hash: str,
         operation: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
+        """R-04：同 ``Idempotency-Key`` 的世界书写请求在进程内串行（单进程部署）。"""
+        with idempotency_lock(store_key):
+            return self._idempotent_unlocked(store_key, request_hash, operation)
+
+    def _idempotent_unlocked(
+        self,
+        store_key: str,
+        request_hash: str,
+        operation: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
         """同键同参回放首次响应（含失败响应）；同键异参 → 409 ``CONFLICT``。"""
         cached = self._repo.get_idempotent(store_key)
         if cached is not None:
@@ -770,7 +807,15 @@ class WorldBookService:
     def _save_error_idempotent(
         self, store_key: str, request_hash: str, exc: WorldBookServiceError
     ) -> None:
-        """缓存可重放的业务失败（同键同参重试得到首次的失败响应）。"""
+        """缓存可重放的业务失败；R-20：全部 4xx 拒绝不缓存（修正输入后同键可重试）。"""
+        if exc.http_status is not None and 400 <= exc.http_status < 500:
+            return
+        if exc.error_code in {
+            ErrorCode.INVALID_INPUT,
+            ErrorCode.SCHEMA_VIOLATION,
+            ErrorCode.NOT_ALLOWED,
+        }:
+            return
         payload = {
             "__error__": {
                 "code": exc.error_code.value,

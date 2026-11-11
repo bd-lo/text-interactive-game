@@ -334,3 +334,41 @@ def test_agent_with_disabled_client_falls_back_to_keyword() -> None:
     assert outcome.source == "keyword"
     assert outcome.tool == "move_to"
     assert outcome.args == {"direction": "north"}
+
+
+# ---------------------------------------------------------------------------
+# R-07 / R-14：白名单从 tool_specs 派生 + prompt_version 可追溯
+# ---------------------------------------------------------------------------
+def test_whitelist_is_derived_from_tool_specs() -> None:
+    """R-07：未显式传白名单时，inspect_item/craft_item 不应被当作白名单外工具。"""
+    specs = (
+        ToolSpec(
+            name="inspect_item",
+            description="细看物品",
+            json_schema={"type": "object"},
+        ),
+        ToolSpec(
+            name="craft_item",
+            description="制造物品",
+            json_schema={"type": "object"},
+        ),
+    )
+    agent, _llm = _agent(
+        [_output(tool="inspect_item", args={"item_id": _TORCH_ID})],
+        tool_specs=specs,
+    )
+
+    outcome = agent.parse("细看火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.source == "llm"
+    assert outcome.tool == "inspect_item"
+    assert outcome.args == {"item_id": _TORCH_ID}
+
+
+def test_request_carries_prompt_version() -> None:
+    """R-14：解析请求必须带 parse@v1，供幂等键/调用日志按版本追溯。"""
+    agent, llm = _agent([_output()])
+
+    agent.parse("向北走", perception=_perception(), ctx=_ctx())
+
+    assert llm.calls[0].prompt_version == "parse@v1"

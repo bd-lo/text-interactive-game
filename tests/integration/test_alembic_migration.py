@@ -51,7 +51,7 @@ _EXPECTED_TABLES = {
     "world_book_entries",
     "scenarios",
 }
-_HEAD_REVISION = "0005"
+_HEAD_REVISION = "0006"
 _CHARACTER_CARD_COLUMNS = {
     "card_id",
     "schema_version",

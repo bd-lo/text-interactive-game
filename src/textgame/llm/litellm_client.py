@@ -458,6 +458,17 @@ class LiteLLMClient:
     ) -> object:
         """对单个供应商执行 tenacity 重试（≤3 次、共享整链 deadline）；失败原样抛出。"""
         messages = [message.model_dump() for message in req.messages]
+        base_wait = wait_exponential_jitter(initial=1.0, max=8.0)
+
+        def _wait_within_deadline(retry_state: Any) -> float:
+            """重试等待也受整链 deadline 约束（R-13）：剩余不足直接终止本次调用。"""
+            remaining = deadline - self._clock()
+            if remaining <= _MIN_REMAINING_S:
+                raise _DeadlineExceededError
+            return max(
+                0.0,
+                min(base_wait(retry_state), remaining - _MIN_REMAINING_S),
+            )
 
         def attempt() -> ChatCompletionResult:
             remaining = deadline - self._clock()
@@ -486,7 +497,7 @@ class LiteLLMClient:
         retrying = Retrying(
             retry=retry_if_exception(_is_retryable),
             stop=stop_after_attempt(self._config.max_attempts),
-            wait=wait_exponential_jitter(initial=1.0, max=8.0),
+            wait=_wait_within_deadline,
             sleep=self._sleep,
             reraise=True,
         )

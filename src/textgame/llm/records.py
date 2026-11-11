@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -98,11 +99,17 @@ class LLMCallLog(Protocol):
 
 
 class InMemoryLLMCallLog:
-    """`LLMCallLog` 的进程内线程安全实现（D-M5-10 后为唯一实现）。"""
+    """`LLMCallLog` 的进程内线程安全实现（D-M5-10 后为唯一实现）。
+
+    R-21：成功复用表与失败记录均有界（LRU/上限），长期运行不会随调用次数无限增长。
+    """
+
+    _MAX_SUCCESS_ENTRIES = 1024
+    _MAX_FAILURE_ENTRIES = 1024
 
     def __init__(self) -> None:
         """创建空日志：成功表、失败表与在飞集合均为空。"""
-        self._success: dict[str, LLMCallEntry] = {}
+        self._success: OrderedDict[str, LLMCallEntry] = OrderedDict()
         self._failures: list[LLMCallRecord] = []
         self._in_flight: set[str] = set()
         self._lock = threading.Lock()
@@ -121,19 +128,28 @@ class InMemoryLLMCallLog:
             self._in_flight.discard(idempotency_key)
 
     def find_success(self, idempotency_key: str) -> LLMCallEntry | None:
-        """返回同键成功记录副本（不存在返回 None）。"""
+        """返回同键成功记录副本（不存在返回 None）；命中即刷新 LRU 位置。"""
         with self._lock:
-            return self._success.get(idempotency_key)
+            entry = self._success.get(idempotency_key)
+            if entry is not None:
+                self._success.move_to_end(idempotency_key)
+            return entry
 
     def save_success(self, entry: LLMCallEntry) -> None:
-        """保存成功记录；同键已存在时保留首次（幂等复用口径）。"""
+        """保存成功记录；同键已存在时保留首次（幂等复用口径），超限淘汰最旧。"""
         with self._lock:
-            self._success.setdefault(entry.idempotency_key, entry)
+            if entry.idempotency_key in self._success:
+                return
+            while len(self._success) >= self._MAX_SUCCESS_ENTRIES:
+                self._success.popitem(last=False)
+            self._success[entry.idempotency_key] = entry
 
     def append_failure(self, record: LLMCallRecord) -> None:
-        """追加失败记录（列表只增，供测试/成本归集）。"""
+        """追加失败记录（有界列表，供测试/成本归集）。"""
         with self._lock:
             self._failures.append(record)
+            if len(self._failures) > self._MAX_FAILURE_ENTRIES:
+                del self._failures[: len(self._failures) - self._MAX_FAILURE_ENTRIES]
 
     @property
     def failures(self) -> list[LLMCallRecord]:

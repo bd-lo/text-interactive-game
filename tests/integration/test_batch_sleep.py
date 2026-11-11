@@ -220,12 +220,12 @@ def _collect(
     )
 
 
-def _moved_event(*, to_room: str, seq: int = 1) -> Event:
+def _moved_event(*, to_room: str, seq: int = 1, turn_id: int = 1) -> Event:
     """构造已盖章的玩家移动事件（``result.to`` 为目标房间，供「进入同场景」唤醒）。"""
     return Event(
         id=f"evt_{seq:06d}",
         seq=seq,
-        turn_id=1,
+        turn_id=turn_id,
         actor_id=PLAYER_ID,
         method="move_to",
         event_type=EventType.CHARACTER_MOVED,
@@ -276,12 +276,32 @@ def test_scene_entry_wakes_actor_in_entered_room_only() -> None:
     """玩家进入某房间 → 只有该房间的 actor 被唤醒（其他房间保持 DORMANT）。"""
     scheduler, agents, log = _make_scheduler()
 
-    proposals = _collect(scheduler, agents, turn_id=2, events=[_moved_event(to_room=ROOM_ENTRY)])
+    proposals = _collect(
+        scheduler,
+        agents,
+        turn_id=2,
+        events=[_moved_event(to_room=ROOM_ENTRY, turn_id=2)],
+    )
 
     woken = {proposal.actor_id for proposal in proposals}
     assert woken == set(_ALL_IDS)  # 入口房间 5 群演 + 私有角色
     assert scheduler.dormancy.last_wake_cause(_CROWD_IDS[0]) is WakeCause.SCENE_ENTRY
     assert log.count(mode=InvocationMode.DROPPED) == 0
+
+
+def test_scene_entry_ignores_previous_turn_moves() -> None:
+    """R-08：旧回合的移动事件不得在本回合再次触发 SCENE_ENTRY（不会永久唤醒）。"""
+    scheduler, agents, _log = _make_scheduler()
+
+    proposals = _collect(
+        scheduler,
+        agents,
+        turn_id=2,
+        events=[_moved_event(to_room=ROOM_ENTRY, turn_id=1)],
+    )
+
+    assert proposals == []
+    assert scheduler.dormancy.state_of(_CROWD_IDS[0]) is DormancyState.DORMANT
 
 
 def test_plan_trigger_wakes_and_window_continues() -> None:

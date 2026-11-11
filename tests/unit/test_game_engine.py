@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from textgame.domain.events import Event, EventLog, EventType
@@ -18,6 +20,7 @@ from textgame.domain.scenario import (
     PLAYER_ID,
     ROOM_CELLAR,
     ROOM_ENTRY,
+    build_initial_state,
 )
 from textgame.persistence.memory import InMemoryRepository
 from textgame.services.game_engine import GameEngine
@@ -365,3 +368,56 @@ def test_create_game_duplicate_game_id_message_is_generic() -> None:
     message = second.message or ""
     assert "already exists" in message or "已存在" in message
     assert "单存档" not in message
+
+
+# ---------------------------------------------------------------------------
+# R-03：提交后旁路写失败不影响结果
+# ---------------------------------------------------------------------------
+class _SnapshotFailingRepo(InMemoryRepository):
+    """快照写入必失败的仓储（模拟 SQLite locked / 磁盘满）。"""
+
+    def save_snapshot(self, snapshot: Any) -> None:
+        raise RuntimeError("snapshot storage unavailable")
+
+
+def test_create_game_snapshot_failure_does_not_fail_commit() -> None:
+    """R-03：commit 成功但初始快照写失败 → create_game 仍成功且状态可读。"""
+    repo = _SnapshotFailingRepo()
+    engine = GameEngine(repo)
+
+    result = engine.create_game(save_seed=_SAVE_SEED, game_id=_GAME_ID)
+
+    assert result.ok is True
+    record = repo.load(_GAME_ID)
+    assert record is not None and record.version == 1
+    assert len(repo.read_events(_GAME_ID)) == 1
+
+
+def test_submit_snapshot_failure_does_not_fail_commit() -> None:
+    """R-03：回合提交后快照写失败 → submit 仍成功，版本已推进。"""
+    repo = _SnapshotFailingRepo()
+    engine = GameEngine(repo, snapshot_every_events=1)
+    assert _create(engine).ok
+
+    result = engine.submit(game_id=_GAME_ID, expected_version=1, drafts=[_move_draft()])
+
+    assert result.ok is True
+    record = repo.load(_GAME_ID)
+    assert record is not None and record.version == 2
+    assert len(repo.read_events(_GAME_ID)) == 2
+
+
+# ---------------------------------------------------------------------------
+# R-06：建局种子一致性
+# ---------------------------------------------------------------------------
+def test_create_game_rejects_initial_state_seed_mismatch() -> None:
+    """R-06：initial_state 的 save_seed 必须与 save_seed 参数一致，否则 422 且零写入。"""
+    repo, engine = _engine()
+    state = build_initial_state(save_seed="seed-other").model_dump(mode="json")
+
+    result = engine.create_game(save_seed=_SAVE_SEED, game_id=_GAME_ID, initial_state=state)
+
+    assert result.ok is False
+    assert result.error_code is ErrorCode.SCHEMA_VIOLATION
+    assert repo.load(_GAME_ID) is None
+    assert repo.read_events(_GAME_ID) == []

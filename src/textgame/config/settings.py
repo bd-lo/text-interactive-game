@@ -29,6 +29,13 @@ class Settings(BaseSettings):
 
     # M4 制造（第 13 章 §13.4、D-M4-6）：自由制造开关默认关闭；M5 预算/真实 LLM 前不开启。
     free_craft_enabled: bool = False
+    # 网页设置页持久化的自由制造偏好（enabled + risk_accepted）；缺省 data/free_craft.json。
+    free_craft_settings_file: Path | None = None
+    # R-19：自由制造在 Resolver 内调 LLM；无头/生产开启必须显式承认该架构风险（M5 前迁移）。
+    # 网页设置页的二次确认是运行期等价 opt-in，会写入 free_craft_settings_file.risk_accepted。
+    allow_resolver_llm: bool = False
+    # R-25：允许的 Host 头（逗号分隔）；默认只允许本机/测试客户端，防止 DNS rebinding。
+    allowed_hosts: str = "127.0.0.1,localhost,[::1],testserver"
 
     # 启动器控制面（普通玩家双击启动/网页内退出）：控制面是否可用由进程入口注入的
     # ``LauncherController`` 决定（``python -m textgame.launcher`` 才注入；普通

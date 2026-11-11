@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import re
 from enum import Enum
 from typing import Annotated, Final, Literal
 
@@ -47,12 +48,29 @@ __all__ = [
     "calculate_craft_result",
     "derive_item_id",
     "instantiate_craft_result",
+    "item_template_key",
     "recipe_from_draft",
 ]
 
 #: 物品模板键：复用第 5 章 §5.7 的定义（规范写法 item.<name>；item_<name> 亦接受）。
 #: item_<26位ULID> 是实例 ID（大写字符不匹配 [a-z]），不得作模板键（D-M4-1）。
 ItemTemplateId = Annotated[str, Field(pattern=r"^item[._][a-z][a-z0-9_.]{1,63}$")]
+
+#: ``ItemTemplateId`` 的运行时判定（数据侧物品可能只有语义标签，不得直接当模板键用）。
+_TEMPLATE_KEY_RE = re.compile(r"^item[._][a-z][a-z0-9_.]{1,63}$")
+
+
+def item_template_key(item: Item) -> str | None:
+    """返回物品的模板键；``tags[0]`` 不是合法模板键（语义标签/无标签）时返回 ``None``。
+
+    背包聚合/制造视图统一走本函数（R-01）：M2/story 的物品可能用 ``light``/``consumable``
+    这类语义标签，直接塞进 ``CraftStateSlice.inventory`` 会触发 ``ItemTemplateId`` 校验失败。
+    无模板键的物品不是可制造材料，调用方按“不可参与制造”跳过；背包展示则回退实例 id。
+    """
+    if not item.tags:
+        return None
+    first = item.tags[0]
+    return first if _TEMPLATE_KEY_RE.fullmatch(first) is not None else None
 
 
 class CraftMode(str, Enum):
@@ -370,10 +388,12 @@ def instantiate_craft_result(
 def build_craft_state_slice(state: GameState, actor_id: str) -> CraftStateSlice:
     """从 GameState 构造只读制造视图（第 13 章 §13.2、D-M4-1/D-M4-4/D-M4-9）。
 
-    背包按 Item.tags[0]（模板键）聚合：数量 = 同模板实例在 Character.inventory 中的
-    重复项数；工位取当前房间 ambient_tags 中 station. 前缀标签（如 station.forge）；
-    skill_levels M4 恒 {}（D-M4-2）；next_seq = 存档 last_seq + 1（服务层注入，D-M4-4）。
-    actor 不存在/物品缺模板键 → ValueError。
+    背包按 ``item_template_key``（``tags[0]`` 且必须是合法模板键）聚合：数量 = 同模板实例
+    在 Character.inventory 中的重复项数；无模板键的语义标签物品不是可制造材料，直接跳过
+    （R-01：避免 ``consumable`` 这类标签触发 ``ItemTemplateId`` 校验失败）。工位取当前房间
+    ``ambient_tags`` 中 ``station.`` 前缀标签（如 ``station.forge``）；``skill_levels`` M4 恒
+    ``{}``（D-M4-2）；``next_seq`` = 存档 ``last_seq + 1``（服务层注入，D-M4-4）。
+    actor 不存在/物品定义缺失 → ValueError。
     """
     character = state.characters.get(actor_id)
     if character is None:
@@ -383,9 +403,9 @@ def build_craft_state_slice(state: GameState, actor_id: str) -> CraftStateSlice:
         item = state.items.get(item_id)
         if item is None:
             raise ValueError(f"inventory item {item_id!r} has no definition in state.items")
-        if not item.tags:
-            raise ValueError(f"inventory item {item_id!r} has no template tag")
-        template_id = item.tags[0]
+        template_id = item_template_key(item)
+        if template_id is None:
+            continue
         inventory[template_id] = inventory.get(template_id, 0) + 1
     room = state.rooms.get(character.location)
     station_id = None

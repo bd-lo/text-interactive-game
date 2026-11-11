@@ -125,6 +125,10 @@ class GameRepository(Protocol):
         """按 ``seq`` 升序读取 ``seq > after_seq`` 的事件。"""
         ...
 
+    def read_recent_events(self, game_id: str, *, limit: int) -> list[Event]:
+        """按 ``seq`` 升序返回最近 ``limit`` 条事件（R-21：列表页只读尾部，不扫全量）。"""
+        ...
+
     def read_first_event(self, game_id: str) -> Event | None:
         """读该存档的第一条事件（``seq`` 最小，即 ``game_created``）；无存档返回 ``None``。
 

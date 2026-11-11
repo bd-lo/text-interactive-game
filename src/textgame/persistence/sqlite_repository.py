@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, Engine, func, insert, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -155,6 +156,19 @@ class SqliteRepository:
         with self._session_factory() as session:
             return self._read_events(session, game_id, after_seq=after_seq)
 
+    def read_recent_events(self, game_id: str, *, limit: int) -> list[Event]:
+        """按 ``seq`` 升序返回最近 ``limit`` 条事件（R-21，单条 SQL 倒序取尾）。"""
+        if limit < 1:
+            raise ValueError(f"limit must be positive, got {limit}")
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EventRow)
+                .where(EventRow.game_id == game_id)
+                .order_by(EventRow.seq.desc())
+                .limit(limit)
+            ).all()
+        return [self._event_from_row(row) for row in reversed(rows)]
+
     def read_first_event(self, game_id: str) -> Event | None:
         """读该存档第一条事件（``seq`` 最小，即 ``game_created``）；无存档返回 ``None``。
 
@@ -205,7 +219,7 @@ class SqliteRepository:
         )
 
     def save_snapshot(self, snapshot: SnapshotRecord) -> None:
-        """追加派生快照；同一 ``(game_id, snapshot_version)`` 覆盖重写（幂等）。"""
+        """写入派生快照：``(game_id, snapshot_version)`` 冲突时覆盖（R-10 upsert）。"""
         values = {
             "turn_id": snapshot.turn_id,
             "last_seq": snapshot.last_seq,
@@ -215,24 +229,20 @@ class SqliteRepository:
             "version": snapshot.version,
             "created_at": datetime.now(timezone.utc),
         }
+        statement = (
+            sqlite_insert(SnapshotRow)
+            .values(
+                game_id=snapshot.game_id,
+                snapshot_version=snapshot.snapshot_version,
+                **values,
+            )
+            .on_conflict_do_update(
+                index_elements=["game_id", "snapshot_version"],
+                set_=values,
+            )
+        )
         with self._session_factory() as session, session.begin():
-            row = session.scalars(
-                select(SnapshotRow).where(
-                    SnapshotRow.game_id == snapshot.game_id,
-                    SnapshotRow.snapshot_version == snapshot.snapshot_version,
-                )
-            ).first()
-            if row is None:
-                session.add(
-                    SnapshotRow(
-                        game_id=snapshot.game_id,
-                        snapshot_version=snapshot.snapshot_version,
-                        **values,
-                    )
-                )
-            else:
-                for field, value in values.items():
-                    setattr(row, field, value)
+            session.execute(statement)
 
     # ----------------------------------------------------------- idempotency
     def get_idempotent(self, key: str) -> IdempotencyRecord | None:

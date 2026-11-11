@@ -111,15 +111,14 @@ def _api_error(exc: CardServiceError) -> ApiError:
     )
 
 
-#: 生成端点限流的会话标识头（单机无账号：IP + 可选 session，第 23 章 §23.6）。
+#: 生成端点限流的会话标识头（R-09 起不再参与配额；保留常量供兼容文档/测试引用）。
 _SESSION_HEADER = "X-Session-Id"
 
 
 def _client_key(request: Request) -> str:
-    """限流主体：客户端 IP + 可选 ``X-Session-Id``（缺省仅按 IP 计）。"""
+    """限流主体：仅客户端 IP（R-09：``X-Session-Id`` 可由客户端轮换，不能参与配额）。"""
     host = request.client.host if request.client is not None else "unknown"
-    session = request.headers.get(_SESSION_HEADER, "")[:64]
-    return f"{host}|{session}"
+    return host
 
 
 async def _read_limited_body(request: Request) -> bytes:

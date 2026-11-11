@@ -298,13 +298,15 @@ def build_story_state(*, save_seed: str) -> GameState:
             id=_ITEM_FLINT,
             name=_ITEM_FLINT_NAME,
             description=_ITEM_FLINT_DESC,
-            tags=["quest", "material"],
+            # R-01：第 1 位必须是模板键（供制造/背包聚合）；语义标签后置。
+            tags=["item.flint", "quest", "material"],
         ),
         _ITEM_POTION: Item(
             id=_ITEM_POTION,
             name=_ITEM_POTION_NAME,
             description=_ITEM_POTION_DESC,
-            tags=["consumable"],
+            # R-01：``consumable`` 是语义标签，不能当模板键（否则与烈酒互相合并）。
+            tags=["item.potion", "consumable"],
             stats={"heal": 8},
         ),
         _ITEM_COPPER_A: Item(
@@ -326,13 +328,13 @@ def build_story_state(*, save_seed: str) -> GameState:
             id=_ITEM_HAMMER,
             name=_ITEM_HAMMER_NAME,
             description=_ITEM_HAMMER_DESC,
-            tags=["tool"],
+            tags=["item.forge_hammer", "tool"],
         ),
         _ITEM_LIQUOR: Item(
             id=_ITEM_LIQUOR,
             name=_ITEM_LIQUOR_NAME,
             description=_ITEM_LIQUOR_DESC,
-            tags=["consumable"],
+            tags=["item.liquor", "consumable"],
             stats={"hp_delta": -4},
         ),
     }

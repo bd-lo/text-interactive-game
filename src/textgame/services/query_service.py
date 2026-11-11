@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Literal, cast
 
+from textgame.domain.crafting import item_template_key
 from textgame.domain.events import Event
 from textgame.domain.models import Character, EntityRef, GameState, PerceptionSlice
 from textgame.domain.perception import filter_local_events
@@ -38,6 +39,9 @@ from textgame.services.ports import GameRepository
 
 #: 感知切片实体种类（与 ``EntityRef.kind`` 的 Literal 对齐）。
 EntityKind = Literal["character", "room", "item", "npc", "quest"]
+
+#: 列表页找最近叙事的尾部事件扫描上限（R-21；长局只读尾部，避免 O(n) 放大）。
+_LAST_TEXT_SCAN_EVENTS = 200
 
 
 def scenario_name_of_state(state: GameState) -> str:
@@ -154,7 +158,8 @@ class QueryService:
         """``(world_book 摘要, lore.active_entries)``；无世界书 → ``(None, None)``。
 
         lore 由「当前状态 + 最近叙事」按与回合注入同一 ``activate_entries`` 语义只读计算
-        （``turn_id`` 取当前 ``state.turn``，即上一提交回合），零写入、零模型调用。
+        （``turn_id`` 取 ``state.turn + 1``，即**下一回合**实际注入的口径；R-16 修正
+        off-by-one），零写入、零模型调用。
         """
         found = self._world_book_of_game(game_id)
         if found is None:
@@ -181,7 +186,7 @@ class QueryService:
         active = activate_entries(
             book,
             context_texts=context,
-            turn_id=state.turn,
+            turn_id=state.turn + 1,
             save_seed=state.rng_state.save_seed,
             history=history,
         )
@@ -228,10 +233,10 @@ class QueryService:
     def get_inventory(self, state: GameState, actor_id: str) -> dict[str, Any]:
         """返回 ``{"items": [{"item_id", "name", "qty"}]}``；同模板实例聚合计数（加法字段）。
 
-        模板键与 ``CraftService`` 背包聚合口径一致（D-M4-1）：有 tags 时取 ``item.tags[0]``，
-        无 tags 时用物品自身 id。``item_id``/``name`` 取该模板首个实例；``qty`` 为该模板
-        实例数。M2 场景物品 tags 为语义标签（light/consumable…）互不相同，故 qty 恒 1；
-        制造产物同模板实例会正确合并。未知物品引用直接跳过。
+        模板键与 ``CraftService`` 背包聚合口径一致（D-M4-1）：``item_template_key(item)``
+        命中时用模板键，否则回退物品自身 id（R-01：语义标签不再互相合并，如治疗药水与
+        结霜的烈酒都带 ``consumable``）。``item_id``/``name`` 取该模板首个实例；``qty`` 为
+        该模板实例数。未知物品引用直接跳过。
         """
         character = self._require_character(state, actor_id)
         grouped: dict[str, dict[str, Any]] = {}
@@ -239,7 +244,7 @@ class QueryService:
             item = state.items.get(item_id)
             if item is None:
                 continue
-            template_key = item.tags[0] if item.tags else item.id
+            template_key = item_template_key(item) or item.id
             entry = grouped.get(template_key)
             if entry is None:
                 grouped[template_key] = {"item_id": item.id, "name": item.name, "qty": 1}
@@ -436,7 +441,10 @@ class QueryService:
         games: list[dict[str, Any]] = []
         for record in records:
             last_text: str | None = None
-            for event in reversed(self._repo.read_events(record.game_id)):
+            # R-21：列表页只读尾部事件（不再每存档全量读取）；200 条足以覆盖最近叙事。
+            for event in reversed(
+                self._repo.read_recent_events(record.game_id, limit=_LAST_TEXT_SCAN_EVENTS)
+            ):
                 narrative = event.result.get("narrative")
                 if isinstance(narrative, str) and narrative:
                     last_text = narrative

@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -490,3 +493,47 @@ def test_repository_search_and_soft_delete(engine: Engine) -> None:
         str(first["scenario_id"]),
         str(second["scenario_id"]),
     }
+
+
+# ---------------------------------------------------------------------------
+# R-04：同 Idempotency-Key 并发导入只产生一个场景
+# ---------------------------------------------------------------------------
+class _BlockingScenarioRepository(SqliteScenarioRepository):
+    """首次 ``insert`` 阻塞（放大竞态窗口），记录真实插入次数。"""
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__(engine)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.inserts = 0
+        self._guard = threading.Lock()
+
+    def insert(self, stored: Any) -> None:
+        with self._guard:
+            self.inserts += 1
+            first = self.inserts == 1
+        if first:
+            self.entered.set()
+            if not self.release.wait(timeout=5.0):
+                raise AssertionError("场景导入未被放行（并发窗口未打开）")
+        super().insert(stored)
+
+
+def test_concurrent_same_key_import_creates_one_scenario(engine: Engine) -> None:
+    """R-04：两个线程同键同参导入 → 只插入一次，返回同一 scenario_id。"""
+    repo = _BlockingScenarioRepository(engine)
+    service = ScenarioService(repo)
+    raw = _raw()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.import_scenario, raw, idempotency_key="scn-conc-key-0001")
+        assert repo.entered.wait(timeout=5.0), "首请求未进入插入"
+        second = pool.submit(service.import_scenario, raw, idempotency_key="scn-conc-key-0001")
+        time.sleep(0.1)
+        assert repo.inserts == 1, "同键后到者绕过了锁（重复插入）"
+        repo.release.set()
+        results = [first.result(timeout=5.0), second.result(timeout=5.0)]
+
+    assert results[0] == results[1]
+    assert repo.inserts == 1
+    assert service.list_scenarios(query=None, limit=10, offset=0)["total"] == 1

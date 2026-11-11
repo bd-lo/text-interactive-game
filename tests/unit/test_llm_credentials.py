@@ -92,6 +92,8 @@ def test_corrupt_json_is_unconfigured(tmp_path: Path) -> None:
         ("deepseek", "m", "ftp://a.example", "sk-1"),
         ("deepseek", "m", "https://a.example", ""),
         ("deepseek", "m", "https://a.example", "sk 1"),
+        ("deepseek", "m", "http://169.254.169.254/latest/meta-data", "sk-1"),
+        ("deepseek", "m", "http://metadata.google.internal", "sk-1"),
     ],
 )
 def test_invalid_fields_rejected(

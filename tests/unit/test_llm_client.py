@@ -30,7 +30,7 @@ from textgame.llm.config import LLMClientConfig
 from textgame.llm.errors import ProviderCallError
 from textgame.llm.factory import build_llm_client
 from textgame.llm.litellm_client import LiteLLMClient
-from textgame.llm.records import InMemoryLLMCallLog
+from textgame.llm.records import InMemoryLLMCallLog, LLMCallEntry, LLMCallRecord
 
 _API_KEY = "sk-test-secret-abcdefghijklmnop"
 _BASE_CONFIG: dict[str, Any] = {
@@ -271,6 +271,34 @@ def test_deadline_exhaustion_stops_before_three_attempts() -> None:
     assert len(transport.calls) < 3
 
 
+def test_retry_wait_aborts_when_deadline_consumed_by_attempt() -> None:
+    """R-13：重试等待前剩余预算不足 → 不 sleep、不发起下一次 attempt，直接 LLM_UNAVAILABLE。
+
+    与 ``test_deadline_exhaustion_stops_before_three_attempts`` 互补：该用例覆盖 attempt
+    入口的 deadline 检查，本用例覆盖 tenacity ``wait`` 回调内的 deadline 检查（供应商调用
+    本身耗时耗尽整链预算时，等待不能越过 deadline）。
+    """
+    clock = FakeClock()
+    calls = 0
+
+    def deadline_consuming_transport(**kwargs: Any) -> Any:
+        """供应商调用本身耗尽整链 deadline 后可重试失败。"""
+        nonlocal calls
+        del kwargs
+        calls += 1
+        clock.advance(5.0)
+        raise ProviderCallError("timeout", retryable=True)
+
+    client = _client(deadline_consuming_transport, clock=clock)
+
+    result = client.complete_json(_request(timeout_s=2.0))
+
+    assert result.ok is False
+    assert result.error_code is ErrorCode.LLM_UNAVAILABLE
+    assert calls == 1
+    assert clock.sleeps == []
+
+
 def test_malformed_transport_outcome_maps_internal() -> None:
     """transport 返回残缺结构（缺 content 键）→ INTERNAL（不泄漏堆栈）。"""
 
@@ -492,3 +520,25 @@ def test_factory_enabled_builds_real_client_with_injected_transport() -> None:
     assert len(transport.calls) == 1
     assert transport.calls[0]["provider"] == "deepseek"
     assert transport.calls[0]["api_key"] == _API_KEY
+
+
+def test_in_memory_call_log_success_table_is_bounded() -> None:
+    """R-21：成功复用表有界（LRU），长期运行不随调用次数无限增长。"""
+    log = InMemoryLLMCallLog()
+    total = log._MAX_SUCCESS_ENTRIES + 5
+    for index in range(total):
+        record = LLMCallRecord(
+            request_id=f"req-{index}",
+            task="intent_parse",
+            agent_id="parse",
+            model_tier=ModelTier.ECONOMY,
+            provider="deepseek",
+            model="m",
+            attempt=1,
+            latency_ms=0,
+        )
+        log.save_success(LLMCallEntry(idempotency_key=f"key-{index}", content="x", record=record))
+
+    assert log.success_count == log._MAX_SUCCESS_ENTRIES
+    assert log.find_success("key-0") is None
+    assert log.find_success(f"key-{total - 1}") is not None

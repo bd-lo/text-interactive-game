@@ -313,6 +313,54 @@ def test_player_hp_above_max_rejected() -> None:
     assert any("player" in error.path for error in parsed.errors)
 
 
+def test_unknown_player_attribute_rejected_at_import() -> None:
+    """R-02：未知属性键必须在导入阶段失败（否则建局 Character 校验 500）。"""
+    definition = _tiny()
+    definition["player"]["attributes"] = {"luck": 1}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "player.attributes" for error in parsed.errors)
+
+
+def test_room_self_exit_rejected_at_import() -> None:
+    """R-02：房间出口指向自己必须在导入阶段失败。"""
+    definition = _tiny()
+    definition["rooms"][0]["exits"] = {"north": "gate"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("不能把出口指向自己" in error.message for error in parsed.errors)
+
+
+def test_item_in_inventory_and_room_rejected() -> None:
+    """R-02：同一 item 同时出现在背包和房间必须在导入阶段失败。"""
+    definition = _tiny()
+    definition["player"]["inventory"] = ["flint"]  # flint 仍在 hall 的 items 里
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("已经在玩家行囊里" in error.message for error in parsed.errors)
+
+
+def test_duplicate_inventory_item_rejected() -> None:
+    """R-02：玩家背包重复引用同一 item key 必须在导入阶段失败。"""
+    definition = _tiny()
+    definition["rooms"][1]["items"] = []
+    definition["player"]["inventory"] = ["flint", "flint"]
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "player.inventory" for error in parsed.errors)
+
+
+def test_parse_json_non_finite_rejected() -> None:
+    """R-11：``NaN``/``Infinity`` 在导入期拒绝（否则后续 canonical_json 才 500）。"""
+    parsed = parse_definition(
+        '{"schema_version": 1, "slug": "bad-numbers", "meta": {"title": "x"}, '
+        '"player": {"location": "r", "attributes": {"str": NaN}}, '
+        '"rooms": [{"key": "r", "name": "R", "description": "d"}], "items": [], "npcs": []}'
+    )
+    assert not parsed.ok
+    assert "非法数值" in parsed.errors[0].message
+
+
 def test_unknown_condition_reference_rejected() -> None:
     """条件引用不存在的 NPC → 错误路径含 npc_state.npc。"""
     definition = _rich()

@@ -21,16 +21,19 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote
 
 from fastapi import FastAPI, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from textgame import __version__
-from textgame.api.errors import ApiError, install_error_handlers
+from textgame.api.errors import ApiError, error_body, install_error_handlers
 from textgame.api.routes.app_control import router as app_control_router
 from textgame.api.routes.cards import router as cards_router
 from textgame.api.routes.games import router as games_router
@@ -59,6 +62,129 @@ _REPO_ROOT_STATIC_DIR = Path(__file__).resolve().parents[3] / "web" / "dist"
 
 #: 包内静态产物（wheel ``force-include`` 的 ``web/dist`` → ``textgame/web_dist``）。
 _PACKAGE_STATIC_DIR = Path(__file__).resolve().parents[1] / "web_dist"
+
+#: 全局请求体上限（R-18）：导入端点自身另有 256KB/64KB 细粒度上限。
+_MAX_REQUEST_BYTES = 1024 * 1024
+
+#: R-25：默认 Host 白名单（可用 ``TEXTGAME_ALLOWED_HOSTS`` 覆盖；逗号分隔）。
+_DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]", "testserver")
+
+
+def _allowed_hosts() -> list[str]:
+    """读取 ``TEXTGAME_ALLOWED_HOSTS``；未设置时用默认本机白名单。"""
+    raw = os.environ.get("TEXTGAME_ALLOWED_HOSTS", "")
+    hosts = [host.strip() for host in raw.split(",") if host.strip()]
+    return hosts or list(_DEFAULT_ALLOWED_HOSTS)
+
+
+class _BodyTooLargeError(Exception):
+    """请求体超过上限（R-18，ASGI receive 层抛出）。"""
+
+
+_LOOPBACK_HOSTS = frozenset({"", "127.0.0.1", "::1", "localhost", "testclient"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """判断请求来源是否本机（测试客户端 ``testclient`` 也视为本机）。"""
+    if host.lower() in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class _AccessTokenMiddleware:
+    """R-25：非 loopback 访问要求 ``TEXTGAME_API_TOKEN``（Bearer 或 X-API-Token）。"""
+
+    def __init__(self, app: Any, *, token: str) -> None:
+        """保存下游应用与访问 token（空串 = 未配置）。"""
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        """非本机请求缺 token/错 token → 403；本机请求直接放行。"""
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        client = scope.get("client") or ("", 0)
+        if not _is_loopback_host(str(client[0])):
+            if not self.token:
+                await self._reject(scope, receive, send, "非本机访问需要设置 TEXTGAME_API_TOKEN")
+                return
+            headers = dict(scope.get("headers") or [])
+            authorization = headers.get(b"authorization", b"").decode("latin-1")
+            provided = headers.get(b"x-api-token", b"").decode("latin-1")
+            if authorization != f"Bearer {self.token}" and provided != self.token:
+                await self._reject(scope, receive, send, "访问 token 缺失或无效")
+                return
+        await self.app(scope, receive, send)
+
+    async def _reject(self, scope: Any, receive: Any, send: Any, message: str) -> None:
+        """发送 403 统一失败信封。"""
+        response = JSONResponse(
+            status_code=403,
+            content=error_body(ErrorCode.NOT_ALLOWED, message),
+        )
+        await response(scope, receive, send)
+
+
+class _BodyLimitMiddleware:
+    """R-18：Content-Length 预检 + 实际字节计数（覆盖 chunked 请求）。
+
+    超出上限时在路由/解析前返回 413 统一信封；若响应已开始则不再二次写。
+    """
+
+    def __init__(self, app: Any, *, max_bytes: int) -> None:
+        """保存下游应用与上限（字节）。"""
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        """ASGI 入口：只处理 HTTP；非 HTTP 原样透传。"""
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length", b"")
+        if declared.isdigit() and int(declared) > self.max_bytes:
+            await self._reject(scope, receive, send)
+            return
+        received = 0
+        started = False
+
+        async def send_wrapper(message: Any) -> None:
+            nonlocal started
+            if message.get("type") == "http.response.start":
+                started = True
+            await send(message)
+
+        async def limited_receive() -> Any:
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLargeError
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send_wrapper)
+        except _BodyTooLargeError:
+            if not started:
+                await self._reject(scope, receive, send)
+
+    async def _reject(self, scope: Any, receive: Any, send: Any) -> None:
+        """发送 413 统一失败信封。"""
+        response = JSONResponse(
+            status_code=413,
+            content=error_body(
+                ErrorCode.INVALID_INPUT,
+                f"请求体超过 {self.max_bytes // 1024}KB 上限",
+            ),
+        )
+        await response(scope, receive, send)
+
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +340,16 @@ def create_app(
         openapi_url="/api/openapi.json",
     )
     install_error_handlers(app)
+    # R-25：Host 校验（默认仅本机/测试客户端；局域网/反代需显式设置 TEXTGAME_ALLOWED_HOSTS）。
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
+    # R-18：请求体上限（Content-Length 预检 + chunked 实际计数）。
+    app.add_middleware(_BodyLimitMiddleware, max_bytes=_MAX_REQUEST_BYTES)
+    # R-25：非 loopback 访问要求 TEXTGAME_API_TOKEN（本机/启动器无需 token）。
+    app.add_middleware(
+        _AccessTokenMiddleware,
+        token=os.environ.get("TEXTGAME_API_TOKEN", "").strip(),
+    )
+
     app.include_router(health_router)
     app.include_router(games_router)
     app.include_router(turns_router)

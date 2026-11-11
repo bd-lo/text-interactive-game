@@ -378,7 +378,7 @@ class BatchSleepScheduler:
             if self._actors.exists(state, actor_id)
         )
         targets = self._player_targets(player_action, present)
-        entered_room = self._player_entered_room(events)
+        entered_room = self._player_entered_room(events, turn_id=turn_id)
         active: dict[str, WakeCause] = {}
         for actor_id in present:
             npc_room = self._room_of(state, actor_id)
@@ -472,9 +472,15 @@ class BatchSleepScheduler:
         return frozenset(targeted & set(present))
 
     @staticmethod
-    def _player_entered_room(events: Sequence[Event]) -> str | None:
-        """玩家最近一次 ``CHARACTER_MOVED`` 的目标房间（用于「进入同场景」唤醒）。"""
+    def _player_entered_room(events: Sequence[Event], *, turn_id: int) -> str | None:
+        """玩家**本回合**最近一次 ``CHARACTER_MOVED`` 的目标房间（R-08）。
+
+        只扫描 ``event.turn_id == turn_id`` 的事件：旧实现扫全部历史，玩家曾经进过一次
+        某房间后该房间 NPC 会每回合被 ``SCENE_ENTRY`` 永久唤醒，ACTIVE 窗口永不结束。
+        """
         for event in reversed(events):
+            if event.turn_id != turn_id:
+                continue
             if event.event_type is not EventType.CHARACTER_MOVED:
                 continue
             if event.actor_id != PLAYER_ID:

@@ -68,9 +68,15 @@ class EventRow(Base):
 
 
 class SnapshotRow(Base):
-    """派生快照表：``last_seq`` 为快照覆盖到的全局事件序号（第 14 章 14.4）。"""
+    """派生快照表：``last_seq`` 为快照覆盖到的全局事件序号（第 14 章 14.4）。
+
+    R-10：``(game_id, snapshot_version)`` 唯一，防止并发提交插入同版本快照。
+    """
 
     __tablename__ = "snapshots"
+    __table_args__ = (
+        UniqueConstraint("game_id", "snapshot_version", name="uq_snapshots_game_version"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     game_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)

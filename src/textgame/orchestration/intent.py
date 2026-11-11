@@ -24,7 +24,8 @@ from typing import Any
 
 from textgame.agents.dto import ParseOutcome
 from textgame.domain.models import ActionIntent, EntityRef, PerceptionSlice
-from textgame.domain.scenario import DIRECTION_KEYWORDS
+from textgame.domain.scenario import DIRECTION_ALIASES, DIRECTION_KEYWORDS, DIRECTION_NAMES
+from textgame.services.free_craft import FreeCraftSwitch
 from textgame.services.tool_context import ToolContext
 
 #: 查看类词（整间房 / 细看实体的共同入口）。
@@ -136,10 +137,10 @@ _INSPECT_KINDS: frozenset[str] = frozenset({"item", "npc"})
 _ALIAS_MIN_CHARS = 2
 #: difflib 模糊匹配阈值（仅在动词命中且无精确/别名命中时启用）。
 _FUZZY_CUTOFF = 0.6
-#: 合法出口方向值（``PerceptionSlice.exit_refs[].id`` 口径）。
-_DIRECTION_VALUES: frozenset[str] = frozenset(DIRECTION_KEYWORDS.values())
-#: 纯方向短语允许出现的字符（「北边」「北方」「北面」「朝北」等；不含其他动作词）。
-_DIRECTION_PHRASE_CHARS: frozenset[str] = frozenset("北南东西上下边方面朝向往楼道回走上")
+#: 合法出口方向值（``PerceptionSlice.exit_refs[].id`` 口径；含 in/out，R-17）。
+_DIRECTION_VALUES: frozenset[str] = frozenset(DIRECTION_NAMES)
+#: 纯方向短语允许出现的字符（「北边」「北方」「北面」「朝北」「里面」「出去」等；不含其他动作词）。
+_DIRECTION_PHRASE_CHARS: frozenset[str] = frozenset("北南东西上下里外进出内边方面朝向往楼道回走上")
 
 _UNKNOWN = ParseOutcome(confidence=0.0, source="keyword")
 
@@ -230,9 +231,12 @@ def _match_entity_fuzzy(text: str, entities: list[EntityRef]) -> EntityRef | Non
 
 
 def _match_direction(text: str) -> str | None:
-    """匹配中文方向词（契约 §3.4：北/南/东/西/上/下；含北边/北方/朝北等变体）。"""
+    """匹配中文方向词（北/南/东/西/上/下 + in/out 安全别名；R-17）。"""
     for keyword, direction in DIRECTION_KEYWORDS.items():
         if keyword in text:
+            return direction
+    for alias, direction in DIRECTION_ALIASES.items():
+        if alias in text:
             return direction
     return None
 
@@ -247,6 +251,10 @@ def _is_bare_direction_phrase(text: str, direction: str) -> bool:
     if not stripped or len(stripped) > 4:
         return False
     keyword = next((key for key, value in DIRECTION_KEYWORDS.items() if value == direction), None)
+    if keyword is None:
+        keyword = next(
+            (alias for alias, value in DIRECTION_ALIASES.items() if value == direction), None
+        )
     if keyword is None or keyword not in stripped:
         return False
     return all(char in _DIRECTION_PHRASE_CHARS for char in stripped)
@@ -305,12 +313,17 @@ class DeterministicIntentParser:
         recipe_names: Mapping[str, str] | None = None,
         *,
         free_craft_enabled: bool = False,
+        free_craft_switch: FreeCraftSwitch | None = None,
     ) -> None:
-        """注入可选配方名索引与自由制造开关（默认均关闭 = M2 行为）。"""
+        """注入可选配方名索引与自由制造开关（默认均关闭 = M2 行为）。
+
+        ``free_craft_switch`` 存在时优先使用共享运行期开关（网页设置页热切换）；
+        否则用 ``free_craft_enabled`` 创建内部开关（保持旧测试/装配兼容）。
+        """
         self._recipe_names: dict[str, str] | None = (
             dict(recipe_names) if recipe_names is not None else None
         )
-        self._free_craft_enabled = free_craft_enabled
+        self._free_craft_switch = free_craft_switch or FreeCraftSwitch(enabled=free_craft_enabled)
 
     def parse(
         self,
@@ -364,7 +377,7 @@ class DeterministicIntentParser:
                 )
                 if matched is not None:
                     return _outcome("craft_item", {"mode": "recipe", "recipe_id": matched})
-            if self._free_craft_enabled:
+            if self._free_craft_switch.enabled:
                 # P2-4(a)：自由制造自由句分支（fail-closed：仅开关显式开启时可达）。
                 return _outcome(
                     "craft_item",

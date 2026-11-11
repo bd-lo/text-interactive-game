@@ -65,6 +65,7 @@ class CraftAgent:
             agent_id=_AGENT_ID,
             turn_id=turn_id,
             idempotency_key=idempotency_key,
+            prompt_version=_PROMPT_VERSION,
             model_tier=ModelTier.STRONG,
             messages=[
                 ChatMessage(role="system", content=self._render_system_prompt(view)),

@@ -14,9 +14,8 @@ CAS 提交 → 审计」的多角色链路（第 11 章 §11.1–§11.3、契约
 
 from __future__ import annotations
 
+import logging
 import re
-import threading
-import zlib
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Protocol, cast
 
@@ -62,6 +61,7 @@ from textgame.services.actor_directory import ActorDirectory
 from textgame.services.card_service import build_card_initial_state
 from textgame.services.dto import TurnResult
 from textgame.services.game_engine import GameEngine
+from textgame.services.idempotency_locks import idempotency_lock, lock_index
 from textgame.services.ports import AuditRecord, GameRecord, GameRepository, IdempotencyRecord
 from textgame.services.query_service import QueryService
 from textgame.services.tool_context import ToolContext
@@ -73,9 +73,8 @@ _DEFAULT_SAVE_SEED = "save-42"
 _MAX_SUBMIT_ATTEMPTS = 3
 #: 单回合裁判调用上限（第 8 章 §8.3 "仅规则空白时 1 次"、第 12 章 §12.8 最多 3 次含裁判）。
 _MAX_JUDGE_CALLS_PER_TURN = 1
-# 幂等键分段锁条数（D-M4-15/G-1）：同键请求串行、不同键基本并行；固定条数避免
-# 锁字典随请求键增长（不回收、无泄漏），哈希碰撞只造成无关键偶发串行。
-_IDEMPOTENCY_LOCK_STRIPES = 64
+
+logger = logging.getLogger(__name__)
 
 _UNKNOWN_ACTION_TEXT = (
     "你试着比划了一下，却没弄明白自己想做什么。"
@@ -398,8 +397,8 @@ def _turn_params_hash(request: TurnRequest) -> str:
 
 
 def _idempotency_lock_index(store_key: str) -> int:
-    """幂等存储键 → 分段锁下标（crc32 稳定哈希；同键必同下标，跨进程不影响正确性）。"""
-    return zlib.crc32(store_key.encode("utf-8")) % _IDEMPOTENCY_LOCK_STRIPES
+    """幂等存储键 → 分段锁下标（R-04：与所有写端点共用同一分段锁注册表）。"""
+    return lock_index(store_key)
 
 
 #: 失败回合的结构化提示（M6 加法字段 effects/suggested_actions；**不改 ``text`` 原文**）。
@@ -607,9 +606,6 @@ class TurnOrchestrator:
         self._world_book_provider = world_book_provider
         # 用户上传场景：可选钩子注册表（None = 只有内置 4 场景，行为逐字不变）。
         self._scenario_runtime = scenario_runtime
-        # D-M4-15/G-1：同 Idempotency-Key 的回合在进程内串行，避免两个线程同时未命中
-        # 幂等缓存、后到者拿到 CONFLICT/INVALID_INPUT 而非首结果；固定分段避免锁增长。
-        self._idempotency_locks = tuple(threading.Lock() for _ in range(_IDEMPOTENCY_LOCK_STRIPES))
 
     @property
     def save_seed_default(self) -> str:
@@ -793,6 +789,15 @@ class TurnOrchestrator:
     # 开局
     # ------------------------------------------------------------------
     def create_game(self, request: CreateGameRequest) -> GameView:
+        """创建存档（R-04：同 ``Idempotency-Key`` 的创建请求在进程内串行）。
+
+        单进程部署下，后到者会读到首请求写入的幂等记录并原样重放；多进程部署仍依赖
+        数据库唯一键，属于与 D-M4-15 相同的已知限制。
+        """
+        with idempotency_lock(f"game:{request.idempotency_key}"):
+            return self._create_game_locked(request)
+
+    def _create_game_locked(self, request: CreateGameRequest) -> GameView:
         """创建存档；同一幂等键同参回放首次结果（零写入），异参抛 ``CreateGameError(CONFLICT)``。
 
         D-M6-2 加法：提供 ``card_id`` 时按人物卡映射初始状态（``build_card_initial_state``，
@@ -904,9 +909,7 @@ class TurnOrchestrator:
         """
         store_key = _turn_store_key(request)
         request_hash = _turn_params_hash(request)
-        lock = self._idempotency_locks[_idempotency_lock_index(store_key)]
-        lock.acquire()
-        try:
+        with idempotency_lock(store_key):
             result = self._run_once(request, store_key, request_hash)
             if result.ok:
                 return result
@@ -921,8 +924,6 @@ class TurnOrchestrator:
             if record is not None:
                 state = record.state
             return _with_failure_hints(result, state)
-        finally:
-            lock.release()
 
     def _run_once(self, request: TurnRequest, store_key: str, request_hash: str) -> TurnResult:
         """单次回合处理（原有逻辑）；同键串行化与失败后重查由 ``run`` 负责。"""
@@ -1666,15 +1667,22 @@ class TurnOrchestrator:
         *,
         events: tuple[Event, ...] = (),
     ) -> None:
-        """把成功响应写入幂等表（失败不写，避免“失败结果被永久缓存”）。"""
-        self._repo.save_idempotent(
-            IdempotencyRecord(
-                key=key,
-                params_hash=request_hash,
-                payload=payload,
-                events=events,
+        """把成功响应写入幂等表（失败不写，避免“失败结果被永久缓存”）。
+
+        状态已提交后本方法只是旁路缓存：写失败只记 WARNING，绝不把成功回合报告为失败
+        （R-03；客户端重试会因版本已推进而 CONFLICT）。
+        """
+        try:
+            self._repo.save_idempotent(
+                IdempotencyRecord(
+                    key=key,
+                    params_hash=request_hash,
+                    payload=payload,
+                    events=events,
+                )
             )
-        )
+        except Exception:
+            logger.warning("幂等记录写入失败（提交已完成，不影响响应），key=%s", key, exc_info=True)
 
 
 __all__ = [

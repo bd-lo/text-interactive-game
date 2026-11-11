@@ -98,6 +98,12 @@ class InMemoryRepository:
         """按 ``seq`` 升序返回 ``seq > after_seq`` 的事件。"""
         return [event for event in self._events.get(game_id, []) if (event.seq or 0) > after_seq]
 
+    def read_recent_events(self, game_id: str, *, limit: int) -> list[Event]:
+        """按 ``seq`` 升序返回最近 ``limit`` 条事件（R-21）。"""
+        if limit < 1:
+            raise ValueError(f"limit must be positive, got {limit}")
+        return list(self._events.get(game_id, [])[-limit:])
+
     def read_first_event(self, game_id: str) -> Event | None:
         """返回该存档第一条事件（``seq`` 最小）；无存档返回 ``None``（H4 加法，只读）。"""
         events = self._events.get(game_id, [])

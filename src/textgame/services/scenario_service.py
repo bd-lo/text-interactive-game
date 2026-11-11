@@ -48,6 +48,7 @@ from textgame.domain.user_scenario import (
     derive_ids,
     parse_definition,
 )
+from textgame.services.idempotency_locks import idempotency_lock
 from textgame.services.ports import IdempotencyRecord
 
 #: 列表分页默认/上限（设计契约 §3.4：``limit``≤100/``offset``/``q`` 搜索）。
@@ -425,7 +426,14 @@ class ScenarioService:
             raise ScenarioNotFoundError(f"场景定义不可用: {scenario_id}")
         hooks, ids = built
         definition = hooks.definition
-        state = build_initial_state(definition, ids, save_seed=save_seed)
+        try:
+            state = build_initial_state(definition, ids, save_seed=save_seed)
+        except ValueError as exc:
+            # 旧库存定义可能绕过导入期 dry-run（R-02）：建局时给 422 而不是 500。
+            raise ScenarioValidationError(
+                "场景定义无法建局",
+                errors=[{"path": "$", "message": f"场景定义无法建局：{exc}"}],
+            ) from exc
         return {
             "scenario_id": stored.scenario_id,
             "scenario_title": definition.meta.title,
@@ -497,6 +505,16 @@ class ScenarioService:
         return stored
 
     def _idempotent(
+        self,
+        store_key: str,
+        request_hash: str,
+        operation: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """R-04：同 ``Idempotency-Key`` 的场景导入在进程内串行（单进程部署）。"""
+        with idempotency_lock(store_key):
+            return self._idempotent_unlocked(store_key, request_hash, operation)
+
+    def _idempotent_unlocked(
         self,
         store_key: str,
         request_hash: str,

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 __all__ = [
     "CREDENTIALS_SCHEMA_VERSION",
@@ -87,7 +89,11 @@ def _now_iso() -> str:
 
 
 def _validate_fields(*, provider: str, model: str, api_base: str, api_key: str) -> None:
-    """保存前校验字段（纯格式校验；不联网验证 key 是否有效）。"""
+    """保存前校验字段（纯格式校验；不联网验证 key 是否有效）。
+
+    R-25：拒绝云元数据/链路本地地址，避免把玩家 key 指向内网探测目标（SSRF/密钥外送）；
+    loopback/私网仍允许（本地 Ollama/LM Studio 等自建端点）。
+    """
     if provider not in SUPPORTED_PROVIDERS:
         raise CredentialStoreError(
             f"暂不支持该供应商：{provider!r}（当前支持：{', '.join(sorted(SUPPORTED_PROVIDERS))}）"
@@ -96,6 +102,21 @@ def _validate_fields(*, provider: str, model: str, api_base: str, api_key: str) 
         raise CredentialStoreError("模型名非法：必须是非空且不含空白的短字符串")
     if not api_base.startswith(("http://", "https://")) or len(api_base) > _MAX_API_BASE:
         raise CredentialStoreError("API 地址非法：必须以 http:// 或 https:// 开头")
+    parsed = urlparse(api_base)
+    host = parsed.hostname or ""
+    if not host:
+        raise CredentialStoreError("API 地址非法：缺少主机名")
+    blocked_hosts = {"metadata.google.internal", "metadata", "instance-data"}
+    if host.lower() in blocked_hosts:
+        raise CredentialStoreError("API 地址非法：禁止指向云元数据服务")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and (
+        address.is_link_local or address.is_multicast or address.is_reserved
+    ):
+        raise CredentialStoreError("API 地址非法：禁止指向链路本地/保留地址")
     if not api_key or len(api_key) > _MAX_KEY or any(ch.isspace() for ch in api_key):
         raise CredentialStoreError("API Key 非法：不能为空且不能包含空白字符")
 

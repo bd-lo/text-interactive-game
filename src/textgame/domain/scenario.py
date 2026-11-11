@@ -53,6 +53,21 @@ DIRECTION_KEYWORDS: Final[dict[str, Direction]] = {
 
 # 模板叙事用的反向映射（Direction -> 中文方向词）。
 DIRECTION_NAMES: Final[dict[str, str]] = {value: key for key, value in DIRECTION_KEYWORDS.items()}
+# R-17：``in``/``out`` 不在中文关键词表（避免单字误配），但展示/建议必须有中文，
+# 否则会出现「向in走」这类英文泄漏。
+DIRECTION_NAMES.update({"in": "内", "out": "外"})
+
+#: 用户场景/LLM 可能使用的 ``in``/``out`` 安全别名（≥2 字，避免「里」「出」误配）。
+DIRECTION_ALIASES: Final[dict[str, Direction]] = {
+    "里面": "in",
+    "内部": "in",
+    "进入": "in",
+    "进去": "in",
+    "进屋": "in",
+    "外面": "out",
+    "出去": "out",
+    "走出": "out",
+}
 
 
 def build_initial_state(*, save_seed: str) -> GameState:

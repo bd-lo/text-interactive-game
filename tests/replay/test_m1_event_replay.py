@@ -340,11 +340,13 @@ def test_empty_log_replay_returns_empty_list() -> None:
 
 
 def test_replay_detects_tampered_rng_seed() -> None:
-    """append 后篡改 rng_seed (append 不检查该字段) → replay 抛 ReplayMismatchError 并指出 seq。"""
+    """入库后被篡改 rng_seed：append 已拦截新增坏事件，replay 仍独立检出（白盒注入）。"""
     batch = _stamped_events()
     tampered = [batch[0].model_copy(update={"rng_seed": 0}), *batch[1:]]
     log = EventLog(_SAVE_SEED)
-    log.append(tampered)
+    log.append(batch)
+    # 白盒注入：模拟持久化加载后被篡改（append 校验无法覆盖已入库事件）。
+    log._events[0] = tampered[0]
 
     with pytest.raises(ReplayMismatchError) as exc_info:
         log.replay()
@@ -355,6 +357,19 @@ def test_replay_detects_tampered_rng_seed() -> None:
     assert error.actual == 0
     assert error.expected == DerivedRandom.derive_seed(_SAVE_SEED, 1, _ACTOR, "move_to", 1)
     assert "seq=1" in str(error)
+
+
+def test_append_rejects_tampered_rng_seed() -> None:
+    """R-06：append 对 rng_seed 与派生值不一致的事件立即拒绝且不写入。"""
+    batch = _stamped_events()
+    tampered = batch[0].model_copy(update={"rng_seed": 0})
+    log = EventLog(_SAVE_SEED)
+
+    with pytest.raises(ValueError, match="rng_seed"):
+        log.append([tampered])
+
+    assert log.last_seq == 0
+    assert log.read() == []
 
 
 def test_replay_detects_seq_corruption() -> None:

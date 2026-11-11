@@ -339,3 +339,27 @@ def test_idempotency_replay_across_restart(monkeypatch: pytest.MonkeyPatch, tmp_
     finally:
         engine.dispose()
         _dispose_app_engine(app_after)
+
+
+def test_free_craft_preference_is_restored_and_wired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-19 前端开关：本机偏好文件在启动时恢复，并挂到 app.state 共享 switch。"""
+    preference = tmp_path / "free_craft.json"
+    preference.write_text(
+        '{"enabled": true, "risk_accepted": true, "updated_at": "2026-01-01T00:00:00+00:00"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEXTGAME_FREE_CRAFT_SETTINGS_FILE", str(preference))
+    app, _db_url = _build_app_with_db(monkeypatch, tmp_path / "free-craft.db")
+    try:
+        assert app.state.free_craft_switch.enabled is True
+        assert app.state.free_craft_switch.risk_accepted is True
+        assert app.state.free_craft_source == "user"
+        with TestClient(app) as client:
+            body = client.get("/api/v1/settings/free-craft").json()
+        assert body["enabled"] is True
+        assert body["source"] == "user"
+        assert body["available"] is False  # 本用例未配置 LLM key
+    finally:
+        _dispose_app_engine(app)

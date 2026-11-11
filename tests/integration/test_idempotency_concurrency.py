@@ -258,3 +258,89 @@ def test_four_concurrent_same_key_requests_all_replay_same_result() -> None:
     assert {result.version for result in results} == {2}
     assert all(result == results[0] for result in results)
     assert len(repo.read_events(game_id)) == 2
+
+
+class _IdempotentFailingRepo(InMemoryRepository):
+    """幂等表写入必失败（R-03：状态主提交成功后不得报告回合失败）。"""
+
+    def save_idempotent(self, record: Any) -> None:
+        raise RuntimeError("idempotency storage unavailable")
+
+
+def test_turn_succeeds_when_idempotent_write_fails() -> None:
+    """R-03：commit 成功后幂等写失败 → run() 仍返回成功且事件只写一次。"""
+    repo = _IdempotentFailingRepo()
+    engine = GameEngine(repo)
+    query = QueryService(repo)
+    action = ActionService(query)
+    orchestrator = TurnOrchestrator(
+        repo=repo,
+        engine=engine,
+        query=query,
+        action=action,
+        parser=DeterministicIntentParser(),
+        gate=DirectGate(action, query),
+    )
+    game_id = orchestrator.create_game(
+        CreateGameRequest(seed=42, idempotency_key="game-key-idem-fail-0001")
+    ).game_id
+
+    result = orchestrator.run(_turn(game_id, "拿起火把", key="turn-key-idem-fail-0001"))
+
+    assert result.ok is True
+    assert result.version == 2
+    assert len(repo.read_events(game_id)) == 2
+
+
+# ---------------------------------------------------------------------------
+# R-04：创建存档的同键并发
+# ---------------------------------------------------------------------------
+class _BlockingCreateEngine(GameEngine):
+    """首次 ``create_game`` 阻塞（放大 check-then-act 窗口），记录真实调用次数。"""
+
+    def __init__(self, repo: InMemoryRepository) -> None:
+        super().__init__(repo)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+        self._guard = threading.Lock()
+
+    def create_game(self, **kwargs: Any) -> Any:
+        with self._guard:
+            self.calls += 1
+            first = self.calls == 1
+        if first:
+            self.entered.set()
+            if not self.release.wait(timeout=_JOIN_TIMEOUT):
+                raise AssertionError("创建请求未被放行（并发窗口未打开）")
+        return super().create_game(**kwargs)
+
+
+def test_concurrent_same_key_create_game_makes_one_entity() -> None:
+    """R-04：两个线程同键同参建局 → 只创建一个存档，返回同一 game_id。"""
+    repo = InMemoryRepository()
+    engine = _BlockingCreateEngine(repo)
+    query = QueryService(repo)
+    action = ActionService(query)
+    orchestrator = TurnOrchestrator(
+        repo=repo,
+        engine=engine,
+        query=query,
+        action=action,
+        parser=DeterministicIntentParser(),
+        gate=DirectGate(action, query),
+    )
+    request = CreateGameRequest(seed=42, idempotency_key="game-key-conc-create-0001")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(orchestrator.create_game, request)
+        assert engine.entered.wait(timeout=_JOIN_TIMEOUT), "首请求未进入建局"
+        second = pool.submit(orchestrator.create_game, request)
+        time.sleep(0.1)
+        assert engine.calls == 1, "同键后到者绕过了创建锁（重复建局）"
+        engine.release.set()
+        views = [first.result(timeout=_JOIN_TIMEOUT), second.result(timeout=_JOIN_TIMEOUT)]
+
+    assert views[0] == views[1]
+    assert engine.calls == 1
+    assert repo.count_games() == 1

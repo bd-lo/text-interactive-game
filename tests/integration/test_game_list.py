@@ -114,3 +114,21 @@ def test_game_list_last_text_uses_latest_narrative(game_harness) -> None:
     assert item["last_text"] is not None
     assert item["last_text"] == refresh["last_text"]
     assert item["status"] == refresh["status"] == "active"
+
+
+def test_read_recent_events_returns_tail_in_seq_order(game_harness) -> None:
+    """R-21：列表页只读尾部事件；``read_recent_events`` 返回升序的最后 N 条。"""
+    client = game_harness.client
+    game_id = _create(client, "list-recent-key-0001", {"seed": 42})["game_id"]
+    turn = client.post(
+        "/api/v1/turns",
+        headers={"Idempotency-Key": "list-recent-turn-0001"},
+        json={"game_id": game_id, "input": "拿起火把", "expected_version": 1},
+    )
+    assert turn.status_code == 200 and turn.json()["ok"] is True
+
+    all_events = game_harness.repo.read_events(game_id)
+    recent = game_harness.repo.read_recent_events(game_id, limit=2)
+
+    assert [event.seq for event in recent] == [event.seq for event in all_events[-2:]]
+    assert len(recent) == 2 and recent[0].seq < recent[1].seq

@@ -177,6 +177,22 @@ def test_parse_warns_invalid_regex_key_and_keeps_literal() -> None:
     ]
 
 
+def test_parse_rejects_nested_quantifier_regex_key() -> None:
+    """R-12：``/(a+)+$/`` 等嵌套量词在导入期拒绝，不进入激活匹配。"""
+    book = parse_import_payload(
+        {
+            "entries": [
+                {"uid": 0, "key": "/(a+)+$/", "content": "x"},
+                {"uid": 1, "key": "/(?:a+){2,}/", "content": "y"},
+            ]
+        }
+    )
+    codes = [warning.code for warning in book.warnings]
+
+    assert codes == ["REGEX_KEY_INVALID", "REGEX_KEY_INVALID"]
+    assert all("嵌套量词" in warning.message for warning in book.warnings)
+
+
 def test_parse_warns_timed_effect_clamped_and_group_weight_invalid() -> None:
     """定时效果越界/非法与 groupWeight 非法 → 对应告警（含条目 uid 与原值）。"""
     book = parse_import_payload(
