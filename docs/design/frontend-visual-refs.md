@@ -1,6 +1,7 @@
 # 前端炫酷化：开源炫技效果调研与许可证矩阵（H4/R4）
 
-> 目标：把「炫技类项目」的视觉**缝**进本项目 Web 端（复古 2G 文字 MUD → CRT/余烬/霓虹质感），
+> 目标：把「炫技类项目」的视觉**缝**进本项目 Web 端（文字 MUD → **Aurora Glass**：极光渐变 +
+> 玻璃拟态 + 微光粒子；2026-11-11 起替代旧的 CRT/深绿终端皮肤），
 > 满足 H4-BRIEF §2A 硬约束：**零运行时依赖优先**、首屏 gzip 增量 ≤100KB（特效懒加载）、
 > 375px 不溢出、对比度不降、`prefers-reduced-motion` 降级、可一键「关闭特效」并持久化、
 > `security-scan`（禁 `v-html`/`innerHTML`/`eval`/`EventSource`/`setInterval`）不破。
@@ -61,8 +62,9 @@
 
 | 效果层 | 参考 | 落地文件（最终） | 实现要点 | 验收 |
 | --- | --- | --- | --- | --- |
-| 全屏余烬/星尘粒子 | S4 思路 + 自写 | `web/src/components/EmberField.vue`（懒加载） | Canvas 2D；rAF 单循环；DPR ≤2；`visibilitychange` 暂停；低功耗档 20fps/粒子按视口面积收缩；移动端更少；`prefers-reduced-motion`/关闭档不渲染 | 懒加载 chunk 1.49KB gzip；长任务 0；关闭后无 rAF |
-| CRT 层（扫描线/噪点/辉光/微色差） | S9 + S10 | `web/src/components/CrtOverlay.vue` + `web/src/styles/terminal.css` | 纯 CSS：扫描线 + 暗角 + 微噪点 + 缓慢电子束；关闭档不渲染；系统 reduced-motion 由 CSS 停动画 | 文字对比度不降；375px 不溢出；无脚本 |
+| 全屏余烬/星尘粒子 | S4 思路 + 自写 | `web/src/components/MoteField.vue`（懒加载） | Canvas 2D；rAF 单循环；DPR ≤2；`visibilitychange` 暂停；低功耗档 20fps/粒子按视口面积收缩；移动端更少；**按主题切换调色板与混合模式**（夜间 `lighter` 霓虹 / 日间 `source-over` 淡彩）；`prefers-reduced-motion`/关闭档不渲染 | 懒加载 chunk ~1.6KB gzip；长任务 0；关闭后无 rAF |
+| 极光氛围层（4 团极光 + 颗粒 + 聚光） | S9/S10 思路 + 自写 | `web/src/components/AtmosphereOverlay.vue` + `web/src/styles/theme.css` | 纯 CSS：`radial-gradient` 色团只动 `transform`（不上 `filter: blur`）；`feTurbulence` 内联噪点；鼠标聚光由 `pointermove` + rAF 写 CSS 变量（仅全特效档）；关闭档不渲染 | 文字对比度不降；375px 不溢出；无长任务 |
+| 日/夜双皮肤与切换 | — | `web/src/stores/theme.ts`、`components/ThemeToggle.vue`、`public/theme-init.js`、`styles/theme.css` | `light|dark|auto` 三态；`<html data-theme>` + `meta[theme-color]`；首帧脚本防闪色；View Transition 圆形扩散换肤 | 刷新无闪色；`reduced-motion` 瞬切；两套皮肤对比度 ≥4.5:1 |
 | 打字机叙事 | S10 | `web/src/components/TypewriterText.vue` + `NarrativeHistory.vue` | 视觉逐字层 `aria-hidden`，读屏始终拿 `sr-only` 完整文本；点击/回车跳过；关闭/低功耗/reduced-motion 立即整段显示 | 跳过可用；读屏不重复播报；关闭后无动画 |
 | 面板/历史/目标完成/结局动效 | S6/S7 思路 | `NarrativeHistory.vue`、`GoalPanel.vue`、`GameView.vue`（结局面板）、`router` 页面切换 | CSS transition/animation + `TransitionGroup`；目标完成一次高亮；结局光晕收束 | 不阻塞输入；reduced-motion 全静态 |
 | 视觉设置开关（三档） | — | `web/src/components/VisualSettings.vue` + `web/src/stores/visual.ts` | 三档：**全特效 / 低功耗 / 关闭特效**；持久化 `localStorage`（`textgame:visual-settings`）；`data-visual`/`data-reduced-motion` 挂 `<html>` 供纯 CSS 降级；检测到系统「减少动态效果」自动降级并提示 | 刷新保持；关闭即时生效；`off` 只留纯文本界面 |

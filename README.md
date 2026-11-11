@@ -2,16 +2,16 @@
 
 [![ci](https://github.com/bd-lo/text-interactive-game/actions/workflows/ci.yml/badge.svg)](https://github.com/bd-lo/text-interactive-game/actions/workflows/ci.yml)
 
-复古 2G 文字 MUD 风格的单机 / 异步文本游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
+单机 / 异步文字冒险游戏。玩家用自然语言输入行动，LLM Agent 负责理解意图与叙事包装，规则引擎负责一切确定性计算与状态提交。
 
 **默认离线可玩**：不需要 API Key、不需要 Node/pnpm、不需要联网（仅首次安装依赖需联网）。
 
 > **当前状态**：`0.3.0`（2026-11-11，玩家启动器/退出体验批次）。M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。**WB2** 补齐世界书详情字段可见性；**M6 后计划表**已定案（第 17 章 §17.9：N1 内容 / N2 体验 / N3 功能 / N4 技术发布 / N5 发布体验 五轨道，编号 029–060）；**057 玩家启动器**——Windows 双击 `启动游戏.bat` 启动（启动器窗口 + 浏览器），游戏内「退出游戏」优雅退出，关浏览器 5 分钟空闲自动退出，`退出游戏.bat` 兜底。
 > 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)、[057 启动器进度文档](docs/progress/057-2026-11-11-player-launcher.md)、[WB2 进度文档](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（当前实测：pytest **2186 passed** / replay 68 / web **56 files/347 tests** / 浏览器 e2e **26 步/125 断言**（+启动器模式 26/126）；数字以 CI 与实际输出为准）。
 > 发布与分发：[CHANGELOG](CHANGELOG.md)、[RELEASE.md](RELEASE.md)（版本号/checklist/tag 流程）、[部署与分发评估](docs/design/deployment-and-distribution.md)（双击启动器 / wheel 为主，Docker 暂不提供）。
-> 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[M6 后计划表 ADR](docs/decisions/2026-11-11-post-m6-roadmap.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)。
+> 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[M6 后计划表 ADR](docs/decisions/2026-11-11-post-m6-roadmap.md)、[Aurora Glass 双皮肤 ADR（D-UI-3）](docs/decisions/2026-11-11-aurora-glass-theme.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[技术风险审查与修复记录（R-01～R-25）](docs/audits/2026-11-11-technical-pitfalls-review.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)、[LLM 参与与自由度评估审计（2026-11-12）](docs/audits/2026-11-12-llm-participation-freedom.md)。
 
-![网页版首页：存档续玩 + 场景/世界书选择 + CRT 与余烬粒子](docs/assets/web-home.png)
+![网页版首页：存档续玩 + 场景/世界书选择](docs/assets/web-home.png)
 
 | 对局：目标面板 / 冒险记录 / 世界设定 / 可点建议 | 剧情结局屏（光晕收束） |
 | --- | --- |
@@ -196,6 +196,9 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - 设置页还支持：测试连接（返回延迟/中文失败原因）、清除本机 key、查看当前来源（开发环境 / 本机保存 / 未配置）与打码 key。
 - 存储与安全：key 只保存在本机 `data/llm.credentials.json`（已 gitignore；可用 `TEXTGAME_LLM_CREDENTIALS_FILE` 改路径），
   不写数据库、不进日志、接口只回打码值；`.env` 开发 key 永远优先于本机保存的 key。
+- **自由制造开关**：配置 key 后，设置页可开启「自由制造」——不命中固定配方时让大模型临时生成草稿。
+  开启前需确认“裁决/重试链路内调 LLM、可能重复计费”；确认后立即生效，偏好保存在 `data/free_craft.json`
+  （`TEXTGAME_FREE_CRAFT_SETTINGS_FILE` 可改路径），重启保留。只建议单人本地使用。
 
 ## 常见问题（FAQ）
 
@@ -234,7 +237,7 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
   保存后即时生效；不配也完全可玩（模板叙事 + 确定性规则）。
 - 剧情场景首屏会显示目标与子目标完成态（如「【目标】让信号灯亮起来 · 0/3」）；走到结局时打印结局屏，输入 `:quit` 退出。终端 `--list` 可查看同库最近存档（含场景/回合/是否已结局）。
 - **剧情失败结局**：枯井「寒气」每次进入 -6 HP——连续两次进井即 HP→0 触发「倒下」结局；先找药水/烈酒回血可以再挑战（失败结局同样有专属文案，不是卡死）。
-- **视觉风格**：复古 CRT（扫描线/暗角/辉光/微噪点）+ 余烬粒子 + 打字机叙事 + 面板/目标/结局动效；三档视觉设置可关；375px 可用、正文对比度不降。来源与许可证见 [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)（仅 MIT 技法参考，零新增运行时依赖）。
+- **视觉风格**：自建 **Aurora Glass** 双皮肤——日间（默认）/ 夜间，顶栏「外观」按钮一键切换（视觉设置菜单可选「跟随系统」）；极光渐变氛围 + 玻璃拟态面板 + 微光粒子 + 打字机叙事 + 面板/目标/结局动效。首帧脚本防刷新闪色，`reduced-motion`/减少透明度/无 `backdrop-filter` 均有降级，三档视觉设置（全特效/低功耗/关闭）可关；375px 可用、正文对比度 ≥4.5:1。来源与许可证见 [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)（仅 MIT 技法参考，零新增运行时依赖）。
 - 网页版卡库支持**导入 JSON 人物卡**（`/cards/import`）与**生成人物卡**（`/cards/generate`：写一句人物设定 → 草稿预览 → 保存 → 按此卡开局）；**默认离线时生成结果=确定性模板草稿**（页面有显著提示），配置 LLM 后才是 LLM 生成（可选，见 FAQ）。
 - HTTP API 也可以直接玩/集成：`POST /api/v1/games`（写操作必带 `Idempotency-Key`）→ `POST /api/v1/turns` → `GET /api/v1/games` / `{id}` / `/view` / `/replay`；交互式文档在服务启动后的 `/api/docs`。
 
@@ -280,11 +283,11 @@ curl --noproxy '*' http://127.0.0.1:8000/api/v1/games/game_...
 | 语言 | Python 3.10+（运行时 3.12，源码保持 3.10 语法兼容） |
 | 环境 / 依赖锁定 | uv 0.13.x：`uv.lock` + `uv sync --frozen` |
 | 领域模型 / 校验 | Pydantic v2 |
-| 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`）+ SQLite + Alembic（0001–0005） |
+| 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`）+ SQLite + Alembic（0001–0006） |
 | 接入层 | FastAPI |
 | 编排 | 自建显式 loop（LangGraph 仅保留可选封装） |
 | 模型调用 | 统一 LLMClient 封装（DeepSeek `deepseek-flash`，默认离线） |
-| Web 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router；视觉 **零新增运行时依赖**（自写 Canvas2D 余烬粒子 + 纯 CSS CRT + 打字机 + 三档视觉设置） |
+| Web 前端 | Vue 3 + TypeScript + Vite + Pinia + Vue Router；视觉 **零新增运行时依赖、零 UI 组件库**（自建 Aurora Glass 双皮肤 token + 原生 CSS 极光/玻璃 + Canvas2D 微光粒子 + 打字机 + 三档视觉设置） |
 | 质量门 / CI | GitHub Actions：ruff + mypy + import-linter + pytest（3.10/3.12 矩阵 + 覆盖率/文档门）+ pip-licenses/pip-audit/CycloneDX + web-build（typecheck/build/vitest/**真实浏览器 e2e**） |
 
 ## 开发模式

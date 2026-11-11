@@ -164,7 +164,7 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 4. 校验失败一律走「一次修复 → 确定性兜底 → 无法处理」，未校验输出绝不写入状态；兜底路由按 Agent 类型固定，写入代码常量表。
 5. 批量合并只对无私有记忆的公共群演 NPC 开放（每批 ≤4 个），角色 Agent 默认串行；休眠策略用 `agent_invocation_log` 做可审计断言。
 6. 第一版预算按「单回合默认 2 次、最多 3 次调用；P95 首版 ≤8 s（M2 缓存命中目标 ≤3 s）」设 SLO；**成本类 SLO（单回合 ≤¥0.20 / 单会话 ≤¥3 / 单日 ≤¥200）经 2026-11-10 用户拍板不实现（D-M5-10）**，仅保留为设计口径与后续复评参考；「模型名/供应商」以配置化「待定」项留给 M5。
-7. M5 实施口径（ADR `docs/decisions/2026-11-10-m5-api-governance.md`）：同步签名（D-M5-1）、修复链 019–021 终局留 `validation.py`（D-M5-2，021 定稿不迁客户端/instructor）、`output_schema` 用模型类且不用 `schema` alias（D-M5-3）、配置 JSON-only（D-M5-4）、默认离线 `TEXTGAME_LLM_ENABLED=false` 且启用时缺 key 构造期失败（D-M5-6）、回退链/熔断配置 `fallbacks`/`circuit`（D-M5-11，024 落地）；**022 缩范围为并发幂等、成本/预算/`llm_call_log`/Alembic 0003 不做（D-M5-10，`docs/decisions/2026-11-10-022-scope-and-cost-out.md`）**。本章与 ADR 冲突时以 ADR 为准。
+7. M5 实施口径（ADR `docs/decisions/2026-11-10-m5-api-governance.md`）：同步签名（D-M5-1）、修复链 019–021 终局留 `validation.py`（D-M5-2，021 定稿不迁客户端/instructor）、`output_schema` 用模型类且不用 `schema` alias（D-M5-3）、配置 JSON-only（D-M5-4）、默认离线 `TEXTGAME_LLM_ENABLED=false` 且启用时缺 key 构造期失败（D-M5-6；历史工厂口径，生产组合根现状见 §12.11）、回退链/熔断配置 `fallbacks`/`circuit`（D-M5-11，024 落地）；**022 缩范围为并发幂等、成本/预算/`llm_call_log`/Alembic 0003 不做（D-M5-10，`docs/decisions/2026-11-10-022-scope-and-cost-out.md`）**。本章与 ADR 冲突时以 ADR 为准。
 
 ### 12.10 运行期凭据与客户端热切换（2026-11-11，D-LLM-1..5）
 
@@ -181,3 +181,17 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 - **确定性护栏**：`demo --check` / `console --check` 在装配前强制 `TEXTGAME_LLM_ENABLED=false`；
   CI 浏览器 e2e 同样显式离线，保证 golden 与断言可复现。
 - **成本口径不变**：成本/预算/`llm_call_log` 仍按 D-M5-10 不做；运行期凭据只影响「是否/用谁的 key 调用」。
+
+### 12.11 运行期实测口径（2026-11-12，LLM 参与度实跑回写）
+
+真实 DeepSeek key 下的实跑证据（脚本/数据在 `.work/llm-eval/evidence.md`，`.work/` 已 gitignore，不入库；本批受控改动仅文档）：
+
+- **开关语义（生产组合根 `RuntimeLLMClient`，`main.py`）**：
+  1. 有 key（`.env`/环境变量或本机 `data/llm.credentials.json`）且未显式配置 `TEXTGAME_LLM_ENABLED` → **自动启用**（`source=env`/`source=user`）；
+  2. 显式 `TEXTGAME_LLM_ENABLED=false` → **永远离线**（优先于任何 key）；
+  3. 显式 `true` 但无 key → **降级离线、不 fail-fast，服务可正常启动**（实测 `explicit_true_without_key_runtime.enabled=false`，设置页如实显示未配置）。
+- **与历史口径的关系**：`llm/factory.build_llm_client` 的「启用缺 key 构造期失败（D-M5-6）」只保留在**历史/测试路径**；生产组合根自 UC 运行期凭据批次起改用 `RuntimeLLMClient`，不再走该工厂。本章 §12.8 第 7 条的旧表述以本小节为准。
+- **真实调用实测**：合计 **46 次真实 API 请求**（预算 50）——smoke 1 次（LLM 延迟 4.54s / 进程 5.65s；`content=''` 因自检 `max_tokens=32` 用尽，游戏内不设 max_tokens 正常）+ m2 真实 run 3 回合 6 次全成功（`parse@v1` + `narrate@v3`，`attempts=1`、`narrative_source=llm`、单回合 2.6–6.5s、叙事 1708 字符）+ 在线探针 13/15 条 39 次（`intent_parse` 24 / `narrate` 12 / `character_act` 2 / `craft_generate` 1；prompt 52187 + completion 11444 tokens，平均延迟 2.5s）；合计 prompt **59930** / completion **12209** tokens，全部 `attempts=1`、`cache_hit=false`（默认不缓存）。`judge@v1` 已接线但生产 **0 调用**（`registry.agent_assisted_tools()=∅`，`needs_judge` 不可达）。
+- **降级与安全边界全部成立**：解析失败→关键词兜底、叙事失败→模板、NPC 失败→确定性计划、自由制造关闭→fail-closed；越权/提示注入/超纲/重复操作一律零事件零写入；自由制造数值由框架 `calculate_craft_result` 重算（实测模型草案合法但骰失败 → `success=false`，叙事如实说失败）。
+- **离线保证**：显式关闭时 58 次客户端尝试全部 0–1ms `LLM_UNAVAILABLE`、零外部网络；15 条离线探针 0 崩溃；同 seed 两局屏文本/事件/view 逐字一致。
+- **已知偏差（详见 R5 §4 遗留）**：m3 真实 LLM 下每回合 4 次调用（1 解析 + 2 NPC + 1 叙事），超出 §12.8 的「默认 2 次、最多 3 次」设计预算 → M6 更新预算口径或限制 NPC 并发；Windows 上凭据文件 `chmod 0o600` 无效（实测 0o666，依赖 `data/` 目录 ACL）；零事件只读回合 `narrative_source=null` 但文本实际来自 LLM（L3 设计口径，前端显示「来源未知」）；`0.6` 置信阈值与「参数名≠实体 ID」是自由度/玩法瓶颈（见 R5 §4）。

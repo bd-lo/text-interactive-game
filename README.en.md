@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/bd-lo/text-interactive-game/actions/workflows/ci.yml/badge.svg)](https://github.com/bd-lo/text-interactive-game/actions/workflows/ci.yml)
 
-A retro **2G text-MUD style single-player game**: you type natural-language actions, an LLM agent
+A **text-adventure single-player game** in a web/terminal UI: you type natural-language actions, an LLM agent
 interprets intent and writes the prose, while a deterministic rules engine owns every state change.
 Default mode is **fully offline** — no API key, no Node/pnpm, no network after the first dependency sync.
 
@@ -122,8 +122,10 @@ they never write game state, events, saves or replays.
 
 - Character cards: JSON import (`/cards/import`) and LLM/template generation (`/cards/generate`);
   offline generation produces a clearly labelled deterministic template draft.
-- Web polish: retro CRT/ember particles/typewriter with a 3-level visual setting (respects
-  `prefers-reduced-motion`), zero new runtime dependencies, 375px layout, no horizontal overflow.
+- Web polish: a self-built **Aurora Glass** dual theme (light default / dark, top-bar toggle, optional
+  follow-system), aurora/glass layers + typewriter, and a 3-level effects setting (respects
+  `prefers-reduced-motion`); zero new runtime dependencies, no UI component library, 375px layout,
+  no horizontal overflow.
 - HTTP API for integration: `POST /api/v1/games` → `POST /api/v1/turns` → `GET /api/v1/games/{id}`,
   `/view`, `/replay`, plus `/character-cards`, `/world-books`, `/scenarios`, `/settings`; interactive docs
   at `/api/docs`. Write requests require `Idempotency-Key`; business failures are `200 + TurnResult(ok=false)`.
@@ -166,7 +168,7 @@ node scripts/e2e-web.mjs --base-url http://127.0.0.1:8794 --out artifacts/e2e-we
 ```
 
 Tech stack: Python 3.10+ (runtime 3.12) · Pydantic v2 · FastAPI · SQLAlchemy 2.0 + SQLite + Alembic
-(0001–0005) · Vue 3 + TypeScript + Vite + Pinia (zero new runtime deps) · ruff / mypy strict /
+(0001–0006) · Vue 3 + TypeScript + Vite + Pinia (zero new runtime deps) · ruff / mypy strict /
 import-linter / pytest (+ golden replays) / Vitest / GitHub Actions (Python 3.10+3.12 matrix, license &
 vulnerability gates, SBOM, web-build with browser e2e).
 

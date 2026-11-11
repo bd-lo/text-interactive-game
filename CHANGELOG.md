@@ -10,6 +10,44 @@
 > 发布流程/版本号/tag 规则见 [RELEASE.md](RELEASE.md)；分发与 Docker 评估见
 > [deployment-and-distribution](docs/design/deployment-and-distribution.md)。
 
+## [Unreleased]
+
+### 修复（2026-11-11 技术风险审查 R-01～R-25）
+
+- **主线/状态**：story 物品 `tags[0]` 统一为模板键，背包不再把 `consumable` 当模板合并，制造不再因语义标签 `ValidationError`；用户场景导入期校验未知属性/自指出口/物品双放置并做建局 dry-run（422 取代建局 500）；commit 后的快照/幂等写失败只记 WARNING，不再把成功回合报告为失败；`EventLog.append` 校验 `rng_seed`，建局校验初始状态种子/玩家槽位；出口 `in`/`out` 可导航且中文名本地化；`/view.lore` 与下一回合注入的 turn 对齐（R-16）。
+- **并发/升级**：新增进程级分段锁覆盖创建/导入/回合（单进程；多进程仍为已知限制）；启动 `ensure_schema()` 自动检测并升级旧库，Alembic 迁移随 wheel 分发；快照表新增 `(game_id, snapshot_version)` 唯一约束（Alembic 0006）+ upsert，快照写入按存档串行；幂等表不再缓存 4xx 失败响应（修正输入后同键可直接重试）；批量休眠 `SCENE_ENTRY` 只认本回合移动（不再永久唤醒）；每回合只读事件尾部增量、LLM 调用日志有界。
+- **LLM/世界书/安全**：解析白名单从 `tool_specs` 派生（`inspect_item`/`craft_item` 不再被拒）；解析/制造请求带 `prompt_version`；叙事兼容制造产物 dict；重试等待受整链 deadline 约束；世界书嵌套量词正则（含 `(?:a+){2,}`）导入期拒绝；上传 JSON 拒绝 NaN/Infinity；ASGI 请求体 1MB 上限（Content-Length + chunked 实际计数）；人物卡生成限流改为按 IP 且有界；`TrustedHostMiddleware` + 非 loopback `TEXTGAME_API_TOKEN` 鉴权 + `api_base` 拒绝云元数据/链路本地地址；自由制造新增网页设置开关（二次确认 + 本机持久化）。无头/生产开启需**同时**设置 `TEXTGAME_FREE_CRAFT_ENABLED=true` 与 `TEXTGAME_ALLOW_RESOLVER_LLM=true`（显式接受裁决链路调 LLM 的风险，否则启动期 fail-fast）。
+- **前端**：`loadGame` 失败先清空旧对局状态；零事件只读回合不写 history，并新增「最近回应」可见区块（修复零事件回合正文刷新后不可见的回归，+4 例单测）；幂等键改为 store 生成最终 UUID、client 直传，`create-game` 键纳入 `world_book_id`。
+- 详细逐项修法/测试见 `docs/audits/2026-11-11-technical-pitfalls-review.md` §7；回归：后端 **2233 passed**（含 replay **69**、覆盖率 **87.56%**）、前端 **60 files / 383 tests** + typecheck 全绿，本地真实浏览器 e2e **26/26 步、126/126 断言**。
+
+### 新增
+
+- **网页自由制造开关（R-19 运行期 opt-in）**：设置页新增「自由制造」卡片，开启前二次确认“裁决/重试链路内调 LLM、可能重复计费”；确认后共享 `FreeCraftSwitch` 即时生效（无需重启），偏好持久化到 `data/free_craft.json`；新增 `GET/PUT /api/v1/settings/free-craft`（开启需大模型已启用并确认风险），无头/生产仍可用 env 显式开启（两个开关见上）。
+- **日间/夜间双皮肤（Aurora Glass）**：默认**日间**；顶栏「外观」按钮一键切换，视觉设置菜单可选「跟随系统」。
+  `stores/theme.ts` 维护 `light|dark|auto` 并写 `<html data-theme>` + `meta[theme-color]`；
+  `web/public/theme-init.js` 在任何绘制前写好首帧皮肤（外链脚本，满足 CSP `script-src 'self'`），刷新不闪色；
+  支持 View Transition 时从点击位置做 `clip-path: circle()` 圆形扩散换肤，`prefers-reduced-motion` 时瞬时切换。
+- **氛围层**：`AtmosphereOverlay.vue`（4 团极光 + 细颗粒 + 鼠标聚光，纯 CSS/合成层）与 `MoteField.vue`
+  （Canvas 微光粒子，按主题切调色板与混合模式）。两者均懒加载、`data-visual=off` 不渲染；
+  粒子层页面隐藏暂停；系统「减少动态效果」/低功耗档自动降级。
+- 主题/外观单测：`web/tests/unit/theme.test.ts`（9 例）、`themeToggle.test.ts`（5 例）、
+  `moteField.test.ts`（6 例，替代 `emberField.test.ts`）。
+
+### 变更
+
+- **视觉基线替换**：旧「2G 深绿终端」皮肤整体退役（用户明确要求「不要考虑 2G」）。
+  `web/src/styles/terminal.css` → `web/src/styles/theme.css`，改为三层 token：语义色 / 玻璃面与描边 / 特效；
+  叙事正文改用系统衬线字体，UI 用系统无衬线，指令输入与 JSON 保留等宽；面板改玻璃拟态 + 圆角 + 分层阴影。
+- **不引入 element-plus**：玻璃、极光、渐变与双皮肤全部由 token + 原生 CSS 自建，组件库不提供这些能力且需覆盖整套主题变量
+  （第 23 章 §23.4 已回写）。
+- **可访问性/降级**：日间 fg/bg 16.63:1、夜间 17.71:1（按钮 6.29 / 5.67），`backdrop-filter` 不可用与
+  `prefers-reduced-transparency` 回退不透明底，`forced-colors` 交还系统色。
+- `web/dist` 重建入库（连续两次 build 逐文件 SHA256 一致，36 文件无 drift）；`pnpm --dir web test` **60 files / 383 tests**、`typecheck` 全绿。
+
+### 文档
+
+- 新增 [LLM 参与与自由度评估审计（2026-11-12）](docs/audits/2026-11-12-llm-participation-freedom.md)（46 次真实 LLM 调用证据 + 15 条探针矩阵 + 六维自由度评分）与 [R5 批次回写](docs/progress/R5-2026-11-12-aurora-glass-and-pitfalls-review.md)；[技术风险审查与修复记录（R-01～R-25）](docs/audits/2026-11-11-technical-pitfalls-review.md) 已在 §7 引用并回写最终数字。
+
 ## [0.3.0] - 2026-11-11（玩家启动器与退出体验，N5 057）
 
 ### 新增

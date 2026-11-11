@@ -1,7 +1,8 @@
 # textgame-web（Vue 3 网页客户端）
 
-textgame 的 2G 文字 MUD Web 客户端：Vue 3 + TypeScript + Vite + Vue Router + Pinia。
+textgame 的文字冒险 Web 客户端：Vue 3 + TypeScript + Vite + Vue Router + Pinia。
 **Node/pnpm 只在构建期参与**；运行期由 FastAPI 托管 `web/dist`（第 23 章、D-M6-5②）。
+界面为自建 **Aurora Glass** 双皮肤（日间默认 / 夜间），顶栏「外观」按钮切换，零 UI 组件库。
 
 > **玩家不需要看这个文件**：仓库已完成构建并把 `web/dist` 入库（R2 分发方案 A），
 > fresh clone 直接 `.\scripts\play.ps1`（或 `./scripts/play.sh`）即可玩网页版，无需 Node。
