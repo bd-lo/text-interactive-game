@@ -8,8 +8,10 @@
 
 1. 目标用户 = **单机单玩家**（本地跑一个进程、浏览器访问 `127.0.0.1`，或纯终端）。数据只有一个 SQLite 文件
    + 一个可选的 LLM 凭据 JSON，**没有多副本/多租户/外部中间件**。
-2. 因此分发优先级：**① 仓库克隆 + `scripts/play` 一条命令（已含 `web/dist`，无需 Node）→ ② Python wheel
-   （`pip install` 后同样带网页版）→ ③ Docker 镜像**。前两种已交付并通过发布冒烟（RELEASE.md §3）。
+2. 因此分发优先级：**① Windows 普通玩家双击启动器 `启动游戏.bat`（启动器窗口 + 浏览器，游戏内/关窗/空闲
+   自动退出）+ 仓库克隆 + `scripts/play` 一条命令（已含 `web/dist`，无需 Node）→ ② Python wheel
+   （`pip install` 后同样带网页版）→ ③ Docker 镜像**。前两种已交付并通过发布冒烟（RELEASE.md §3；
+   启动器冒烟见 §1.1 与 `play.ps1 -LauncherCheck`）。
 3. **Docker 暂不提供**：收益（环境隔离/一条命令跑容器）对「本来就是一条命令」的单机场景增益有限；成本是
    维护镜像、数据卷、凭据文件挂载、端口绑定安全（默认只能绑回环）。等出现「服务器部署/多人共享」需求再评估。
 4. **PyPI 暂缓**：wheel 元数据已就绪（MIT、内嵌 `textgame/web_dist`、`play.ps1|sh`），但包名/README 英文版/
@@ -19,7 +21,7 @@
 
 | 形态 | 上手成本 | 前提 | 数据/凭据 | 适用场景 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
-| **A. git clone + `play` 脚本** | 最低（1 条命令） | `uv`（自动装 Python 3.12）+ 网络（首次 sync） | `data/textgame.db`；`.env` 可选 | 本机试玩、开发、演示 | ✅ 主推荐（README/RELEASE 冒烟通过） |
+| **A. 双击启动器（Windows）/ git clone + `play` 脚本** | 最低（双击，0 命令） | `uv`（自动装 Python 3.12）+ 网络（首次 sync） | `data/textgame.db`；`.env` 可选；日志 `data/logs/launcher-server.log` | 本机试玩、开发、演示 | ✅ 主推荐（启动器为玩家默认入口；`play.ps1 -Check`/`-LauncherCheck` 冒烟通过） |
 | **B. Python wheel** | 中（需 Python 3.10+ 环境） | `pip install textgame-*.whl` | 同上；静态资源用包内 `textgame/web_dist` | 已装 Python 的玩家/离线机器 | ✅ 构建 + 干净 venv 冒烟通过 |
 | **C. Docker 镜像** | 中（需 Docker） | 拉镜像 + `-v` 数据卷 + 端口 | 数据卷 + 可选挂载凭据文件 | 服务器/NAS/统一环境 | 🚫 本次不提供（评估见 §2） |
 
@@ -29,6 +31,48 @@
   都能操作存档；LLM Key 仅存本机。
 - `.env` / `data/llm.credentials.json` **不进任何分发包**（gitignore + 打包排除）；`.env.example` 只给键名。
 - 数据备份 = 复制 `data/textgame.db`（SQLite 单文件；停进程后复制最稳）。
+
+### 1.1 玩家启动器（Windows 双击启动/退出，本批新增）
+
+面向「像正常游戏一样启动/退出」的普通玩家，**不要求玩家敲命令**；前置仍只有 `uv`（不打包 exe、不自动安装任何东西）。
+脚本入口：根目录 `启动游戏.bat` → `scripts/play.ps1 -Launcher` → `python -m textgame.launcher`。
+
+**启动流程（`-Launcher`）**：
+
+1. preflight：找 `uv`；缺失 → 弹中文说明框（安装网址 <https://docs.astral.sh/uv/getting-started/installation/> +
+   「安装后重新双击」）并 `exit 2`，`启动游戏.bat` 失败时 `pause`；
+2. 已有实例（`GET http://127.0.0.1:<port>/healthz` 200）→ 只打开浏览器，不重复启动第二个服务；
+3. 首次无 `.venv` → 先 `uv sync --frozen --no-dev`（控制台可见进度）；
+4. 以隐藏方式启动 launcher server（`--host 127.0.0.1 --port 8000 --idle-exit-seconds 300`，stdout/stderr 合并**追加**到
+   `data/logs/launcher-server.log`，自动建目录）；等 `/healthz` ≤90s（失败显示日志最后 5 行 + 提示）；
+5. `Start-Process http://127.0.0.1:<port>` 打开默认浏览器；
+6. Windows 下优先 **WinForms 启动器小窗口**（标题「文字交互游戏」；状态文字「正在准备…（首次运行需几分钟）」→
+   「已启动，正在打开浏览器…」→「游戏运行中：在游戏页面点「退出游戏」，或关闭本窗口退出。」；按钮「打开游戏」「退出游戏」）；
+   非 Windows / 无图形环境自动降级为**控制台模式**（同样打印清晰启动/退出提示，Ctrl+C 退出）。
+
+**退出状态机（四条路径）**：
+
+| 玩家操作 | 服务端/脚本行为 | 结果 |
+| --- | --- | --- |
+| 游戏页面点「退出游戏」 | 前端 `POST /api/v1/app/shutdown {"confirm":true}`（仅回环）→ `LauncherController` 优雅停机（`reason=shutdown`，约 0.5s） | 启动器检测到进程退出 → 关闭窗口，提示「游戏已退出，感谢游玩」 |
+| 关闭启动器小窗口 | 启动器 `finally` 用 `taskkill /T /F` 结束 server 进程树 | 端口释放，不留后台进程 |
+| 双击 `退出游戏.bat`（兜底） | `play.ps1 -Stop` 用 `netstat -ano` 精确匹配 `127.0.0.1:<port>` 的 LISTENING 行（协议/地址/状态列校验，不做进程名宽泛匹配）→ `taskkill /PID <pid> /T /F` → 等端口释放 | 打印「已退出游戏」；无实例时打印「游戏没有在运行」 |
+| 只关掉浏览器（不退出游戏） | 前端停止心跳；空闲 monitor 线程在 `TEXTGAME_IDLE_EXIT_SECONDS`（默认 300=5 分钟；0=关闭）后优雅退出（`reason=idle`；**从未收到心跳不判空闲**） | 启动器提示「游戏已退出，感谢游玩」并释放端口 |
+
+**控制面契约**（前端「退出游戏」按钮依赖，默认 `uvicorn textgame.main:app` 不启用）：
+
+- `GET /api/v1/app/status` → `{launcher_mode, idle_exit_seconds, shutdown_supported, version}`（非启动器模式全 false/0）；
+- `POST /api/v1/app/heartbeat` → `{ok, idle_exit_seconds}`（刷新空闲计时；无控制器 404）；
+- `POST /api/v1/app/shutdown` body `{"confirm":true}` → `{ok, message}`（非回环 403、重复调用幂等 200、0.2s 后置 `should_exit`）；
+- `GET /healthz` → 200（启动器就绪判定）。
+
+**自动化验收**：`pwsh -File scripts/play.ps1 -LauncherCheck -Port 8801` / `./scripts/play.sh --launcher-check`
+——headless、不弹窗、不开浏览器；临时 `TEXTGAME_DB_URL=sqlite:///…` + `--idle-exit-seconds 0` + 自动空闲端口；
+断言 `/healthz`、status（`launcher_mode=true`、`shutdown_supported=true`）、heartbeat 200、shutdown 200、
+进程 ≤15s 退出且端口释放，打印「Launcher 自检通过」退出码 0。默认网页自检 `play.ps1 -Check` 行为不变。
+
+**边界**：启动器窗口仅 Windows（WinForms）；非 Windows/无 GUI 降级控制台模式；不做 exe 打包、不自动安装 uv；
+仍只监听 `127.0.0.1`；`-Port` 对启动器/自检/退出都生效；`-Llm` 仍透传环境变量。
 
 ## 2. Docker 评估（为什么不默认提供）
 
@@ -81,7 +125,8 @@ docker run --rm -p 127.0.0.1:8000:8000 -v textgame-data:/data textgame:0.2.0
 
 - `uv build` 产出 `dist/textgame-0.2.0-py3-none-any.whl` + sdist；wheel 内嵌 `textgame/web_dist`（`hatch_build.py`）；
 - 干净 venv 安装 → `python -m textgame.console --check`（退出码 0）→ `python -m textgame.demo --check`（7 屏逐字）；
-- 仓库 clone → `scripts/play.ps1 -Check`（`/healthz=200`、`/=200`）。
+- 仓库 clone → `scripts/play.ps1 -Check`（`/healthz=200`、`/=200`）；
+- 仓库 clone → `scripts/play.ps1 -LauncherCheck`（headless 启动器冒烟：status/heartbeat/shutdown + 进程退出 + 端口释放）。
 
 ## 4. 安全与合规注记
 
@@ -98,5 +143,6 @@ docker run --rm -p 127.0.0.1:8000:8000 -v textgame-data:/data textgame:0.2.0
 | Docker 评估（本文档） | N4 051 | ✅（结论：暂不提供 + 草案） |
 | 构建产物冒烟 | N4 052 | ✅（RELEASE §3） |
 | 发布 checklist / tag 流程 | N4 053 | ✅（RELEASE.md） |
+| Windows 玩家启动器（双击启动/退出、空闲自动退出） | N5 057（发布体验轨；ADR [D-LA-1..N6](../decisions/2026-11-11-player-launcher-and-exit.md)） | ✅ 2026-11-11（`-LauncherCheck` 通过；窗口路径人工冒烟见 RELEASE §2.1 L2） |
 | 镜像实现 + CI Docker job | 未排期（057–060 预留 / 用户拍板） | ⏳ |
 | PyPI 正式发布 | 未排期（用户拍板） | ⏳ |

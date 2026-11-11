@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "textgame"
-version = "0.2.0"
+version = "0.3.0"
 description = "复古 2G 文字 MUD 风格的单机 / 异步文本交互游戏：规则引擎确定性计算 + LLM 智能体叙事包装"
 readme = "README.md"
 license = "MIT"

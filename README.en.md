@@ -6,8 +6,9 @@ A retro **2G text-MUD style single-player game**: you type natural-language acti
 interprets intent and writes the prose, while a deterministic rules engine owns every state change.
 Default mode is **fully offline** — no API key, no Node/pnpm, no network after the first dependency sync.
 
-Current version: **`0.2.0`** (2026-11-11, first releasable snapshot: M1–M6 milestones + user-content
-batch + world-book detail visibility). Player-facing changes: [CHANGELOG.md](CHANGELOG.md).
+Current version: **`0.3.0`** (2026-11-11, player launcher & exit experience: double-click launcher,
+in-game quit, idle auto-exit). Last tagged release: `v0.2.0`.
+Player-facing changes: [CHANGELOG.md](CHANGELOG.md).
 
 > Full documentation is in Chinese: [README.md](README.md) · [docs/开发文档.md](docs/开发文档.md) ·
 > [docs/PROGRESS.md](docs/PROGRESS.md) · [RELEASE.md](RELEASE.md) (release checklist & tag flow)
@@ -16,6 +17,14 @@ batch + world-book detail visibility). Player-facing changes: [CHANGELOG.md](CHA
 
 Prerequisite: [uv](https://github.com/astral-sh/uv) (Python 3.12 is downloaded and managed by uv).
 The repository ships a prebuilt web bundle (`web/dist`), so **Node/pnpm is not needed to play**.
+
+**Windows players (recommended): double-click `启动游戏.bat` in the repository root.** A small
+launcher window starts the game and opens your browser at `http://127.0.0.1:8000`. Exit with the
+in-game **「退出游戏」** button, by closing the launcher window, or double-click `退出游戏.bat` as a
+fallback (`退出游戏.bat 8001` for a non-default port); closing only the browser tab triggers an idle
+auto-exit after 5 minutes. On Linux/macOS or without a GUI, `./scripts/play.sh --launcher` falls back to a
+console launcher. Launcher log: `data/logs/launcher-server.log`. Headless launcher check:
+`pwsh -File scripts/play.ps1 -LauncherCheck` / `./scripts/play.sh --launcher-check`.
 
 ```powershell
 git clone https://github.com/bd-lo/text-interactive-game.git
@@ -31,6 +40,8 @@ cd text-interactive-game
 
 Options: `-Terminal` / `--terminal` (terminal UI), `-Port 8001` / `--port 8001`,
 `-Check` / `--check` (start server, assert `/healthz` and `/` return 200, exit),
+`-Launcher` / `--launcher` (launcher window + browser, console fallback without a GUI),
+`-LauncherCheck` / `--launcher-check` (headless launcher control-plane check),
 `-Llm` / `--llm` (real LLM narration; needs `TEXTGAME_LLM_API_KEY` in `.env`).
 
 Terminal-only (no server):
@@ -119,17 +130,21 @@ they never write game state, events, saves or replays.
 
 ## Release & distribution
 
-- Version `0.2.0`; version number lives in `pyproject.toml` and `textgame.__version__`; see
+- Version `0.3.0`; version number lives in `pyproject.toml` and `textgame.__version__`; see
   [CHANGELOG.md](CHANGELOG.md). Release checklist, wheel smoke tests and `git tag` / release-notes flow:
-  [RELEASE.md](RELEASE.md). **`main` is pushed and the annotated tag `v0.2.0` is published** (commit
-  `0e52814`, CI run `43032265398` green, 2026-11-11); GitHub Release and PyPI are still pending a
-  maintainer decision.
-- Distribution: clone + `play` script (prebuilt `web/dist`) or the Python wheel (embeds the web UI).
+  [RELEASE.md](RELEASE.md). The last released snapshot is the annotated tag **`v0.2.0`** (commit
+  `0e52814`, CI run `43032265398` green, 2026-11-11); `0.3.0` is pushed to `main`, with the tag / GitHub
+  Release / PyPI still pending a maintainer decision.
+- Distribution: Windows double-click launcher (`启动游戏.bat` → `scripts/play.ps1 -Launcher`),
+  clone + `play` script (prebuilt `web/dist`) or the Python wheel (embeds the web UI). The release
+  checklist in [RELEASE.md](RELEASE.md) includes the launcher smoke test
+  (`pwsh -File scripts/play.ps1 -LauncherCheck`).
   Docker images are **not provided** for now (single-user SQLite + static SPA; rationale and a draft
   Dockerfile for later in [docs/design/deployment-and-distribution.md](docs/design/deployment-and-distribution.md)).
   Publishing to PyPI is on hold pending a maintainer decision.
-- Roadmap: post-M6 tracks (content / experience / features / release) are defined in chapter 17 §17.9 of the
-  development docs and [the roadmap ADR](docs/decisions/2026-11-11-post-m6-roadmap.md).
+- Roadmap: post-M6 tracks (content / experience / features / release experience) are defined in chapter 17
+  §17.9 of the development docs and [the roadmap ADR](docs/decisions/2026-11-11-post-m6-roadmap.md).
+  The launcher batch (N5 057) is documented in [ADR D-LA-1..N6](docs/decisions/2026-11-11-player-launcher-and-exit.md).
 
 ## Development
 
@@ -166,6 +181,9 @@ Contributing guide (Chinese): [CONTRIBUTING.md](CONTRIBUTING.md). Security polic
   conditions, a scenario editor or a share marketplace yet (see chapter 17 §17.9).
 - World books: `vectorized`/`outlet`/`characterFilter`/`useGroupScoring` unsupported by design for now.
 - Single-user, local-only: no accounts, no cloud saves, don't expose the port to the internet.
+- The GUI launcher window is Windows-only (WinForms); other platforms use the console launcher.
+  There is no packaged installer/`.exe` yet: [uv](https://github.com/astral-sh/uv) is still required
+  (the launcher explains how to install it, but never installs anything by itself).
 
 ## License
 

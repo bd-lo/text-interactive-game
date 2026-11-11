@@ -1,14 +1,51 @@
 # 变更日志（CHANGELOG）
 
-> 本文件登记项目变更；**当前可发布快照 `0.2.0`（2026-11-11）**——M1–M6 全部里程碑 + 用户内容批次
-> （场景 JSON 上传 / 酒馆级世界书 / 运行期 DeepSeek API Key）+ WB2 详情字段可见性，可作单机试玩版本分发。
-> **发布状态**：已推送 `main` 并打注记 tag **`v0.2.0`**（指向 `0e52814`，CI run
+> 本文件登记项目变更；**当前开发版本 `0.3.0`（2026-11-11，玩家启动器/退出体验批次）**——
+> 普通玩家双击 `启动游戏.bat` 启动、游戏内「退出游戏」优雅退出、关浏览器空闲自动退出。
+> **发布状态**：上一发布快照 `0.2.0` 已推送 `main` 并打注记 tag **`v0.2.0`**（指向 `0e52814`，CI run
 > [43032265398](https://github.com/bd-lo/text-interactive-game/actions/runs/43032265398) 全绿）；
-> GitHub Release 与 PyPI 未做（待维护者决定）。
+> `0.3.0` 已 push main，tag/Release/PyPI 待维护者拍板。
 > `0.1.0` 为开发期历史版本（未对外分发）。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 > 里程碑/切片编号见 `docs/PROGRESS.md`、开发文档第 17 章与 M6 后计划表（§17.9）。
 > 发布流程/版本号/tag 规则见 [RELEASE.md](RELEASE.md)；分发与 Docker 评估见
 > [deployment-and-distribution](docs/design/deployment-and-distribution.md)。
+
+## [0.3.0] - 2026-11-11（玩家启动器与退出体验，N5 057）
+
+### 新增
+
+- **Windows 双击启动器**：仓库根 `启动游戏.bat` → `scripts/play.ps1 -Launcher`：WinForms 启动器小窗口
+  （状态/「打开游戏」/「退出游戏」；无 GUI 自动降级控制台）；隐藏启动本机服务、日志追加
+  `data/logs/launcher-server.log`、自动打开浏览器；已在运行时只打开浏览器；uv 缺失给中文安装指引
+  （不自动下载/安装）；关闭启动器窗口清理服务进程树。`scripts/play.sh --launcher` 对齐 Unix。
+- **游戏内「退出游戏」**：网页全局 header 按钮 → 二次确认 → `POST /api/v1/app/shutdown` 优雅退出 →
+  全屏「游戏已退出 / 可以关闭此页面了。」覆盖层；非启动器模式显示固定提示
+  「当前不是启动器模式：请在运行服务的窗口按 Ctrl+C 退出。」；只关浏览器时，前端每 15s 心跳、
+  服务端默认 300s 无心跳自动退出（`TEXTGAME_IDLE_EXIT_SECONDS`，0=关闭）。
+- **启动器控制面 API**（仅 `python -m textgame.launcher` 注入控制器时启用）：
+  `GET /api/v1/app/status`（launcher_mode/idle_exit_seconds/shutdown_supported/version）、
+  `POST /api/v1/app/heartbeat`、`POST /api/v1/app/shutdown`（`{"confirm":true}`；无控制器 404、
+  非回环 403、confirm 非 true 422、重复幂等）；新增进程入口 `python -m textgame.launcher`
+  （`--host/--port/--idle-exit-seconds/--log-level`）与空闲 monitor。**默认 `uvicorn textgame.main:app`
+  行为零变化**（控制面不可用、前端只显示说明面板）。
+- **兜底退出**：根目录 `退出游戏.bat` → `play.ps1 -Stop`（按 `netstat` 四列精确匹配 127.0.0.1:port
+  监听 PID 后 `taskkill /T /F`，绝不按进程名宽泛匹配）；无实例时提示「游戏没有在运行」。
+- **启动器自检**：`scripts/play.ps1 -LauncherCheck` / `play.sh --launcher-check`（headless、临时库+
+  空闲端口，断言 status/heartbeat/shutdown、进程退出与端口释放，打印「Launcher 自检通过」）；
+  `RELEASE.md` 新增启动器门禁 L1–L3。
+
+### 变更
+
+- 版本 `0.2.0 → 0.3.0`（玩家可见能力批次，按 RELEASE.md 版本策略；N5 发布体验轨 057）。
+- 文档：README/README.en 快速开始改为「双击启动器」优先并补退出四通道 FAQ；
+  `docs/design/deployment-and-distribution.md` 分发形态 A 更新；`.env.example` 增空闲退出配置；
+  ADR [D-LA-1..N6](docs/decisions/2026-11-11-player-launcher-and-exit.md)、第 17 章 §17.9 N5、进度文档 057。
+
+### 验证（Lead 实跑）
+
+全量 pytest **2186 passed**、replay **68**、web **56 files/347 tests**、浏览器 e2e **26 步/125 断言**
+（非启动器分支）+ 启动器模式 e2e **26 步/126 断言**（真实「确认退出→服务优雅退出→启动器进程 exit 0」）、
+`play.ps1 -LauncherCheck` **PASS**、`play.ps1 -Check` 旧口径 PASS、四门全绿、`demo/console --check` 逐字不变。
 
 ## [0.2.0] - 2026-11-11（首个可发布快照）
 

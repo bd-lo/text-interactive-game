@@ -6,9 +6,9 @@
 
 **默认离线可玩**：不需要 API Key、不需要 Node/pnpm、不需要联网（仅首次安装依赖需联网）。
 
-> **当前状态**：`0.2.0`（2026-11-11，首个可发布快照）。M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。**WB2** 补齐世界书详情字段可见性（概率/包含组/定时效果/扫描深度/position-depth 在详情页可见）；**M6 后计划表**已定案（第 17 章 §17.9：N1 内容 / N2 体验 / N3 功能 / N4 技术发布 四轨道，编号 029–060）。
-> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)、[WB2 进度文档](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（当前实测：pytest **2156 passed** / replay 68 / web **53 files/329 tests** / 浏览器 e2e **25 步/122 断言**；数字以 CI 与实际输出为准）。
-> 发布与分发：[CHANGELOG](CHANGELOG.md)、[RELEASE.md](RELEASE.md)（版本号/checklist/tag 流程）、[部署与分发评估](docs/design/deployment-and-distribution.md)（wheel/zip 为主，Docker 暂不提供）。
+> **当前状态**：`0.3.0`（2026-11-11，玩家启动器/退出体验批次）。M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。**WB2** 补齐世界书详情字段可见性；**M6 后计划表**已定案（第 17 章 §17.9：N1 内容 / N2 体验 / N3 功能 / N4 技术发布 / N5 发布体验 五轨道，编号 029–060）；**057 玩家启动器**——Windows 双击 `启动游戏.bat` 启动（启动器窗口 + 浏览器），游戏内「退出游戏」优雅退出，关浏览器 5 分钟空闲自动退出，`退出游戏.bat` 兜底。
+> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)、[057 启动器进度文档](docs/progress/057-2026-11-11-player-launcher.md)、[WB2 进度文档](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（当前实测：pytest **2186 passed** / replay 68 / web **56 files/347 tests** / 浏览器 e2e **26 步/125 断言**（+启动器模式 26/126）；数字以 CI 与实际输出为准）。
+> 发布与分发：[CHANGELOG](CHANGELOG.md)、[RELEASE.md](RELEASE.md)（版本号/checklist/tag 流程）、[部署与分发评估](docs/design/deployment-and-distribution.md)（双击启动器 / wheel 为主，Docker 暂不提供）。
 > 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[M6 后计划表 ADR](docs/decisions/2026-11-11-post-m6-roadmap.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)。
 
 ![网页版首页：存档续玩 + 场景/世界书选择 + CRT 与余烬粒子](docs/assets/web-home.png)
@@ -23,7 +23,7 @@
 
 > 手机 375px 单列布局：![手机布局](docs/assets/web-mobile.png)
 
-## 快速开始（一条命令）
+## 快速开始
 
 | 前置 | 什么时候需要 |
 | --- | --- |
@@ -31,7 +31,25 @@
 | Node 24/26 + pnpm 12.6 | 只有「修改前端源码/重新构建网页产物」时需要；玩游戏不需要 |
 | DeepSeek API Key | 只有「开启真实 LLM 叙事」时需要；默认离线不需要 |
 
-### 网页版（推荐）
+### Windows 普通玩家：双击 `启动游戏.bat`（推荐）
+
+只想玩、不想碰命令行的话，用启动器：
+
+1. 双击仓库根目录的 **`启动游戏.bat`** → 出现「文字交互游戏」启动器小窗口（首次运行会自动安装运行依赖，需要联网，可能几分钟）；
+2. 就绪后自动用默认浏览器打开游戏页面（`http://127.0.0.1:8000`）；
+3. 退出方式（任选其一）：
+   - 在游戏页面点 **「退出游戏」**（正常退出，进度已保存）；
+   - 关闭启动器小窗口（等同于结束游戏进程）；
+   - 兜底：双击根目录 **`退出游戏.bat`**——按端口精确找到游戏进程并结束（可带端口参数，如 `退出游戏.bat 8001`）；没有在运行时会提示「游戏没有在运行」；
+   - 只关掉浏览器**不算**退出：页面心跳停止 5 分钟后，启动器会自动退出并释放端口（存档实时保存，下次启动自动继续）。
+4. 启动日志在 `data/logs/launcher-server.log`（追加写入，含失败原因）；存档仍在 `data/textgame.db`。
+
+> 前置仍是 [uv](https://github.com/astral-sh/uv)（唯一必需前置）。缺少 uv 时启动器会弹窗给出安装网址
+> <https://docs.astral.sh/uv/getting-started/installation/>，安装完成后重新双击即可。
+> 非 Windows / 无图形环境：`./scripts/play.sh --launcher` 或 `pwsh -File scripts/play.ps1 -Launcher` 会自动降级为控制台模式（同样打印启动/退出提示）。
+> 启动器自检（无窗口、无浏览器）：`.\scripts\play.ps1 -LauncherCheck` / `./scripts/play.sh --launcher-check`。
+
+### 网页版（命令行方式）
 
 仓库**已包含预构建的网页产物 `web/dist`**，克隆后无需 Node/pnpm：
 
@@ -51,6 +69,7 @@ cd text-interactive-game
 
 - `-Port 8001` / `--port 8001`：换端口；`-Llm` / `--llm`：启用真实 LLM 叙事（需 Key，见 FAQ）。
 - 自检（启动服务 → 校验 `/healthz` 与 `/` 均 200 → 退出）：`.\scripts\play.ps1 -Check`（bash：`./scripts/play.sh --check`）。
+- 普通玩家启动器（与双击 `启动游戏.bat` 等价）：`.\scripts\play.ps1 -Launcher`（bash：`./scripts/play.sh --launcher`）；启动器控制面自检：`.\scripts\play.ps1 -LauncherCheck` / `./scripts/play.sh --launcher-check`（headless，校验状态/心跳/退出接口与进程退出、端口释放）。
 - 首页可直接选场景与世界书；**推荐首玩「余烬哨站」剧情（story，有目标与结局）**，其它为 m2 单场景 / m3 多角色 / m4 制造。
 - 右上角 **✦ 视觉效果**：全特效 / 低功耗 / 关闭特效三档（本机持久化；系统开启「减少动态效果」时自动降级）。
 - 想改前端：`pnpm --dir web install --frozen-lockfile && pnpm --dir web build` 后重新运行 `play` 脚本（详见 [web/README.md](web/README.md)）。
@@ -93,16 +112,16 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 
 ## 版本与发布
 
-- **当前版本 `0.2.0`**（2026-11-11，首个可发布快照 = M1–M6 + 用户内容批次 + WB2）。版本号唯一来源：
+- **当前版本 `0.3.0`**（2026-11-11，玩家启动器/退出体验 = N5 057）。版本号唯一来源：
   `pyproject.toml` 与 `src/textgame/__init__.py::__version__`；玩家可见变更见 [CHANGELOG.md](CHANGELOG.md)。
-- **怎么发**：[RELEASE.md](RELEASE.md) 给出发布 checklist（测试/四门/e2e/构建冒烟/许可证/安全/文档）、
-  wheel 干净环境冒烟命令与 `git tag` / Release notes 流程。**`v0.2.0` 已推送 main 并打注记 tag**
-  （2026-11-11，CI run `43032265398` 全绿）；GitHub Release 与 PyPI 待维护者决定。
-- **分发形态**：默认「仓库克隆 + `play` 脚本」（已含 `web/dist`，无需 Node）或 wheel（内嵌网页版）；
+- **怎么发**：[RELEASE.md](RELEASE.md) 给出发布 checklist（测试/四门/e2e/构建冒烟/启动器冒烟/许可证/安全/文档）、
+  wheel 干净环境冒烟命令与 `git tag` / Release notes 流程。上一发布快照 **`v0.2.0`** 已打注记 tag
+  （2026-11-11，CI run `43032265398` 全绿）；`0.3.0` 已 push main，tag 与 GitHub Release 待维护者决定。
+- **分发形态**：Windows 普通玩家默认「双击 `启动游戏.bat` 启动器」（底层 `scripts/play.ps1 -Launcher`）；开发者可「仓库克隆 + `play` 脚本」（已含 `web/dist`，无需 Node）或 wheel（内嵌网页版）；
   Docker 评估结论是**暂不提供镜像**（草案与复评条件见[部署与分发评估](docs/design/deployment-and-distribution.md)）；
   PyPI 正式发布暂缓（由维护者拍板）。
 - **版本路线**：后续能力按 [第 17 章 §17.9 M6 后计划表](docs/开发文档/第17章-里程碑与进度文档编号规划.md)
-  的四条轨道推进（N1 内容 / N2 体验 / N3 功能 / N4 技术发布，编号 029–060）。
+  的五条轨道推进（N1 内容 / N2 体验 / N3 功能 / N4 技术发布 / N5 发布体验，编号 029–060）。
 
 ## 世界书（World Book / Lorebook）
 
@@ -183,6 +202,9 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **PowerShell 报「无法加载文件 … 未对文件进行数字签名」/ 执行策略**：用 `powershell -ExecutionPolicy Bypass -File .\scripts\play.ps1` 或 `pwsh -File .\scripts\play.ps1`。仓库脚本已按 **UTF-8 with BOM** 保存，Windows PowerShell 5.1 与 PowerShell 7 都能正确解析中文。
 - **Windows + 中文仓库路径**：支持（本机开发路径即 `D:\ProgramData\游戏开发`）。历史注意点：Python 3.10 下 editable 安装的 `.pth` 会被 GBK `site.py` 读取失败；本地验 3.10 用 `uv sync --frozen --python 3.10 --no-editable` + `PYTHONPATH=src`（CI 的 ubuntu/UTF-8 不受影响）。`pre-commit install` 生成的 hook 在 Git Bash 下可能找不到 `pre-commit`，用 `uv run pre-commit run --all-files` 手动跑。
 - **第一次运行为什么慢**：`uv sync` 会下载 CPython 3.12 与 `uv.lock` 锁定依赖（运行时约 98 个包、数百 MB 磁盘）；已同步过的环境之后秒级启动。只玩终端/网页用 `--no-dev` 更快；跑测试/质量门才需要 dev 依赖。
+- **怎么退出游戏？** 推荐在游戏页面点 **「退出游戏」**（正常退出，进度已保存）；也可以关闭启动器小窗口，或双击根目录 **`退出游戏.bat`** 兜底（按端口精确结束后台进程，可带端口 `退出游戏.bat 8001`；没运行时提示「游戏没有在运行」）。只关掉浏览器不算退出：5 分钟没有页面心跳后启动器会自动退出（`TEXTGAME_IDLE_EXIT_SECONDS` 默认 300；0=关闭自动退出）。命令行方式直接按 Ctrl+C 停止服务。
+- **双击 `启动游戏.bat` 后一直显示「正在准备…（首次运行需几分钟）」？** 首次运行要先下载 CPython 3.12 与运行时依赖（数百 MB，取决于网络），请耐心等窗口状态变为「游戏运行中」；进度/失败原因看 `data/logs/launcher-server.log`。缺少 uv 时启动器会弹窗直接给出安装网址，安装后重新双击即可（不会自动安装任何东西）。
+- **有安装包 / 免安装 exe 吗？** 暂不提供（2026-11-11 评估：需新增构建链与发布流水线、包体较大且有杀软误报/签名成本，当前「双击 `启动游戏.bat` + uv」已满足单机试玩；如后续有需求再单独立项评估）。
 - **存档在哪里**：默认 `data/textgame.db`（已 gitignore，不会误提交）；终端版默认自动继续同库最近存档，`--new` 强制新开、`--continue` 强制继续；`--db <路径>` 或 `--db sqlite:///…` 可指定别处。
 - **怎么开真实 LLM 叙事（可选）**：本地开发机把 [.env.example](.env.example) 复制为 `.env` 并填 `TEXTGAME_LLM_API_KEY`
   即可自动启用（或用 `.\scripts\play.ps1 -Llm`）；干净克隆的玩家在自己浏览器里打开「设置」页填入 DeepSeek API Key，
