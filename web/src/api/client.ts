@@ -25,6 +25,10 @@ import type {
   GameListResponse,
   GamePlayerViewResponse,
   GameViewResponse,
+  LauncherHeartbeat,
+  LauncherShutdown,
+  LauncherShutdownRequest,
+  LauncherStatus,
   LlmConnectionTest,
   LlmSettingsClearResponse,
   LlmSettingsSaveRequest,
@@ -1233,4 +1237,95 @@ export async function clearLlmSettings(signal?: AbortSignal): Promise<LlmSetting
   const record = assertRecord(payload, 'LlmDeleteResponse')
   assertKeys(record, 'LlmDeleteResponse', LLM_CLEAR_KEYS)
   return { status: parseLlmStatus(record.status, 'LlmDeleteResponse.status') }
+}
+
+// ---------------------------------------------------------------------------
+// 启动器控制面（launcher：GET /app/status + POST /app/heartbeat + POST /app/shutdown）
+// 契约（后端 Task A 冻结）：
+// - status 永远 200；非启动器模式 launcher_mode=false/shutdown_supported=false；
+// - heartbeat/shutdown 无控制器时 404，非回环 shutdown 403；
+// - 成功 shutdown 200 `{ok,message}` 后服务端 ~0.5s 内退出，前端**不等待**服务端真正停止；
+// - 无 Idempotency-Key（不产生领域副作用）；无自动重试（调用方按需 fire-and-forget）。
+// 超时：状态/心跳 5s（轻请求）；shutdown 8s（要等服务端确认）。
+// ---------------------------------------------------------------------------
+
+const LAUNCHER_STATUS_KEYS = [
+  'launcher_mode',
+  'idle_exit_seconds',
+  'shutdown_supported',
+  'version',
+] as const
+const LAUNCHER_HEARTBEAT_KEYS = ['ok', 'idle_exit_seconds'] as const
+const LAUNCHER_SHUTDOWN_KEYS = ['ok', 'message'] as const
+
+/** `GET /api/v1/app/status` 超时（毫秒）。 */
+export const LAUNCHER_STATUS_TIMEOUT_MS = 5_000
+/** `POST /api/v1/app/heartbeat` 超时（毫秒）。 */
+export const LAUNCHER_HEARTBEAT_TIMEOUT_MS = 5_000
+/** `POST /api/v1/app/shutdown` 超时（毫秒）。 */
+export const LAUNCHER_SHUTDOWN_TIMEOUT_MS = 8_000
+
+/** 启动器状态逐字段校验（`extra="forbid"`；漂移即契约错误）。 */
+function parseLauncherStatus(value: unknown): LauncherStatus {
+  const record = assertRecord(value, 'AppStatusResponse')
+  assertKeys(record, 'AppStatusResponse', LAUNCHER_STATUS_KEYS)
+  if (
+    typeof record.launcher_mode !== 'boolean' ||
+    typeof record.idle_exit_seconds !== 'number' ||
+    typeof record.shutdown_supported !== 'boolean' ||
+    typeof record.version !== 'string'
+  ) {
+    throw contractError('AppStatusResponse', '状态字段类型不符')
+  }
+  return record as unknown as LauncherStatus
+}
+
+/** 心跳响应逐字段校验。 */
+function parseLauncherHeartbeat(value: unknown): LauncherHeartbeat {
+  const record = assertRecord(value, 'AppHeartbeatResponse')
+  assertKeys(record, 'AppHeartbeatResponse', LAUNCHER_HEARTBEAT_KEYS)
+  if (typeof record.ok !== 'boolean' || typeof record.idle_exit_seconds !== 'number') {
+    throw contractError('AppHeartbeatResponse', 'ok/idle_exit_seconds 类型不符')
+  }
+  return record as unknown as LauncherHeartbeat
+}
+
+/** `GET /api/v1/app/status`：当前是否启动器托管（只读、零网络、非启动器模式也 200）。 */
+export async function getAppStatus(signal?: AbortSignal): Promise<LauncherStatus> {
+  const payload = await request<unknown>(
+    '/api/v1/app/status',
+    { method: 'GET' },
+    { signal, timeoutMs: LAUNCHER_STATUS_TIMEOUT_MS },
+  )
+  return parseLauncherStatus(payload)
+}
+
+/** `POST /api/v1/app/heartbeat`：启动器模式心跳（fire-and-forget；无控制器 404）。 */
+export async function sendLauncherHeartbeat(signal?: AbortSignal): Promise<LauncherHeartbeat> {
+  const payload = await request<unknown>(
+    '/api/v1/app/heartbeat',
+    { method: 'POST' },
+    { signal, timeoutMs: LAUNCHER_HEARTBEAT_TIMEOUT_MS },
+  )
+  return parseLauncherHeartbeat(payload)
+}
+
+/**
+ * `POST /api/v1/app/shutdown`：请求服务端退出（body `{confirm:true}`，无幂等键）。
+ *
+ * 成功获得 200 确认后即可显示「已退出」——**不等待**服务端进程真正停止（~0.5s 后自行退出）。
+ */
+export async function shutdownGame(signal?: AbortSignal): Promise<LauncherShutdown> {
+  const body: LauncherShutdownRequest = { confirm: true }
+  const payload = await request<unknown>(
+    '/api/v1/app/shutdown',
+    { method: 'POST', body: JSON.stringify(body) },
+    { signal, timeoutMs: LAUNCHER_SHUTDOWN_TIMEOUT_MS },
+  )
+  const record = assertRecord(payload, 'AppShutdownResponse')
+  assertKeys(record, 'AppShutdownResponse', LAUNCHER_SHUTDOWN_KEYS)
+  if (typeof record.ok !== 'boolean' || typeof record.message !== 'string') {
+    throw contractError('AppShutdownResponse', 'ok/message 类型不符')
+  }
+  return record as unknown as LauncherShutdown
 }

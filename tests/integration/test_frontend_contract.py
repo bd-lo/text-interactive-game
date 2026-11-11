@@ -11,6 +11,8 @@
   模板兜底语义（`source=manual`/`generated_by=null`/`TEMPLATE_FALLBACK`）、同键同参复用/异参 409/
   缺键 422/第 6 次 429+`Retry-After`；save 复用 `POST /character-cards`（方法级 201）并读回；
 - `/cards/generate` 深链由静态托管 SPA fallback 返回 `index.html`（D-M6-5①，刷新不 404）；
+- 启动器控制面（`/api/v1/app/status|heartbeat|shutdown`）：方法/路径/请求体与前端 API_PATHS 一致
+  （status 永远 200；页内退出 body `{"confirm": true}`；控制面无领域副作用、不要求 Idempotency-Key）；
 - 前端源码静态禁入：禁 `v-html`/`innerHTML`/`eval`/`EventSource`/自动定时重试（第 23 章 §23.7、D-M6-6④）。
 
 契约测试以 live OpenAPI 为唯一权威：前端未接入 generate 时本文件必须失败（不允许 skip 放行）。
@@ -66,6 +68,10 @@ EXPECTED_FRONTEND_PATHS = {
     # LLM 运行期设置（DeepSeek API Key 输入/测试/清除）
     "/api/v1/settings/llm",
     "/api/v1/settings/llm/test",
+    # 启动器控制面（网页「退出游戏」/ 心跳 / 状态；Task A 冻结契约）
+    "/api/v1/app/status",
+    "/api/v1/app/heartbeat",
+    "/api/v1/app/shutdown",
 }
 
 # TS 接口 → OpenAPI schema（响应；字段集合必须一致）
@@ -125,6 +131,10 @@ RESPONSE_INTERFACES = {
     "LlmConnectionTest": "LlmTestResponse",
     "LlmSettingsSaveResponse": "LlmSaveResponse",
     "LlmSettingsClearResponse": "LlmDeleteResponse",
+    # 启动器控制面（GET /app/status + POST /app/heartbeat + POST /app/shutdown）
+    "LauncherStatus": "AppStatusResponse",
+    "LauncherHeartbeat": "AppHeartbeatResponse",
+    "LauncherShutdown": "AppShutdownResponse",
 }
 
 # TS 接口 → OpenAPI schema（请求；字段名 + 可选项必须一致）
@@ -133,6 +143,7 @@ REQUEST_INTERFACES = {
     "TurnRequest": "TurnRequestBody",
     "CardGenerateRequest": "CardGenerateBody",
     "LlmSettingsSaveRequest": "LlmSaveRequestBody",
+    "LauncherShutdownRequest": "AppShutdownBody",
 }
 
 _INTERFACE_RE = re.compile(r"export interface (\w+)(?:<[^>]*>)?\s*\{(.*?)\n\}", re.DOTALL)
@@ -147,6 +158,12 @@ _FORBIDDEN_SOURCE_PATTERNS = {
     "EventSource/SSE": re.compile(r"EventSource"),
     "自动定时重试": re.compile(r"setInterval\s*\("),
 }
+
+#: 「自动定时」门禁的唯一例外：**只限** ``QuitGameControl.vue`` 里行尾显式标注
+#: ``// 心跳 keep-alive`` 的 ``setInterval``（启动器 15s 存活上报，不是失败自动重试/轮询；
+#: 前端 task-7 冻结契约要求每 15000ms 心跳）。其它文件/其它 setInterval 仍按 D-M6-6④ 全禁。
+_HEARTBEAT_TIMER_ALLOW_FILE = "QuitGameControl.vue"
+_HEARTBEAT_TIMER_ALLOW = re.compile(r"setInterval\([^\n]*// 心跳 keep-alive")
 
 
 def _ts_interfaces() -> dict[str, dict[str, bool]]:
@@ -821,14 +838,88 @@ def test_llm_settings_endpoints_consistency() -> None:
         assert all(parameter.get("name") != "Idempotency-Key" for parameter in params)
 
 
+def test_launcher_control_endpoints_consistency() -> None:
+    """启动器控制面 3 端点的方法/路径/请求体与前端 API_PATHS 一致（Task A 冻结契约）。
+
+    语义：非启动器模式 ``/app/status`` 仍 200；页内退出 body 固定 ``{"confirm": true}``；
+    控制面不产生领域副作用，因此**不要求 Idempotency-Key**（前端同样不带）。
+    """
+
+    api_paths = _frontend_api_paths()
+    expected = {
+        "appStatus": "/api/v1/app/status",
+        "appHeartbeat": "/api/v1/app/heartbeat",
+        "appShutdown": "/api/v1/app/shutdown",
+    }
+    for name, path in expected.items():
+        assert api_paths[name] == path, f"前端 API_PATHS.{name} 未指向 {path}"
+
+    paths = _openapi()["paths"]
+    assert set(paths["/api/v1/app/status"]) == {"get"}
+    assert set(paths["/api/v1/app/heartbeat"]) == {"post"}
+    assert set(paths["/api/v1/app/shutdown"]) == {"post"}
+
+    schemas = _openapi()["components"]["schemas"]
+    status_schema = schemas["AppStatusResponse"]
+    assert set(status_schema["properties"]) == {
+        "launcher_mode",
+        "idle_exit_seconds",
+        "shutdown_supported",
+        "version",
+    }
+    assert set(status_schema["required"]) == {
+        "launcher_mode",
+        "idle_exit_seconds",
+        "shutdown_supported",
+        "version",
+    }
+
+    heartbeat_schema = schemas["AppHeartbeatResponse"]
+    assert set(heartbeat_schema["properties"]) == {"ok", "idle_exit_seconds"}
+
+    shutdown_schema = schemas["AppShutdownResponse"]
+    assert set(shutdown_schema["properties"]) == {"ok", "message"}
+
+    shutdown_body = schemas["AppShutdownBody"]
+    assert shutdown_body["required"] == ["confirm"]
+    assert set(shutdown_body["properties"]) == {"confirm"}
+    # 后端用 bool + model_validator 表达「confirm 必须是 JSON 布尔 true」（避免 Literal[True]
+    # 会把 1 宽松等值成 True），OpenAPI 只能表达为 boolean；前端 TS 按冻结契约窄化为字面量 true。
+    assert shutdown_body["properties"]["confirm"]["type"] == "boolean"
+
+    # 退出/心跳按值幂等、无领域副作用：不要求 Idempotency-Key（与游戏回合/导入的幂等语义区分）。
+    for path, method in (
+        ("/api/v1/app/heartbeat", "post"),
+        ("/api/v1/app/shutdown", "post"),
+    ):
+        params = paths[path][method].get("parameters", [])
+        assert all(parameter.get("name") != "Idempotency-Key" for parameter in params)
+
+
 def test_frontend_source_has_no_forbidden_patterns() -> None:
-    """前端源码静态门禁：禁 v-html/innerHTML/eval/SSE/自动定时重试（§23.7、D-M6-6④）。"""
+    """前端源码静态门禁：禁 v-html/innerHTML/eval/SSE/自动定时重试（§23.7、D-M6-6④）。
+
+    例外：`setInterval` 默认禁（防失败自动重试/轮询），仅允许
+    `QuitGameControl.vue` 中行尾显式标注 `// 心跳 keep-alive` 的启动器心跳
+    （固定节拍存活上报，不是自动重试；文件 + 标注双重限定，防止门禁泛化）。
+    """
     violations: list[str] = []
     for path in sorted(SRC_ROOT.rglob("*")):
         if not path.is_file() or path.suffix not in {".ts", ".vue", ".css", ".html"}:
             continue
         content = path.read_text(encoding="utf-8")
         for name, pattern in _FORBIDDEN_SOURCE_PATTERNS.items():
+            if name == "自动定时重试":
+                allow_heartbeat = path.name == _HEARTBEAT_TIMER_ALLOW_FILE
+                offending = [
+                    line
+                    for line in content.splitlines()
+                    if pattern.search(line) is not None
+                    and not (allow_heartbeat and _HEARTBEAT_TIMER_ALLOW.search(line) is not None)
+                ]
+                if offending:
+                    violations.append(f"{path.relative_to(WEB_ROOT)}: {name}")
+                continue
             if pattern.search(content):
                 violations.append(f"{path.relative_to(WEB_ROOT)}: {name}")
     assert violations == []

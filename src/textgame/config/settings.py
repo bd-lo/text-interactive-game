@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # M4 制造（第 13 章 §13.4、D-M4-6）：自由制造开关默认关闭；M5 预算/真实 LLM 前不开启。
     free_craft_enabled: bool = False
 
+    # 启动器控制面（普通玩家双击启动/网页内退出）：控制面是否可用由进程入口注入的
+    # ``LauncherController`` 决定（``python -m textgame.launcher`` 才注入；普通
+    # ``uvicorn textgame.main:app`` 不注入），不通过 env 开关。这里只配置空闲自动退出阈值
+    # （秒，0=关闭；env 名 TEXTGAME_IDLE_EXIT_SECONDS，默认 300 = 5 分钟；launcher CLI 可覆盖）。
+    idle_exit_seconds: int = Field(default=300, ge=0)
+
     # LLM 接入（第 12 章）：模型分级与回退链在 M5 落 config/llm.json；
     # 当前先配置单供应商单模型 + 凭据，凭据永不写入纳入 git 的文件。
     # D-M5-6：默认离线（DisabledLLMClient）；true 时构造真实客户端且缺 key 立即失败。

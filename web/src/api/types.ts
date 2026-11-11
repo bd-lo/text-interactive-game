@@ -1,11 +1,11 @@
 /**
  * 前端契约类型快照（M6-025 骨架 + M6-027 回放 + M6-026 卡库导入 + M6-028 生成 + H4 世界书
- * + 用户自上传场景 Scenario Module v1 + LLM 运行期设置）。
+ * + 用户自上传场景 Scenario Module v1 + LLM 运行期设置 + 启动器控制面）。
  *
  * 唯一来源是 live OpenAPI：`create_app().openapi()`（D-M6-2 / 第 23 章 §23.3）。
  * 字段集合由 `tests/integration/test_frontend_contract.py` 静态比对；后端契约变更未同步
  * 到本文件时契约测试会失败。当前使用现有端点（games/turns/replay + character-cards 8 个
- * + world-books 5 个 + scenarios 5 个 + settings 4 个）。
+ * + world-books 5 个 + scenarios 5 个 + settings 4 个 + app 控制面 3 个）。
  */
 
 /** 前端实际调用的端点（必须是 live OpenAPI 的子集，契约测试逐项断言）。 */
@@ -40,6 +40,10 @@ export const API_PATHS = {
   saveLlmSettings: '/api/v1/settings/llm',
   testLlmConnection: '/api/v1/settings/llm/test',
   clearLlmSettings: '/api/v1/settings/llm',
+  // 启动器控制面（网页「退出游戏」/ 心跳 / 状态；Task A 冻结契约）
+  appStatus: '/api/v1/app/status',
+  appHeartbeat: '/api/v1/app/heartbeat',
+  appShutdown: '/api/v1/app/shutdown',
 } as const
 
 export type Scenario = 'm2' | 'm3' | 'm4' | 'story'
@@ -602,6 +606,38 @@ export interface LlmSettingsSaveResponse {
 /** `DELETE /api/v1/settings/llm` 200 响应（清除本机 key 后的状态快照）。 */
 export interface LlmSettingsClearResponse {
   status: LlmSettingsStatus
+}
+
+// ---------------------------------------------------------------------------
+// 启动器控制面（launcher：网页「退出游戏」/ 心跳 / 状态；后端 Task A 冻结契约）
+// 语义：非启动器模式 status 仍 200（launcher_mode=false/shutdown_supported=false）；
+// heartbeat/shutdown 无控制器时 404，非回环 shutdown 403；成功 shutdown 后服务端 ~0.5s 退出，
+// 前端不等待服务端真正停止，只显示「已退出」覆盖层。
+// ---------------------------------------------------------------------------
+
+/** `GET /api/v1/app/status` 200 响应：是否由启动器托管、空闲退出阈值、是否支持页内退出。 */
+export interface LauncherStatus {
+  launcher_mode: boolean
+  idle_exit_seconds: number
+  shutdown_supported: boolean
+  version: string
+}
+
+/** `POST /api/v1/app/heartbeat` 200 响应（心跳成功；无控制器时 404 统一失败信封）。 */
+export interface LauncherHeartbeat {
+  ok: boolean
+  idle_exit_seconds: number
+}
+
+/** `POST /api/v1/app/shutdown` 200 响应（服务端 ~0.5s 内退出；前端不等待）。 */
+export interface LauncherShutdown {
+  ok: boolean
+  message: string
+}
+
+/** `POST /api/v1/app/shutdown` 请求体（`AppShutdownBody`；confirm 必须为 true，extra=forbid）。 */
+export interface LauncherShutdownRequest {
+  confirm: true
 }
 
 /** 失败统一信封（第 6 章 §6.7；`ok:false` + 稳定错误码）。 */

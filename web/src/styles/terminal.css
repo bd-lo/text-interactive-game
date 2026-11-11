@@ -1866,3 +1866,80 @@ html[data-visual='full'] .scenario-title {
 html[data-visual='full'] .llm-source-tag {
   text-shadow: 0 0 8px rgba(127, 211, 155, 0.25);
 }
+
+/* ==========================================================================
+   启动器控制面 UI（全局 header「退出游戏」/ 非启动器说明 / 已退出覆盖层）
+   - header 是 flex-wrap：375px 时控件换行不横向溢出；沿用 btn/panel 既有视觉；
+   - 覆盖层 fixed 全屏、z-index 高于 CRT 特效层（9998），role=status aria-live=polite。
+   ========================================================================== */
+
+.quit-game-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.quit-info-panel {
+  padding: 6px 10px;
+  border: 1px solid var(--warn);
+  background: var(--panel);
+  max-width: 100%;
+}
+
+.quit-info-text {
+  margin: 0 0 6px;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.quit-error {
+  flex: 1 1 100%;
+  margin: 0;
+  max-width: 320px;
+  color: var(--danger);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.exit-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--fg);
+  text-align: center;
+  background: rgba(6, 10, 7, 0.96);
+}
+
+.exit-overlay-title {
+  margin: 0;
+  color: var(--accent);
+  font-size: 1.4rem;
+  letter-spacing: 0.08em;
+}
+
+.exit-overlay-body {
+  margin: 0;
+  color: var(--fg-dim);
+}
+
+html[data-visual='full'] .exit-overlay-title {
+  text-shadow: 0 0 12px rgba(127, 211, 155, 0.35);
+}
+
+@media (max-width: 480px) {
+  .quit-game-control {
+    width: 100%;
+  }
+
+  .exit-overlay-title {
+    font-size: 1.2rem;
+  }
+}

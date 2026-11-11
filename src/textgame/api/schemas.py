@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from textgame.domain.character_card import CardSource, CharacterCard
 
@@ -596,6 +596,61 @@ class ScenarioImportResponse(BaseModel):
     warnings: list[ScenarioWarningResponse]
 
 
+class AppStatusResponse(BaseModel):
+    """``GET /api/v1/app/status`` 200 响应（启动器控制面状态，冻结契约）。
+
+    ``launcher_mode``：是否由 ``python -m textgame.launcher`` 启动（注入控制器）；
+    ``idle_exit_seconds``：控制器实际空闲阈值（非启动器模式固定 0）；
+    ``shutdown_supported``：是否支持 ``POST /api/v1/app/shutdown``；
+    ``version``：后端包版本（前端「关于」展示用）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    launcher_mode: bool
+    idle_exit_seconds: int
+    shutdown_supported: bool
+    version: str
+
+
+class AppHeartbeatResponse(BaseModel):
+    """``POST /api/v1/app/heartbeat`` 200 响应（前端轮询上报存活）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    idle_exit_seconds: int
+
+
+class AppShutdownBody(BaseModel):
+    """``POST /api/v1/app/shutdown`` 请求体：``{"confirm": true}``。
+
+    防误触：``confirm`` 必须是 JSON 布尔字面量 ``true``（false/缺省/``1``/字符串等一律 422，
+    不用 ``Literal[True]`` 因为 Pydantic 会把 ``1`` 宽松等值成 True）；未知字段一律拒绝。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool
+
+    @model_validator(mode="before")
+    @classmethod
+    def _confirm_must_be_literal_true(cls, data: Any) -> Any:
+        """原始 JSON 层校验 ``confirm is true``（拒绝 1/"true"/缺省等非布尔 true）。"""
+        if isinstance(data, dict) and data.get("confirm") is not True:
+            raise ValueError("confirm 必须为布尔 true（用于确认退出游戏）")
+        return data
+
+
+class AppShutdownResponse(BaseModel):
+    """``POST /api/v1/app/shutdown`` 200 响应（幂等：重复调用同响应）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    message: str
+
+
 class AuditRecordResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/audit`` 单条审计记录（读模型）。"""
 
@@ -625,6 +680,10 @@ class AuditListResponse(BaseModel):
 
 
 __all__ = [
+    "AppHeartbeatResponse",
+    "AppShutdownBody",
+    "AppShutdownResponse",
+    "AppStatusResponse",
     "AuditListResponse",
     "AuditRecordResponse",
     "CharacterCardDetailResponse",

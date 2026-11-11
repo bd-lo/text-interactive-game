@@ -1703,6 +1703,73 @@ async function runFlow() {
     const benign = consoleEvents.filter((entry) => isBenignConsoleError(entry))
     return `捕获 ${consoleEvents.length} 条控制台事件（良性/预期 ${benign.length} 条），错误 ${bad.length} 条`
   })
+
+  // 启动器退出入口（必须最后一步：启动器模式下会真正停掉被测服务；CI 非启动器模式只校验提示面板）
+  await step('app.exit', '退出游戏入口：非启动器提示 / 启动器模式确认退出', async () => {
+    await navigate('/', '首页（退出入口）', '.home-form')
+    let launcherStatus = null
+    try {
+      launcherStatus = await getJson('/api/v1/app/status')
+    } catch {
+      launcherStatus = null
+    }
+    check(
+      '启动器控制面 status 可读',
+      launcherStatus !== null &&
+        typeof launcherStatus.launcher_mode === 'boolean' &&
+        typeof launcherStatus.shutdown_supported === 'boolean',
+      JSON.stringify(launcherStatus),
+    )
+    await waitFor(
+      `document.querySelector('[data-testid="quit-game-button"]') !== null`,
+      '全局「退出游戏」按钮存在',
+    )
+    await click('[data-testid="quit-game-button"]', '退出游戏')
+    const supported = launcherStatus !== null && launcherStatus.shutdown_supported === true
+    if (supported) {
+      await waitVisible('[data-testid="quit-confirm-button"]', '退出确认面板')
+      await click('[data-testid="quit-confirm-button"]', '确认退出')
+      await waitVisible('[data-testid="exit-overlay"]', '已退出覆盖层')
+      const overlayText = String(await textOf('[data-testid="exit-overlay"]'))
+      check(
+        '启动器模式：显示「游戏已退出」覆盖层',
+        overlayText.includes('游戏已退出') && overlayText.includes('可以关闭此页面了'),
+        truncate(overlayText, 120),
+      )
+      let serverGone = false
+      for (let index = 0; index < 30; index += 1) {
+        try {
+          const response = await httpGet('/healthz', 1000)
+          if (response.status !== 200) {
+            serverGone = true
+            break
+          }
+        } catch {
+          serverGone = true
+          break
+        }
+        await sleep(500)
+      }
+      check('启动器模式：服务端已优雅退出（/healthz 不可达）', serverGone, '')
+      await screenshot('24-exit-overlay-1280.png')
+    } else {
+      await waitVisible('[data-testid="quit-info-panel"]', '非启动器模式说明面板')
+      const infoText = String(await textOf('[data-testid="quit-info-panel"]'))
+      check(
+        '非启动器模式：提示在服务窗口按 Ctrl+C 退出',
+        infoText.includes('当前不是启动器模式') && infoText.includes('Ctrl+C'),
+        truncate(infoText, 160),
+      )
+      await click('[data-testid="quit-info-close"]', '知道了')
+      await waitFor(
+        `document.querySelector('[data-testid="quit-info-panel"]') === null`,
+        '说明面板关闭',
+      )
+      await screenshot('24-exit-info-1280.png')
+    }
+    await checkNoInternalIdsVisible('退出入口页')
+    return supported ? 'launcher-mode: exited' : 'dev-mode: info shown'
+  })
 }
 
 // ---------------------------------------------------------------------------

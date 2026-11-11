@@ -26,6 +26,7 @@ from textgame.config.rng import save_seed_from_settings
 from textgame.config.settings import get_settings
 from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
+from textgame.launcher_control import LauncherController
 from textgame.llm.runtime import RuntimeLLMClient
 from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
@@ -50,8 +51,12 @@ from textgame.tools.builtin import build_game_tool_registry
 from textgame.tools.gate import ToolGate
 
 
-def _build_app() -> FastAPI:
-    """装配应用图（SQLite 仓储 + M3 多角色编排 + 离线确定性 Agent + 模板叙事 + 审计）。"""
+def _build_app(launcher_controller: LauncherController | None = None) -> FastAPI:
+    """装配应用图（SQLite 仓储 + M3 多角色编排 + 离线确定性 Agent + 模板叙事 + 审计）。
+
+    ``launcher_controller`` 为启动器模式加法（``python -m textgame.launcher`` 注入）；
+    缺省 ``None`` 时装配/行为与旧路径逐字不变（控制面端点按契约降级）。
+    """
     settings = get_settings()
     engine, _session_factory = prepare_db(settings.db_url)
     init_schema(engine)
@@ -142,6 +147,7 @@ def _build_app() -> FastAPI:
         card_service=card_service,
         world_book_service=world_book_service,
         scenario_service=scenario_service,
+        launcher_controller=launcher_controller,
     )
     # 设置端点（GET/PUT/DELETE /api/v1/settings/llm）读取同一实例：保存 key 后热切换。
     app.state.llm_runtime = llm_client

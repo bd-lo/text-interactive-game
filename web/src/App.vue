@@ -10,6 +10,9 @@ const visual = useVisualStore()
 
 // 重特效层懒加载（H4-BRIEF §2A）：关闭特效/低功耗时不下载该 chunk；组件内部再按档位降级。
 const EmberField = defineAsyncComponent(() => import('@/components/EmberField.vue'))
+// 启动器控制面懒加载：把 API client/退出状态机留在独立 chunk，不拖慢首屏入口 bundle
+// （组件挂载后只读一次 `/app/status`，非启动器模式静默隐藏）。
+const QuitGameControl = defineAsyncComponent(() => import('@/components/QuitGameControl.vue'))
 </script>
 
 <template>
@@ -33,6 +36,7 @@ const EmberField = defineAsyncComponent(() => import('@/components/EmberField.vu
       </nav>
       <span class="app-subtitle">文字冒险</span>
       <VisualSettings />
+      <QuitGameControl />
     </header>
     <main id="main-content" class="app-main">
       <RouterView v-slot="{ Component }">
