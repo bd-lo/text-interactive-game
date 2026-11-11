@@ -1,10 +1,11 @@
 /**
- * 前端契约类型快照（M6-025 骨架 + M6-027 回放 + M6-026 卡库导入 + M6-028 生成）。
+ * 前端契约类型快照（M6-025 骨架 + M6-027 回放 + M6-026 卡库导入 + M6-028 生成 + H4 世界书
+ * + 用户自上传场景 Scenario Module v1 + LLM 运行期设置）。
  *
  * 唯一来源是 live OpenAPI：`create_app().openapi()`（D-M6-2 / 第 23 章 §23.3）。
  * 字段集合由 `tests/integration/test_frontend_contract.py` 静态比对；后端契约变更未同步
- * 到本文件时契约测试会失败。当前使用现有 11 个端点（games/turns/replay + character-cards 8 个）；
- * M6-028 generate 端点已接入（API client `generateCard`）。
+ * 到本文件时契约测试会失败。当前使用现有端点（games/turns/replay + character-cards 8 个
+ * + world-books 5 个 + scenarios 5 个 + settings 4 个）。
  */
 
 /** 前端实际调用的端点（必须是 live OpenAPI 的子集，契约测试逐项断言）。 */
@@ -28,6 +29,17 @@ export const API_PATHS = {
   validateWorldBook: '/api/v1/world-books/validate',
   getWorldBook: '/api/v1/world-books/{world_book_id}',
   deleteWorldBook: '/api/v1/world-books/{world_book_id}',
+  // 玩家自上传场景（scenario modules v1；docs/design/user-scenario-modules.md §3.4）
+  listScenarios: '/api/v1/scenarios',
+  importScenario: '/api/v1/scenarios',
+  validateScenario: '/api/v1/scenarios/validate',
+  getScenario: '/api/v1/scenarios/{scenario_id}',
+  deleteScenario: '/api/v1/scenarios/{scenario_id}',
+  // LLM 运行期设置（玩家在网页里输入/测试/清除自己的 DeepSeek API Key）
+  getLlmSettings: '/api/v1/settings/llm',
+  saveLlmSettings: '/api/v1/settings/llm',
+  testLlmConnection: '/api/v1/settings/llm/test',
+  clearLlmSettings: '/api/v1/settings/llm',
 } as const
 
 export type Scenario = 'm2' | 'm3' | 'm4' | 'story'
@@ -51,13 +63,15 @@ export type ErrorCode =
 
 /** `POST /api/v1/games` 请求体（`CreateGameBody`；响应 5 字段，别名为 `save_seed`）。
  *  `card_id` 为 D-M6-2 加法语义（与 `seed`/`scenario` 互斥）；`world_book_id` 为 H4 加法
- *  （可与其他字段组合，绑定世界书，未知 404）。
+ *  （可与其他字段组合，绑定世界书，未知 404）；`scenario_id` 为用户自上传场景加法
+ *  （与 `card_id`/`scenario` 互斥，未知/已删 404，见场景设计 §3.4）。
  */
 export interface CreateGameRequest {
   card_id?: string
   seed?: number
   scenario?: Scenario
   world_book_id?: string
+  scenario_id?: string
 }
 
 /** `POST /api/v1/games` 201 响应（`CreatedGameResponse`，5 字段）。 */
@@ -436,6 +450,140 @@ export interface WorldBookValidateResponse {
 export interface WorldBookDeleteResponse {
   world_book_id: string
   deleted: boolean
+}
+
+// ---------------------------------------------------------------------------
+// 玩家自上传场景 Scenario Module v1（scenarios；docs/design/user-scenario-modules.md §2/§3.4）
+// 说明：场景 = 一份玩家可读 JSON（房间/物品/NPC/目标/结局/触发/对话），导入即玩；
+// 定义原文由服务端校验并存库（`definition` 只读展示，前端不做字段级校验）。
+// ---------------------------------------------------------------------------
+
+/** 场景定义原文（`GET /scenarios/{id}` 的 `definition`：玩家上传 JSON 反序列化后的对象，只读展示）。 */
+export type ScenarioDefinition = Record<string, unknown>
+
+/** 场景统计摘要（`summary`；列表/详情/校验/导入共用 6 个计数）。 */
+export interface ScenarioStats {
+  rooms: number
+  items: number
+  npcs: number
+  objectives: number
+  endings: number
+  suggestions: number
+}
+
+/** 场景告警项（`ScenarioWarningResponse`；不阻断导入）。与校验错误同构 `{path,message}`，
+ *  `path` 为 JSON 路径（根级提示为空串）；前端解析时对纯字符串也容错（归一为 `path=''`）。
+ */
+export interface ScenarioWarning {
+  path: string
+  message: string
+}
+
+/** `GET /api/v1/scenarios` 列表项（`ScenarioSummaryResponse`；按 created_at 倒序）。 */
+export interface ScenarioSummary {
+  scenario_id: string
+  slug: string
+  title: string
+  author: string
+  description: string
+  schema_version: number
+  created_at: string
+  summary: ScenarioStats
+  warnings: ScenarioWarning[]
+}
+
+/** `GET /api/v1/scenarios` 200 响应 `{scenarios, total}`。 */
+export interface ScenarioListResponse {
+  scenarios: ScenarioSummary[]
+  total: number
+}
+
+/** `GET /api/v1/scenarios/{scenario_id}` 200 响应（含原始定义、summary、warnings）。 */
+export interface ScenarioDetailResponse {
+  scenario_id: string
+  slug: string
+  title: string
+  author: string
+  description: string
+  schema_version: number
+  created_at: string
+  definition: ScenarioDefinition
+  summary: ScenarioStats
+  warnings: ScenarioWarning[]
+}
+
+/** 场景校验错误项（`ScenarioValidationErrorResponse`；`path` 为 JSON 路径如 `rooms[2].exits.east`）。 */
+export interface ScenarioValidationError {
+  path: string
+  message: string
+}
+
+/** `POST /api/v1/scenarios/validate` 200 响应（只读预检；`ok=false` 时 errors 带 JSON 路径）。 */
+export interface ScenarioValidateResponse {
+  ok: boolean
+  errors: ScenarioValidationError[]
+  warnings: ScenarioWarning[]
+  summary: ScenarioStats
+}
+
+/** `POST /api/v1/scenarios` 201 响应（multipart 导入场景）。 */
+export interface ScenarioImportResponse {
+  scenario_id: string
+  slug: string
+  title: string
+  summary: ScenarioStats
+  warnings: ScenarioWarning[]
+}
+
+// ---------------------------------------------------------------------------
+// LLM 运行期设置（玩家在网页里输入/测试/清除自己的 DeepSeek API Key）
+// 契约：GET/PUT/DELETE /api/v1/settings/llm + POST /api/v1/settings/llm/test。
+// 安全口径：响应只含打码 key，绝不含明文；写端点按值幂等、不需要 Idempotency-Key。
+// ---------------------------------------------------------------------------
+
+/** LLM 配置来源：开发环境 `.env` / 本机保存 / 未配置（未知值回退原值展示）。 */
+export type LlmSettingsSource = 'env' | 'user' | 'none'
+
+/** `GET /api/v1/settings/llm` 200 响应（当前 LLM 配置状态，不含明文密钥）。 */
+export interface LlmSettingsStatus {
+  configured: boolean
+  enabled: boolean
+  source: LlmSettingsSource
+  provider: string
+  model: string
+  api_base: string
+  masked_key: string | null
+  has_saved_user_key: boolean
+  detail: string
+}
+
+/** 连接测试结果（`LlmTestResponse`；只验证网络/鉴权/协议，不写游戏状态）。 */
+export interface LlmConnectionTest {
+  ok: boolean
+  latency_ms: number | null
+  provider: string
+  model: string
+  error: string | null
+}
+
+/** `PUT /api/v1/settings/llm` 请求体（`LlmSaveRequestBody`；保存并热切换，不回显明文）。 */
+export interface LlmSettingsSaveRequest {
+  api_key: string
+  provider?: string
+  model?: string
+  api_base?: string
+  run_test?: boolean
+}
+
+/** `PUT /api/v1/settings/llm` 200 响应：状态快照 + 可选连接测试结果。 */
+export interface LlmSettingsSaveResponse {
+  status: LlmSettingsStatus
+  test: LlmConnectionTest | null
+}
+
+/** `DELETE /api/v1/settings/llm` 200 响应（清除本机 key 后的状态快照）。 */
+export interface LlmSettingsClearResponse {
+  status: LlmSettingsStatus
 }
 
 /** 失败统一信封（第 6 章 §6.7；`ok:false` + 稳定错误码）。 */

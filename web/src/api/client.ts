@@ -1,5 +1,5 @@
 /**
- * API client（M6-025 + M6-026 + M6-027 + M6-028）：只调现有 11 个端点（含只读 replay），
+ * API client（M6-025 + M6-026 + M6-027 + M6-028 + H4 世界书 + 用户自上传场景）：
  * 无自动重试、无 SSE。
  *
  * 错误契约（第 6 章 §6.7、D-M6-6③）：业务失败仍是 HTTP 200 + `TurnResult(ok=false)`；
@@ -25,7 +25,19 @@ import type {
   GameListResponse,
   GamePlayerViewResponse,
   GameViewResponse,
+  LlmConnectionTest,
+  LlmSettingsClearResponse,
+  LlmSettingsSaveRequest,
+  LlmSettingsSaveResponse,
+  LlmSettingsStatus,
   ReplayResponse,
+  ScenarioDetailResponse,
+  ScenarioImportResponse,
+  ScenarioListResponse,
+  ScenarioStats,
+  ScenarioSummary,
+  ScenarioValidateResponse,
+  ScenarioWarning,
   TurnRequest,
   TurnResult,
   WorldBookDeleteResponse,
@@ -838,4 +850,372 @@ export async function deleteWorldBook(
     throw contractError('WorldBookDeleteResponse', 'world_book_id/deleted 类型不符')
   }
   return record as unknown as WorldBookDeleteResponse
+}
+
+// ---------------------------------------------------------------------------
+// 玩家自上传场景（scenarios 5 端点；docs/design/user-scenario-modules.md §2/§3.4）
+// 口径：场景 = 玩家上传的 JSON 定义（房间/物品/NPC/目标/结局），导入即玩；
+// 定义原文由服务端校验并存库，前端只做基础预检与只读展示，不做字段级校验。
+// ---------------------------------------------------------------------------
+
+const SCENARIO_LIST_KEYS = ['scenarios', 'total'] as const
+const SCENARIO_STATS_KEYS = [
+  'rooms',
+  'items',
+  'npcs',
+  'objectives',
+  'endings',
+  'suggestions',
+] as const
+const SCENARIO_SUMMARY_KEYS = [
+  'scenario_id',
+  'slug',
+  'title',
+  'author',
+  'description',
+  'schema_version',
+  'created_at',
+  'summary',
+  'warnings',
+] as const
+const SCENARIO_DETAIL_KEYS = [
+  'scenario_id',
+  'slug',
+  'title',
+  'author',
+  'description',
+  'schema_version',
+  'created_at',
+  'definition',
+  'summary',
+  'warnings',
+] as const
+const SCENARIO_VALIDATE_KEYS = ['ok', 'errors', 'warnings', 'summary'] as const
+const SCENARIO_VALIDATION_ERROR_KEYS = ['path', 'message'] as const
+const SCENARIO_IMPORT_KEYS = ['scenario_id', 'slug', 'title', 'summary', 'warnings'] as const
+
+/**
+ * 场景告警 `[{path,message}]` → 归一化 `ScenarioWarning[]`（与校验错误同构）。
+ *
+ * 场景设计文档只约定「warnings 不阻断」，元素形状由后端契约定为 `{path,message}`；
+ * 这里对纯字符串（归一为 `path=''`）与缺 `path` 的对象也容错，避免警告形状差异炸掉整个页面
+ * （警告本身不承担阻断职责，展示按 path+message）。
+ */
+function parseScenarioWarnings(value: unknown, label: string): ScenarioWarning[] {
+  if (!Array.isArray(value)) {
+    throw contractError(label, 'warnings 不是数组')
+  }
+  const warnings: ScenarioWarning[] = []
+  for (const item of value) {
+    if (typeof item === 'string') {
+      warnings.push({ path: '', message: item })
+      continue
+    }
+    const warning = assertRecord(item, 'ScenarioWarningResponse')
+    if (typeof warning.message !== 'string') {
+      throw contractError('ScenarioWarningResponse', 'message 类型不符')
+    }
+    warnings.push({
+      path: typeof warning.path === 'string' ? warning.path : '',
+      message: warning.message,
+    })
+  }
+  return warnings
+}
+
+/** 场景统计 `{rooms,items,npcs,objectives,endings,suggestions}` 6 个计数逐项校验。 */
+function parseScenarioStats(value: unknown, label: string): ScenarioStats {
+  const record = assertRecord(value, label)
+  assertKeys(record, label, SCENARIO_STATS_KEYS)
+  for (const key of SCENARIO_STATS_KEYS) {
+    if (typeof record[key] !== 'number') {
+      throw contractError(label, `${key} 类型不符`)
+    }
+  }
+  return record as unknown as ScenarioStats
+}
+
+/** 列表项（`ScenarioSummaryResponse`）逐项校验并归一化 warnings。 */
+function parseScenarioSummary(item: unknown, label: string): ScenarioSummary {
+  const record = assertRecord(item, label)
+  assertKeys(record, label, SCENARIO_SUMMARY_KEYS)
+  if (
+    typeof record.scenario_id !== 'string' ||
+    typeof record.slug !== 'string' ||
+    typeof record.title !== 'string' ||
+    typeof record.author !== 'string' ||
+    typeof record.description !== 'string' ||
+    typeof record.schema_version !== 'number' ||
+    typeof record.created_at !== 'string'
+  ) {
+    throw contractError(label, 'scenario_id/slug/title/author/description/schema_version/created_at 类型不符')
+  }
+  return {
+    ...record,
+    summary: parseScenarioStats(record.summary, `${label}.summary`),
+    warnings: parseScenarioWarnings(record.warnings, `${label}.warnings`),
+  } as unknown as ScenarioSummary
+}
+
+/** `GET /api/v1/scenarios` 查询参数：`q` 搜索（标题/作者）、`limit` 1..100、`offset` ≥0。 */
+export interface ScenarioListQuery {
+  q?: string
+  limit?: number
+  offset?: number
+}
+
+/** `GET /api/v1/scenarios`：场景库列表 `{scenarios, total}`（只读；按 created_at 倒序）。 */
+export async function listScenarios(
+  query: ScenarioListQuery = {},
+  signal?: AbortSignal,
+): Promise<ScenarioListResponse> {
+  const params = new URLSearchParams()
+  const search = query.q?.trim()
+  if (search !== undefined && search !== '') {
+    params.set('q', search)
+  }
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit))
+  }
+  if (query.offset !== undefined) {
+    params.set('offset', String(query.offset))
+  }
+  const queryString = params.toString()
+  const suffix = queryString === '' ? '' : `?${queryString}`
+  const payload = await request<unknown>(
+    `/api/v1/scenarios${suffix}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'ScenarioListResponse')
+  assertKeys(record, 'ScenarioListResponse', SCENARIO_LIST_KEYS)
+  if (!Array.isArray(record.scenarios) || typeof record.total !== 'number') {
+    throw contractError('ScenarioListResponse', 'scenarios/total 类型不符')
+  }
+  return {
+    scenarios: record.scenarios.map((item) =>
+      parseScenarioSummary(item, 'ScenarioSummaryResponse'),
+    ),
+    total: record.total,
+  }
+}
+
+/** `GET /api/v1/scenarios/{scenario_id}`：详情（含原始定义、summary、warnings；未知/已删 404）。 */
+export async function getScenario(
+  scenarioId: string,
+  signal?: AbortSignal,
+): Promise<ScenarioDetailResponse> {
+  const payload = await request<unknown>(
+    `/api/v1/scenarios/${encodeURIComponent(scenarioId)}`,
+    { method: 'GET' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'ScenarioDetailResponse')
+  assertKeys(record, 'ScenarioDetailResponse', SCENARIO_DETAIL_KEYS)
+  if (
+    typeof record.scenario_id !== 'string' ||
+    typeof record.slug !== 'string' ||
+    typeof record.title !== 'string' ||
+    typeof record.author !== 'string' ||
+    typeof record.description !== 'string' ||
+    typeof record.schema_version !== 'number' ||
+    typeof record.created_at !== 'string'
+  ) {
+    throw contractError('ScenarioDetailResponse', '场景基础字段类型不符')
+  }
+  assertRecord(record.definition, 'ScenarioDetailResponse.definition')
+  return {
+    ...record,
+    summary: parseScenarioStats(record.summary, 'ScenarioDetailResponse.summary'),
+    warnings: parseScenarioWarnings(record.warnings, 'ScenarioDetailResponse.warnings'),
+  } as unknown as ScenarioDetailResponse
+}
+
+/**
+ * `POST /api/v1/scenarios/validate`：只读预检（body=场景 JSON 原文，无幂等键、不写库）。
+ *
+ * 与人物卡/世界书 validate 不同，这里**不套 `{payload}`**：请求体就是场景 JSON 本身
+ * （用户内容平台 v1 契约，`docs/design/user-scenario-modules.md` §3.4）。
+ */
+export async function validateScenario(
+  scenario: unknown,
+  signal?: AbortSignal,
+): Promise<ScenarioValidateResponse> {
+  const payload = await request<unknown>(
+    '/api/v1/scenarios/validate',
+    { method: 'POST', body: JSON.stringify(scenario) },
+    { signal },
+  )
+  const record = assertRecord(payload, 'ScenarioValidateResponse')
+  assertKeys(record, 'ScenarioValidateResponse', SCENARIO_VALIDATE_KEYS)
+  if (typeof record.ok !== 'boolean' || !Array.isArray(record.errors)) {
+    throw contractError('ScenarioValidateResponse', 'ok/errors 类型不符')
+  }
+  for (const item of record.errors) {
+    const error = assertRecord(item, 'ScenarioValidationErrorResponse')
+    assertKeys(error, 'ScenarioValidationErrorResponse', SCENARIO_VALIDATION_ERROR_KEYS)
+    if (typeof error.path !== 'string' || typeof error.message !== 'string') {
+      throw contractError('ScenarioValidationErrorResponse', 'path/message 类型不符')
+    }
+  }
+  return {
+    ok: record.ok,
+    errors: record.errors as ScenarioValidateResponse['errors'],
+    warnings: parseScenarioWarnings(record.warnings, 'ScenarioValidateResponse.warnings'),
+    summary: parseScenarioStats(record.summary, 'ScenarioValidateResponse.summary'),
+  }
+}
+
+/**
+ * `POST /api/v1/scenarios`：multipart（`file` 部件 ≤256KB，文件名 `*.json`）+ 幂等键 → 201。
+ * 不手写 `Content-Type`（FormData 自动带 boundary；第 23 章 §23.5）。
+ */
+export async function importScenario(
+  content: string,
+  actionKey: string,
+  filename = 'scenario.json',
+  signal?: AbortSignal,
+): Promise<ScenarioImportResponse> {
+  const form = new FormData()
+  form.append('file', new Blob([content], { type: 'application/json' }), filename)
+  const payload = await request<unknown>(
+    '/api/v1/scenarios',
+    { method: 'POST', body: form },
+    { idempotent: true, actionKey, signal },
+  )
+  const record = assertRecord(payload, 'ScenarioImportResponse')
+  assertKeys(record, 'ScenarioImportResponse', SCENARIO_IMPORT_KEYS)
+  if (
+    typeof record.scenario_id !== 'string' ||
+    typeof record.slug !== 'string' ||
+    typeof record.title !== 'string'
+  ) {
+    throw contractError('ScenarioImportResponse', 'scenario_id/slug/title 类型不符')
+  }
+  return {
+    ...record,
+    summary: parseScenarioStats(record.summary, 'ScenarioImportResponse.summary'),
+    warnings: parseScenarioWarnings(record.warnings, 'ScenarioImportResponse.warnings'),
+  } as unknown as ScenarioImportResponse
+}
+
+/** `DELETE /api/v1/scenarios/{scenario_id}`：软删 204（不影响已开局存档；重复删除 404，必带幂等键）。 */
+export async function deleteScenario(
+  scenarioId: string,
+  actionKey: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await request<unknown>(
+    `/api/v1/scenarios/${encodeURIComponent(scenarioId)}`,
+    { method: 'DELETE' },
+    { idempotent: true, actionKey, signal },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// LLM 运行期设置（玩家在网页里输入/测试/清除自己的 DeepSeek API Key）
+// 契约：GET/PUT/DELETE /api/v1/settings/llm + POST /api/v1/settings/llm/test。
+// 安全口径：只读状态只含打码 key；前端不持久化明文（表单保存后立即清空密码框）。
+// 写端点按值幂等、契约不要求 Idempotency-Key（不做自动重试）。
+// ---------------------------------------------------------------------------
+
+const LLM_STATUS_KEYS = [
+  'configured',
+  'enabled',
+  'source',
+  'provider',
+  'model',
+  'api_base',
+  'masked_key',
+  'has_saved_user_key',
+  'detail',
+] as const
+const LLM_TEST_KEYS = ['ok', 'latency_ms', 'provider', 'model', 'error'] as const
+const LLM_SAVE_KEYS = ['status', 'test'] as const
+const LLM_CLEAR_KEYS = ['status'] as const
+
+/** 当前 LLM 配置状态逐字段校验（`extra="forbid"`；漂移即契约错误）。 */
+function parseLlmStatus(value: unknown, label = 'LlmStatusResponse'): LlmSettingsStatus {
+  const record = assertRecord(value, label)
+  assertKeys(record, label, LLM_STATUS_KEYS)
+  if (
+    typeof record.configured !== 'boolean' ||
+    typeof record.enabled !== 'boolean' ||
+    typeof record.source !== 'string' ||
+    typeof record.provider !== 'string' ||
+    typeof record.model !== 'string' ||
+    typeof record.api_base !== 'string' ||
+    typeof record.has_saved_user_key !== 'boolean' ||
+    typeof record.detail !== 'string' ||
+    (record.masked_key !== null && typeof record.masked_key !== 'string')
+  ) {
+    throw contractError(label, '状态字段类型不符')
+  }
+  return record as unknown as LlmSettingsStatus
+}
+
+/** 连接测试结果逐字段校验（`latency_ms`/`error` 可为 null）。 */
+function parseLlmTest(value: unknown, label = 'LlmTestResponse'): LlmConnectionTest {
+  const record = assertRecord(value, label)
+  assertKeys(record, label, LLM_TEST_KEYS)
+  if (
+    typeof record.ok !== 'boolean' ||
+    typeof record.provider !== 'string' ||
+    typeof record.model !== 'string' ||
+    (record.latency_ms !== null && typeof record.latency_ms !== 'number') ||
+    (record.error !== null && typeof record.error !== 'string')
+  ) {
+    throw contractError(label, '测试结果字段类型不符')
+  }
+  return record as unknown as LlmConnectionTest
+}
+
+/** `GET /api/v1/settings/llm`：当前 LLM 配置状态（只读、零网络、不含明文密钥）。 */
+export async function getLlmSettings(signal?: AbortSignal): Promise<LlmSettingsStatus> {
+  const payload = await request<unknown>('/api/v1/settings/llm', { method: 'GET' }, { signal })
+  return parseLlmStatus(payload)
+}
+
+/**
+ * `PUT /api/v1/settings/llm`：保存本机 key 并热切换（当前进程立即生效）。
+ *
+ * body 必带完整 `api_key`（前端不持久化/不回显）；`run_test=true` 时服务端保存后立即
+ * 测试一次（失败不影响已保存配置）。写端点按值幂等、不带 Idempotency-Key。
+ */
+export async function saveLlmSettings(
+  body: LlmSettingsSaveRequest,
+  signal?: AbortSignal,
+): Promise<LlmSettingsSaveResponse> {
+  const payload = await request<unknown>(
+    '/api/v1/settings/llm',
+    { method: 'PUT', body: JSON.stringify(body) },
+    { signal },
+  )
+  const record = assertRecord(payload, 'LlmSaveResponse')
+  assertKeys(record, 'LlmSaveResponse', LLM_SAVE_KEYS)
+  const status = parseLlmStatus(record.status, 'LlmSaveResponse.status')
+  const test = record.test === null ? null : parseLlmTest(record.test, 'LlmSaveResponse.test')
+  return { status, test }
+}
+
+/** `POST /api/v1/settings/llm/test`：用当前生效配置发一次最小请求（默认离线时零网络）。 */
+export async function testLlmConnection(signal?: AbortSignal): Promise<LlmConnectionTest> {
+  const payload = await request<unknown>(
+    '/api/v1/settings/llm/test',
+    { method: 'POST' },
+    { signal },
+  )
+  return parseLlmTest(payload)
+}
+
+/** `DELETE /api/v1/settings/llm`：清除本机保存的 key 并热切换 → `{status}`。 */
+export async function clearLlmSettings(signal?: AbortSignal): Promise<LlmSettingsClearResponse> {
+  const payload = await request<unknown>(
+    '/api/v1/settings/llm',
+    { method: 'DELETE' },
+    { signal },
+  )
+  const record = assertRecord(payload, 'LlmDeleteResponse')
+  assertKeys(record, 'LlmDeleteResponse', LLM_CLEAR_KEYS)
+  return { status: parseLlmStatus(record.status, 'LlmDeleteResponse.status') }
 }

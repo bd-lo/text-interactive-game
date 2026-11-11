@@ -1,27 +1,36 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
-import { listGames, listWorldBooks } from '@/api/client'
-import type { GameListItem, Scenario, WorldBookSummary } from '@/api/types'
+import { getLlmSettings, listGames, listScenarios, listWorldBooks } from '@/api/client'
+import type {
+  GameListItem,
+  LlmSettingsStatus,
+  Scenario,
+  ScenarioSummary,
+  WorldBookSummary,
+} from '@/api/types'
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import { vReveal } from '@/directives/reveal'
 import { useGameStore } from '@/stores/game'
 import { describeError, type PlayerErrorInfo } from '@/utils/errors'
 import { labelGameStatus, labelScenario } from '@/utils/labels'
+import { dismissLlmBanner, isLlmBannerDismissed, shouldShowLlmBanner } from '@/utils/llm'
 import {
   describeRecentGame,
   formatRelativeTime,
   loadRecentGames,
   type RecentGameRecord,
 } from '@/utils/recentGames'
+import { formatScenarioStats } from '@/utils/scenarios'
 
 const router = useRouter()
 const store = useGameStore()
 
 const SAVE_LIMIT = 10
 
-const scenario = ref<Scenario>('story')
+/** 当前选择：内置场景 ID（m2/m3/m4/story）或已导入场景的 `scenario_id`（`scn_...`）。 */
+const scenarioChoice = ref<string>('story')
 /** `input type=number` 在 Vue 里会自动 number 化，空值仍是字符串，这里两种都接受。 */
 const seedText = ref<string | number>('')
 const manualId = ref('')
@@ -38,12 +47,34 @@ const worldBookId = ref('')
 const worldBooksFailed = ref(false)
 const WORLD_BOOK_OPTION_LIMIT = 50
 
+/** 场景下拉（玩家自上传场景）：内置 4 个 + 已导入场景；后端不可用时只显示内置。 */
+const importedScenarios = ref<ScenarioSummary[]>([])
+const scenariosFailed = ref(false)
+const SCENARIO_OPTION_LIMIT = 50
+
+/** 首屏「未配置大模型」横幅：状态读取失败不显示（不打扰）；关闭后记住（localStorage）。 */
+const llmStatus = ref<LlmSettingsStatus | null>(null)
+const llmBannerDismissed = ref(isLlmBannerDismissed())
+const showLlmBanner = computed<boolean>(() =>
+  shouldShowLlmBanner(llmStatus.value, llmBannerDismissed.value),
+)
+
 const scenarioOptions: Array<{ value: Scenario; label: string; hint: string }> = [
   { value: 'story', label: '余烬哨站（剧情）', hint: '有目标与结局，推荐第一次玩' },
   { value: 'm2', label: '废弃哨站（入门）', hint: '一小段探索' },
   { value: 'm3', label: '拾荒者营地（多角色）', hint: '会碰到别的角色' },
   { value: 'm4', label: '工坊（制造）', hint: '可以制作东西' },
 ]
+
+/** 当前选中项：已导入场景（选了自定义场景时非 null）。 */
+const selectedCustomScenario = computed<ScenarioSummary | null>(
+  () =>
+    importedScenarios.value.find((item) => item.scenario_id === scenarioChoice.value) ?? null,
+)
+/** 内置场景的提示文案。 */
+const builtinScenarioHint = computed<string>(
+  () => scenarioOptions.find((option) => option.value === scenarioChoice.value)?.hint ?? '',
+)
 
 /** 读取服务端存档列表；失败时退回本机最近对局（localStorage），不影响新建对局。 */
 async function loadSaves(): Promise<void> {
@@ -73,6 +104,33 @@ async function loadWorldBooks(): Promise<void> {
   }
 }
 
+/** 读取已导入场景（失败时下拉只显示内置场景，不影响开局）。 */
+async function loadImportedScenarios(): Promise<void> {
+  scenariosFailed.value = false
+  try {
+    const response = await listScenarios({ limit: SCENARIO_OPTION_LIMIT })
+    importedScenarios.value = response.scenarios
+  } catch {
+    importedScenarios.value = []
+    scenariosFailed.value = true
+  }
+}
+
+/** 读取 LLM 配置状态（失败不显示横幅；不阻塞开局）。 */
+async function loadLlmStatus(): Promise<void> {
+  try {
+    llmStatus.value = await getLlmSettings()
+  } catch {
+    llmStatus.value = null
+  }
+}
+
+/** 关闭「未配置」横幅并记住（避免每次回首页都打扰；可在设置页重新配置）。 */
+function onDismissLlmBanner(): void {
+  llmBannerDismissed.value = true
+  dismissLlmBanner()
+}
+
 /** 解析随机种子：留空 → undefined（服务端默认）；非法 → 返回错误文案。 */
 function parseSeed(): { seed?: number; error?: string } {
   const raw = typeof seedText.value === 'number' ? String(seedText.value) : seedText.value.trim()
@@ -93,9 +151,24 @@ async function onCreate(): Promise<void> {
     createError.value = { title: '随机种子不对', message: parsed.error, detail: parsed.error }
     return
   }
+  const custom = selectedCustomScenario.value
   try {
+    if (custom !== null) {
+      // 用户自上传场景：body 只带 scenario_id（与 card_id/scenario 互斥），可同时绑世界书。
+      const id = await store.createGame({
+        scenario_id: custom.scenario_id,
+        seed: parsed.seed,
+        world_book_id: worldBookId.value === '' ? undefined : worldBookId.value,
+      })
+      await router.push({
+        name: 'game',
+        params: { id },
+        query: { scenario_id: custom.scenario_id },
+      })
+      return
+    }
     const id = await store.createGame({
-      scenario: scenario.value,
+      scenario: scenarioChoice.value as Scenario,
       seed: parsed.seed,
       world_book_id: worldBookId.value === '' ? undefined : worldBookId.value,
     })
@@ -124,6 +197,8 @@ function onReloadSaves(): void {
 onMounted(() => {
   void loadSaves()
   void loadWorldBooks()
+  void loadImportedScenarios()
+  void loadLlmStatus()
 })
 </script>
 
@@ -139,6 +214,17 @@ onMounted(() => {
       :message="createError?.message ?? ''"
       :detail="createError?.detail"
     />
+
+    <section v-if="showLlmBanner" class="panel llm-banner" role="status" aria-label="大模型未配置">
+      <p class="llm-banner-text">
+        未配置大模型，当前为离线模板叙事。
+        <RouterLink :to="{ name: 'settings' }">去设置填写自己的 DeepSeek API Key</RouterLink>
+        （只保存在本机，不影响离线游玩）。
+      </p>
+      <button class="btn btn-small btn-secondary" type="button" @click="onDismissLlmBanner">
+        关闭
+      </button>
+    </section>
 
     <section v-reveal class="panel save-panel" aria-label="继续游戏">
       <h3 class="panel-title">继续游戏</h3>
@@ -185,13 +271,34 @@ onMounted(() => {
       <h3 class="panel-title">开始新对局</h3>
       <label class="field">
         <span>故事</span>
-        <select v-model="scenario" class="input" :disabled="store.busy">
-          <option v-for="option in scenarioOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
+        <select v-model="scenarioChoice" class="input" :disabled="store.busy">
+          <optgroup label="内置场景">
+            <option v-for="option in scenarioOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </optgroup>
+          <optgroup v-if="importedScenarios.length > 0" label="我导入的场景">
+            <option
+              v-for="item in importedScenarios"
+              :key="item.scenario_id"
+              :value="item.scenario_id"
+            >
+              {{ item.title }}（{{ item.author === '' ? '匿名' : item.author }}）
+            </option>
+          </optgroup>
         </select>
         <span class="field-hint muted">
-          {{ scenarioOptions.find((option) => option.value === scenario)?.hint }}
+          <template v-if="selectedCustomScenario !== null">
+            自定义场景 · {{ formatScenarioStats(selectedCustomScenario.summary) }}
+          </template>
+          <template v-else>{{ builtinScenarioHint }}</template>
+          <template v-if="scenariosFailed"> · 暂时读不到导入的场景（只显示内置，不影响开局）</template>
+          <template v-else-if="importedScenarios.length === 0">
+            · 还没有导入场景，<RouterLink :to="{ name: 'scenario-import' }">导入一份</RouterLink>？
+          </template>
+          <template v-else>
+            · <RouterLink :to="{ name: 'scenarios' }">管理场景</RouterLink>
+          </template>
         </span>
       </label>
       <label class="field">
@@ -258,6 +365,8 @@ onMounted(() => {
       <RouterLink :to="{ name: 'cards' }">打开人物卡库</RouterLink>
       · 也可以
       <RouterLink :to="{ name: 'card-generate' }">用一句设定生成人物卡</RouterLink>
+      · 想自己写剧情？
+      <RouterLink :to="{ name: 'scenarios' }">场景库</RouterLink>
     </p>
   </section>
 </template>

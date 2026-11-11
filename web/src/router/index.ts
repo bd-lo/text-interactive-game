@@ -40,6 +40,29 @@ const router = createRouter({
       component: () => import('@/views/WorldBookDetailView.vue'),
       props: true,
     },
+    // 玩家自上传场景（scenario modules v1）：列表 / 导入 / 详情；`import` 必须在 `:scenarioId` 前。
+    {
+      path: '/scenarios',
+      name: 'scenarios',
+      component: () => import('@/views/ScenarioLibraryView.vue'),
+    },
+    {
+      path: '/scenarios/import',
+      name: 'scenario-import',
+      component: () => import('@/views/ScenarioImportView.vue'),
+    },
+    {
+      path: '/scenarios/:scenarioId',
+      name: 'scenario-detail',
+      component: () => import('@/views/ScenarioDetailView.vue'),
+      props: true,
+    },
+    // 设置：DeepSeek API Key 输入/测试/清除（LLM 运行期设置）。
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
+    },
     {
       path: '/game/:id/replay',
       name: 'replay',

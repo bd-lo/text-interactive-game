@@ -41,7 +41,7 @@ SRC_ROOT = WEB_ROOT / "src"
 #: M6-028 生成卡片端点（后端 M6B-4 已交付；前端 028 接入后本测试必须通过，不允许 skip）
 GENERATE_CARD_PATH = "/api/v1/character-cards/generate"
 
-# 前端已接入的 11 个端点（新增端点须同步扩大并更新本测试）
+# 前端已接入的端点（新增端点须同步扩大并更新本测试）
 EXPECTED_FRONTEND_PATHS = {
     "/api/v1/games",
     "/api/v1/games/{game_id}",
@@ -59,6 +59,13 @@ EXPECTED_FRONTEND_PATHS = {
     "/api/v1/world-books/import",
     "/api/v1/world-books/validate",
     "/api/v1/world-books/{world_book_id}",
+    # 用户自上传场景 JSON（design/user-scenario-modules.md §3.4）
+    "/api/v1/scenarios",
+    "/api/v1/scenarios/validate",
+    "/api/v1/scenarios/{scenario_id}",
+    # LLM 运行期设置（DeepSeek API Key 输入/测试/清除）
+    "/api/v1/settings/llm",
+    "/api/v1/settings/llm/test",
 }
 
 # TS 接口 → OpenAPI schema（响应；字段集合必须一致）
@@ -104,6 +111,20 @@ RESPONSE_INTERFACES = {
     "WorldBookValidatePreview": "WorldBookValidatePreviewResponse",
     "WorldBookValidateResponse": "WorldBookValidateResponse",
     "WorldBookDeleteResponse": "WorldBookDeleteResponse",
+    # 用户自上传场景 JSON（design/user-scenario-modules.md §3.4；8 个 TS 接口）
+    "ScenarioStats": "ScenarioStatsResponse",
+    "ScenarioWarning": "ScenarioWarningResponse",
+    "ScenarioValidationError": "ScenarioValidationErrorResponse",
+    "ScenarioSummary": "ScenarioSummaryResponse",
+    "ScenarioListResponse": "ScenarioListResponse",
+    "ScenarioDetailResponse": "ScenarioDetailResponse",
+    "ScenarioValidateResponse": "ScenarioValidateResponse",
+    "ScenarioImportResponse": "ScenarioImportResponse",
+    # LLM 运行期设置（DeepSeek API Key）
+    "LlmSettingsStatus": "LlmStatusResponse",
+    "LlmConnectionTest": "LlmTestResponse",
+    "LlmSettingsSaveResponse": "LlmSaveResponse",
+    "LlmSettingsClearResponse": "LlmDeleteResponse",
 }
 
 # TS 接口 → OpenAPI schema（请求；字段名 + 可选项必须一致）
@@ -111,6 +132,7 @@ REQUEST_INTERFACES = {
     "CreateGameRequest": "CreateGameBody",
     "TurnRequest": "TurnRequestBody",
     "CardGenerateRequest": "CardGenerateBody",
+    "LlmSettingsSaveRequest": "LlmSaveRequestBody",
 }
 
 _INTERFACE_RE = re.compile(r"export interface (\w+)(?:<[^>]*>)?\s*\{(.*?)\n\}", re.DOTALL)
@@ -715,6 +737,88 @@ def test_live_world_book_lifecycle_fields_match_frontend_types(
     assert deleted.status_code == 200, deleted.text
     assert set(deleted.json()) == set(ts["WorldBookDeleteResponse"])
     assert world_book_client.get(f"/api/v1/world-books/{world_book_id}").status_code == 404
+
+
+def test_scenario_endpoints_consistency() -> None:
+    """用户上传场景 5 端点的方法/路径/分页与前端 API_PATHS 一致（design §3.4）。"""
+    api_paths = _frontend_api_paths()
+    expected = {
+        "listScenarios": "/api/v1/scenarios",
+        "importScenario": "/api/v1/scenarios",
+        "validateScenario": "/api/v1/scenarios/validate",
+        "getScenario": "/api/v1/scenarios/{scenario_id}",
+        "deleteScenario": "/api/v1/scenarios/{scenario_id}",
+    }
+    for name, path in expected.items():
+        assert api_paths[name] == path, f"前端 API_PATHS.{name} 未指向 {path}"
+
+    paths = _openapi()["paths"]
+    assert set(paths["/api/v1/scenarios"]) == {"get", "post"}
+    assert set(paths["/api/v1/scenarios/validate"]) == {"post"}
+    assert set(paths["/api/v1/scenarios/{scenario_id}"]) == {"get", "delete"}
+
+    # 导入：前端现状走 multipart file（后端同时接受 JSON 原文，见设计文档 §3.4）。
+    import_schema = paths["/api/v1/scenarios"]["post"]["requestBody"]["content"][
+        "multipart/form-data"
+    ]["schema"]
+    assert "file" in import_schema["properties"], "import 必须接受 multipart file 部件"
+
+    # 列表：q 搜索 + 分页（默认 20 / 上限 100）。
+    list_params = {
+        parameter["name"]: parameter
+        for parameter in paths["/api/v1/scenarios"]["get"].get("parameters", [])
+        if parameter.get("in") == "query"
+    }
+    assert {"q", "limit", "offset"} <= set(list_params)
+    assert list_params["limit"]["schema"]["default"] == 20
+    assert list_params["limit"]["schema"]["maximum"] == 100
+    assert list_params["offset"]["schema"]["minimum"] == 0
+
+    # 校验：body = 场景 JSON 原文（不是 {payload} 包装）、200 返回 errors/warnings/summary。
+    validate_operation = paths["/api/v1/scenarios/validate"]["post"]
+    assert "application/json" in validate_operation["requestBody"]["content"]
+    assert "200" in validate_operation["responses"]
+
+    # 删除：204 空 body（与前端「无内容」解析一致）。
+    delete_operation = paths["/api/v1/scenarios/{scenario_id}"]["delete"]
+    assert "204" in delete_operation["responses"]
+
+    # 建局：body 加法 scenario_id（与 card_id/scenario 互斥由服务端保证）。
+    create_schema = _openapi()["components"]["schemas"]["CreateGameBody"]
+    assert "scenario_id" in create_schema["properties"]
+
+
+def test_llm_settings_endpoints_consistency() -> None:
+    """LLM 运行期设置：路径/方法/请求体与前端 API_PATHS 一致（写端点无 Idempotency-Key）。"""
+    api_paths = _frontend_api_paths()
+    expected = {
+        "getLlmSettings": "/api/v1/settings/llm",
+        "saveLlmSettings": "/api/v1/settings/llm",
+        "clearLlmSettings": "/api/v1/settings/llm",
+        "testLlmConnection": "/api/v1/settings/llm/test",
+    }
+    for name, path in expected.items():
+        assert api_paths[name] == path, f"前端 API_PATHS.{name} 未指向 {path}"
+
+    paths = _openapi()["paths"]
+    assert set(paths["/api/v1/settings/llm"]) == {"get", "put", "delete"}
+    assert set(paths["/api/v1/settings/llm/test"]) == {"post"}
+
+    schemas = _openapi()["components"]["schemas"]
+    save_schema = schemas["LlmSaveRequestBody"]
+    assert set(save_schema["properties"]) == {
+        "api_key",
+        "provider",
+        "model",
+        "api_base",
+        "run_test",
+    }
+    assert save_schema["required"] == ["api_key"]
+
+    # 设置写端点按值幂等：不需要 Idempotency-Key（与游戏回合/导入的幂等语义区分）。
+    for method in ("put", "delete"):
+        params = paths["/api/v1/settings/llm"][method].get("parameters", [])
+        assert all(parameter.get("name") != "Idempotency-Key" for parameter in params)
 
 
 def test_frontend_source_has_no_forbidden_patterns() -> None:

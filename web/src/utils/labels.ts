@@ -161,12 +161,13 @@ export function labelGameStatus(status: 'active' | 'ended'): string {
   return status === 'active' ? '进行中' : '已结束'
 }
 
-/** 场景 ID → 玩家可读名称（`POST /games` 的 `scenario`）。 */
+/** 场景 ID → 玩家可读名称（`POST /games` 的 `scenario`；`custom` 为用户导入场景的统一标识）。 */
 const SCENARIO_LABELS: Record<string, string> = {
   story: '余烬哨站（剧情）',
   m2: '废弃哨站（入门）',
   m3: '拾荒者营地（多角色）',
   m4: '工坊（制造）',
+  custom: '自定义场景',
 }
 
 /** 场景中文标签；未知值回退原值。 */

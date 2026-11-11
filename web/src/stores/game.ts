@@ -91,6 +91,8 @@ interface GameState {
   snapshotVersion: number
   status: GameStatus
   scenario: string
+  /** 自定义场景 id（仅本会话建局时已知；对局页徽章取标题用；内置场景为空串）。 */
+  customScenarioId: string
   /** 建局种子（仅创建时已知；继续已有对局时从本机最近记录兜底）。 */
   seed: number | null
   cardId: string | null
@@ -125,6 +127,7 @@ function initialState(): GameState {
     snapshotVersion: 0,
     status: 'active',
     scenario: 'm2',
+    customScenarioId: '',
     seed: null,
     cardId: null,
     lastText: '',
@@ -285,10 +288,15 @@ export const useGameStore = defineStore('game', {
     async createGame(options: CreateGameRequest): Promise<string> {
       this.busy = true
       this.clearError()
-      this.scenario = options.scenario ?? 'm2'
+      // 自定义场景：/view.scenario 恒为 "custom"（服务端只是字符串）；这里先乐观置位，
+      // 建局后 refreshView 会用服务端权威值覆盖。
+      this.scenario = options.scenario ?? (options.scenario_id !== undefined ? 'custom' : 'm2')
+      this.customScenarioId = options.scenario_id ?? ''
       this.seed = options.seed ?? null
       this.cardId = options.card_id ?? null
-      const actionKey = `create-game:${options.card_id ?? 'none'}:${options.seed ?? 'default'}:${options.scenario ?? 'm2'}`
+      const actionKey =
+        `create-game:${options.card_id ?? 'none'}:${options.seed ?? 'default'}` +
+        `:${options.scenario ?? 'm2'}:${options.scenario_id ?? 'none'}`
       try {
         const created = await createGame(options, actionKey)
         clearIdempotencyKey(actionKey)
@@ -315,6 +323,7 @@ export const useGameStore = defineStore('game', {
       this.clearError()
       try {
         this.gameId = gameId
+        this.customScenarioId = ''
         const snapshot = await getGame(gameId)
         this.applySnapshot(snapshot)
         this.seed = null

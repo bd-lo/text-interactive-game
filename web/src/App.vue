@@ -28,6 +28,8 @@ const EmberField = defineAsyncComponent(() => import('@/components/EmberField.vu
         <RouterLink to="/">首页</RouterLink>
         <RouterLink to="/cards">人物卡库</RouterLink>
         <RouterLink to="/world-books">世界书</RouterLink>
+        <RouterLink to="/scenarios">场景</RouterLink>
+        <RouterLink to="/settings">设置</RouterLink>
       </nav>
       <span class="app-subtitle">文字冒险</span>
       <VisualSettings />

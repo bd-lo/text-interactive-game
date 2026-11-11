@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
+import { getScenario } from '@/api/client'
 import ActionChips from '@/components/ActionChips.vue'
 import CommandInput from '@/components/CommandInput.vue'
 import ErrorBanner from '@/components/ErrorBanner.vue'
@@ -32,6 +33,49 @@ const retryLabel = computed<string>(() => (store.errorCode === 'CONFLICT' ? '重
 const roomTitle = computed<string>(() => store.view?.room.title ?? '冒险')
 const goal = computed(() => store.view?.goal ?? null)
 const endingText = computed<string>(() => store.view?.ending_text ?? '')
+
+/**
+ * 自定义场景 id：本会话建局从 store 拿；刷新/深链从 `/game/:id?scenario_id=scn_...` 拿
+ * （`/view.scenario` 只有字符串 `"custom"`，不带 id，见场景设计 §3.2/§3.5）。
+ */
+const customScenarioId = computed<string>(() => {
+  if (store.scenario !== 'custom') {
+    return ''
+  }
+  if (store.customScenarioId !== '') {
+    return store.customScenarioId
+  }
+  const fromQuery = route.query.scenario_id
+  return typeof fromQuery === 'string' ? fromQuery : ''
+})
+/** 自定义场景标题（详情端点取；取不到不打扰玩家：徽章退回「自定义场景」）。 */
+const customScenarioTitle = ref('')
+
+async function loadCustomScenarioTitle(scenarioId: string): Promise<void> {
+  customScenarioTitle.value = ''
+  if (scenarioId === '') {
+    return
+  }
+  try {
+    const detail = await getScenario(scenarioId)
+    customScenarioTitle.value = detail.title
+  } catch {
+    // 场景可能已软删或后端不可用：只影响徽章文案，不影响对局本身
+  }
+}
+
+/** 场景名徽章：内置场景用固定中文名，自定义场景用场景详情标题（缺省「自定义场景」）。 */
+const scenarioLabel = computed<string>(() => {
+  if (store.scenario === '') {
+    return ''
+  }
+  if (store.scenario !== 'custom') {
+    return labelScenario(store.scenario)
+  }
+  return customScenarioTitle.value === ''
+    ? '自定义场景'
+    : `自定义场景：${customScenarioTitle.value}`
+})
 /** R3 来源徽章修正：空来源（如仅做过看/背包等无事件回合）不再误标「离线模板」，显示中性文案。 */
 const sourceLabel = computed<string>(() => {
   if (store.narrativeSource === 'llm') {
@@ -148,6 +192,14 @@ onMounted(() => {
 watch(gameId, () => {
   void ensureLoaded()
 })
+
+watch(
+  customScenarioId,
+  (scenarioId) => {
+    void loadCustomScenarioTitle(scenarioId)
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -155,11 +207,13 @@ watch(gameId, () => {
     <header class="game-head">
       <div class="game-title-row">
         <h2>{{ roomTitle }}</h2>
+        <span v-if="scenarioLabel !== ''" class="scenario-badge" :title="`场景：${scenarioLabel}`">
+          {{ scenarioLabel }}
+        </span>
         <span class="source-badge" :title="`叙事来源：${sourceLabel}`">{{ sourceLabel }}</span>
       </div>
       <p class="game-meta">
         第 {{ store.turn }} 回合 · HP {{ store.hpLabel }} · {{ labelGameStatus(store.status) }}
-        <span v-if="store.scenario !== ''"> · {{ labelScenario(store.scenario) }}</span>
       </p>
     </header>
 

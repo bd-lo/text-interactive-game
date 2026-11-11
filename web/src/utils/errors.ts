@@ -21,11 +21,16 @@ export interface PlayerErrorInfo {
 const FIELD_LABELS: Record<string, string> = {
   seed: '随机种子',
   scenario: '场景',
+  scenario_id: '场景',
   card_id: '人物卡',
   input: '指令',
   expected_version: '对局版本',
   file: '文件',
   body: '请求',
+  api_key: 'API Key',
+  provider: '供应商',
+  model: '模型',
+  api_base: 'API 地址',
 }
 
 /** 422 `violations[].type` → 中文原因（未知回退原 msg）。 */

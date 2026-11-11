@@ -59,6 +59,9 @@ function makeRouter() {
       { path: '/world-books', name: 'world-books', component: { template: '<div>world-books</div>' } },
       { path: '/world-books/import', name: 'world-book-import', component: { template: '<div>wb-import</div>' } },
       { path: '/world-books/:worldBookId', name: 'world-book-detail', component: { template: '<div>wb-detail</div>' } },
+      { path: '/scenarios', name: 'scenarios', component: { template: '<div>scenarios</div>' } },
+      { path: '/scenarios/import', name: 'scenario-import', component: { template: '<div>scenario-import</div>' } },
+      { path: '/scenarios/:scenarioId', name: 'scenario-detail', component: { template: '<div>scenario-detail</div>' } },
     ],
   })
 }

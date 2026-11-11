@@ -1634,3 +1634,221 @@ html[data-visual='full'] .world-key {
     justify-content: flex-start;
   }
 }
+
+/* ==========================================================================
+   用户自上传场景 UI（scenarios：场景库 / 导入 / 详情 + 对局场景徽章）
+   - 沿用世界书三页的视觉与交互模式（面板/plain-list/status-grid/world-tag）；
+   - 375px 不溢出：列表头/动作行 flex-wrap，长文本 overflow-wrap。
+   ========================================================================== */
+
+/* 对局页：场景名徽章（与叙事来源徽章并排；自定义场景显示场景标题） */
+.scenario-badge {
+  padding: 1px 8px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 场景库列表 */
+.scenario-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scenario-item {
+  margin: 10px 0;
+}
+
+.scenario-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.scenario-title {
+  color: var(--accent);
+  font-size: 1.05rem;
+  text-decoration: none;
+}
+
+.scenario-title:hover,
+.scenario-title:focus-visible {
+  text-decoration: underline;
+}
+
+.scenario-author {
+  font-size: 0.8rem;
+}
+
+.scenario-meta {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+}
+
+.scenario-desc {
+  margin: 6px 0 0;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.scenario-warnings-count {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+}
+
+.scenario-actions {
+  margin: 8px 0 0;
+}
+
+/* 导入页/详情页：问题列表与只读摘要 */
+.scenario-issue-list {
+  overflow-wrap: anywhere;
+}
+
+.scenario-text-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.scenario-text-list li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.scenario-entry-name {
+  color: var(--fg);
+}
+
+.scenario-goal-title {
+  margin: 0 0 4px;
+  color: var(--accent);
+}
+
+.scenario-objective-list {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.scenario-raw-json {
+  max-height: 420px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* 视觉档位 full 才有霓虹字（与 H4 world-key 同口径；关闭特效 = 纯静态） */
+html[data-visual='full'] .scenario-badge,
+html[data-visual='full'] .scenario-title {
+  text-shadow: 0 0 8px rgba(127, 211, 155, 0.25);
+}
+
+@media (max-width: 480px) {
+  .scenario-head {
+    gap: 4px 8px;
+  }
+
+  .scenario-raw-json {
+    max-height: 300px;
+  }
+}
+
+/* ==========================================================================
+   LLM 设置 UI（/settings：DeepSeek API Key 状态/表单/测试/清除 + 首页未配置横幅）
+   - 复用面板/status-grid/world-tag/game-tools；375px 单列、长串换行。
+   ========================================================================== */
+
+/* 首页「未配置大模型」横幅（可关闭；关闭状态存 localStorage） */
+.llm-banner {
+  border-color: var(--warn);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.llm-banner-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 状态卡 */
+.llm-status-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.llm-status-head .panel-title {
+  margin: 0;
+}
+
+.llm-status-detail {
+  margin: 8px 0 0;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.llm-source-tag {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 表单 */
+.llm-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 12px;
+}
+
+.llm-actions {
+  margin-top: 4px;
+}
+
+.llm-test-hint {
+  margin: 8px 0 0;
+}
+
+/* 保存/清除成功轻提示 */
+.llm-notice {
+  border-color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+/* 连接测试结果 */
+.llm-test-ok {
+  margin: 0 0 8px;
+  color: var(--accent);
+}
+
+.llm-test-fail {
+  margin: 0 0 8px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .llm-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .llm-banner {
+    align-items: flex-start;
+  }
+}
+
+html[data-visual='full'] .llm-source-tag {
+  text-shadow: 0 0 8px rgba(127, 211, 155, 0.25);
+}

@@ -28,4 +28,20 @@ describe('路由表（懒加载 + 404 兜底）', () => {
     expect(router.resolve('/cards/generate').name).toBe('card-generate')
     expect(router.resolve('/cards/card_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK').name).toBe('card-detail')
   })
+
+  it('玩家场景库 /scenarios、/scenarios/import、/scenarios/:scenarioId 路由（import 不被详情吞掉）', () => {
+    expect(router.hasRoute('scenarios')).toBe(true)
+    expect(router.hasRoute('scenario-import')).toBe(true)
+    expect(router.hasRoute('scenario-detail')).toBe(true)
+    expect(router.resolve('/scenarios').name).toBe('scenarios')
+    expect(router.resolve('/scenarios/import').name).toBe('scenario-import')
+    const detail = router.resolve('/scenarios/scn_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK')
+    expect(detail.name).toBe('scenario-detail')
+    expect(detail.params.scenarioId).toBe('scn_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK')
+  })
+
+  it('设置页 /settings（LLM API Key）已注册', () => {
+    expect(router.hasRoute('settings')).toBe(true)
+    expect(router.resolve('/settings').name).toBe('settings')
+  })
 })
