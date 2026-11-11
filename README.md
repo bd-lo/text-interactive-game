@@ -6,9 +6,10 @@
 
 **默认离线可玩**：不需要 API Key、不需要 Node/pnpm、不需要联网（仅首次安装依赖需联网）。
 
-> **当前状态**：M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。此前 H4 批次：前端炫酷化（CRT/余烬粒子/打字机/三档视觉，零新增运行时依赖）、剧情枯井环境伤害与「倒下」结局、叙事来源徽标。
-> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（UC 时点：pytest **2155 passed** / replay 68 / web **53 files/326 tests** / 浏览器 e2e 25 步/119 断言；数字以 CI 与实际输出为准）。
-> 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)。
+> **当前状态**：`0.2.0`（2026-11-11，首个可发布快照）。M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。**WB2** 补齐世界书详情字段可见性（概率/包含组/定时效果/扫描深度/position-depth 在详情页可见）；**M6 后计划表**已定案（第 17 章 §17.9：N1 内容 / N2 体验 / N3 功能 / N4 技术发布 四轨道，编号 029–060）。
+> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)、[WB2 进度文档](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（当前实测：pytest **2156 passed** / replay 68 / web **53 files/329 tests** / 浏览器 e2e **25 步/122 断言**；数字以 CI 与实际输出为准）。
+> 发布与分发：[CHANGELOG](CHANGELOG.md)、[RELEASE.md](RELEASE.md)（版本号/checklist/tag 流程）、[部署与分发评估](docs/design/deployment-and-distribution.md)（wheel/zip 为主，Docker 暂不提供）。
+> 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[M6 后计划表 ADR](docs/decisions/2026-11-11-post-m6-roadmap.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)。
 
 ![网页版首页：存档续玩 + 场景/世界书选择 + CRT 与余烬粒子](docs/assets/web-home.png)
 
@@ -16,7 +17,7 @@
 | --- | --- |
 | ![网页版对局](docs/assets/web-game.png) | ![剧情结局](docs/assets/web-ending.png) |
 
-| 世界书列表 | 世界书详情（条目表：触发词/内容/order/constant） | 世界书导入（错误/警告可视化） |
+| 世界书列表 | 世界书详情（条目表：触发词/概率/包含组/定时效果/position-depth） | 世界书导入（错误/警告可视化） |
 | --- | --- | --- |
 | ![世界书列表](docs/assets/web-world-books.png) | ![世界书详情](docs/assets/web-world-book-detail.png) | ![世界书导入](docs/assets/web-world-book-import.png) |
 
@@ -90,6 +91,18 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 【状态】HP 20/20 ｜ 位置 废弃哨站·入口 ｜ 行囊：空
 ```
 
+## 版本与发布
+
+- **当前版本 `0.2.0`**（2026-11-11，首个可发布快照 = M1–M6 + 用户内容批次 + WB2）。版本号唯一来源：
+  `pyproject.toml` 与 `src/textgame/__init__.py::__version__`；玩家可见变更见 [CHANGELOG.md](CHANGELOG.md)。
+- **怎么发**：[RELEASE.md](RELEASE.md) 给出发布 checklist（测试/四门/e2e/构建冒烟/许可证/安全/文档）、
+  wheel 干净环境冒烟命令与 `git tag` / Release notes 流程（打 tag 与 push 由维护者执行，本仓库默认不自动推送）。
+- **分发形态**：默认「仓库克隆 + `play` 脚本」（已含 `web/dist`，无需 Node）或 wheel（内嵌网页版）；
+  Docker 评估结论是**暂不提供镜像**（草案与复评条件见[部署与分发评估](docs/design/deployment-and-distribution.md)）；
+  PyPI 正式发布暂缓（由维护者拍板）。
+- **版本路线**：后续能力按 [第 17 章 §17.9 M6 后计划表](docs/开发文档/第17章-里程碑与进度文档编号规划.md)
+  的四条轨道推进（N1 内容 / N2 体验 / N3 功能 / N4 技术发布，编号 029–060）。
+
 ## 世界书（World Book / Lorebook）
 
 世界书是**只读的设定注入层**：命中触发词时把设定文本交给叙事（模板叙事追加 1–2 句 / LLM 作为「世界设定事实」），
@@ -103,7 +116,10 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **触发语义（确定性可回放）**：`keys`（大小写不敏感子串）/`keysecondary` + `selectiveLogic`
   （AND_ANY/NOT_ALL/NOT_ANY/AND_ALL）/`constant`/`order`/`scanDepth`（默认最近 4 条上下文）/递归 ≤2 轮 /
   预算 800 字 / 最多 8 条；`probability` 用 `sha256(save_seed:turn_id:uid:…)` 确定性伪随机。
-  未支持字段（inclusion group / timed effects / vectorized / regex keys / outlet 等）保留原始 JSON 并给 warning，不静默丢弃。
+  **酒馆级语义（UC 起支持）**：正则键（`/pattern/flags`，仅 i/m/s）、定时效果（`sticky/cooldown/delay`，
+  按事件历史逐回合模拟）、包含组（`group/groupWeight/groupOverride`，同组每回合至多 1 条）、
+  `position/depth` 排序；这些字段的**配置值在详情页可见**（WB2）。仍未支持：`vectorized` 向量检索、
+  `outlet` 宏插入、`characterFilter`、`useGroupScoring` 评分（保留原始 JSON 并给 warning，不静默丢弃）。
 - **怎么玩**：网页版「世界书」页 → 导入 JSON → 首页「新建对局」选择世界书 + 场景 → 对局右侧「世界设定」面板显示本回合激活条目。
   示例（`story` 场景「余烬哨站」配套）：[examples/world-books/story-lorebook.json](examples/world-books/story-lorebook.json)（**29 条** tavern 格式）、
   [examples/world-books/story-character-card.json](examples/world-books/story-character-card.json)（角色卡 V2 + 内嵌 4 条）、使用说明见 [examples/world-books/README.md](examples/world-books/README.md)。
@@ -118,7 +134,8 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
   `POST /api/v1/games` 加法 body `{"world_book_id": "wb_..."}` 绑定开局；`GET /api/v1/games/{id}/view` 加法
   `world_book`（摘要）与 `lore.active_entries`（本回合激活条目）。
 - **兼容性**：无世界书的旧存档照常可玩（`/view.world_book` 与 `lore` 为 null），旧 golden/回放零影响。
-- **限制**：不执行任何来自导入内容的脚本/命令；`regex key`/向量检索/包容组语义/计时效果本轮不支持（见兼容文档 §5）。
+- **限制**：不执行任何来自导入内容的脚本/命令；`vectorized` 向量检索、`outlet` 宏插入、`characterFilter`
+  仍不支持（见兼容文档 §5）；世界书详情页只展示配置值，「本回合是否激活」看对局内「世界设定」面板。
 
 ## 玩家自上传场景（Scenario JSON）
 
@@ -175,7 +192,7 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
   先用 [examples/scenarios/tiny-tower.json](examples/scenarios/tiny-tower.json) 验证格式，再逐步加内容。
 - **保存了 API Key 为什么还是模板叙事？** 先看「设置」页状态卡：`source=env` 表示 `.env` 开发 key 优先（本机保存的 key 不生效）；
   `TEXTGAME_LLM_ENABLED=false` 时永远离线。另外自检/演示命令（`demo/console --check`）会强制离线以保证 golden 逐字可复现。
-- **世界书导入了但没触发？** 检查条目 `enabled`、`constant`、`keys` 是否出现在最近 4 条上下文/当前房间/可见实体/本回合输入中；看导入返回的 `warnings`（未支持字段会被忽略）；`group`/`vectorized`/timed effects/regex key 本轮未实现（见兼容文档）。先用「简化 schema」最小 JSON 验证格式。
+- **世界书导入了但没触发？** 检查条目 `enabled`、`constant`、`keys` 是否出现在最近 `scanDepth` 条上下文/当前房间/可见实体/本回合输入中；看导入返回的 `warnings`（未支持字段会被忽略）；`group`/`sticky/cooldown/delay`/正则键已在 UC 起支持（配置值可在详情页看到），`vectorized`/`outlet` 仍不支持（见兼容文档）。先用「简化 schema」最小 JSON 验证格式。
 - **特效太晃/卡顿？** 右上角 **✦ 视觉效果** 选「低功耗」或「关闭特效」（持久化）；系统开启「减少动态效果」会自动降级；特效层懒加载，不影响首屏可读性。
 - **端口被占用 / 网页打不开**：`play` 脚本会提示换端口（`-Port 8001` / `--port 8001`）。若 `/` 返回 JSON 404，通常是 `web/dist` 缺失（源码裁剪或未构建）：启动日志会有 WARNING，按 README「网页版」里的构建命令重建即可；终端版始终可用。
 - **浏览器要求**：现代 Chromium/Firefox/Safari（支持 CSS 自定义属性、`prefers-reduced-motion`）；无 JS 时不可用（SPA）。在线文档：服务启动后 `/api/docs`。
@@ -240,7 +257,7 @@ curl --noproxy '*' http://127.0.0.1:8000/api/v1/games/game_...
 | 语言 | Python 3.10+（运行时 3.12，源码保持 3.10 语法兼容） |
 | 环境 / 依赖锁定 | uv 0.13.x：`uv.lock` + `uv sync --frozen` |
 | 领域模型 / 校验 | Pydantic v2 |
-| 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`）+ SQLite + Alembic（0001–0004） |
+| 持久化 | SQLAlchemy 2.0.x（锁 `<2.1`）+ SQLite + Alembic（0001–0005） |
 | 接入层 | FastAPI |
 | 编排 | 自建显式 loop（LangGraph 仅保留可选封装） |
 | 模型调用 | 统一 LLMClient 封装（DeepSeek `deepseek-flash`，默认离线） |
@@ -307,18 +324,18 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 ```text
 .
 ├── .github/workflows/ci.yml   # CI：quality（3.10/3.12 矩阵）+ deps（许可证/pip-audit/SBOM）+ web-build（含 e2e）
-├── alembic.ini、alembic/       # Alembic 迁移：0001 baseline、0002 复合主键、0003 人物卡库、0004 世界书
+├── alembic.ini、alembic/       # Alembic 迁移：0001 baseline、0002 复合主键、0003 人物卡库、0004 世界书、0005 场景库
 ├── docs/                       # 开发文档（23 章）、PROGRESS.md、decisions/（ADR）、design/（视觉/世界书/跑团设计）、progress/
 ├── docs/assets/                # README 截图（网页版首页/对局/结局/世界书/移动端）
 ├── examples/m2-demo.md         # seed=42 七回合终端演示（由 demo --markdown 实跑生成）
 ├── examples/world-books/       # 示例世界书：tavern 29 条 + 角色卡 V2 内嵌 character_book + 说明
 ├── src/textgame/               # 包根：main.py（组合根/uvicorn 入口）、console.py（终端入口）、demo.py
-│   ├── api/                    # /healthz、/api/v1/games、/api/v1/turns、/character-cards、/world-books、静态托管
-│   ├── orchestration/          # TurnOrchestrator、ProposalQueue、Resolver、关键词解析、模板叙事（含世界设定注入）
+│   ├── api/                    # /healthz、/api/v1/games、/turns、/character-cards、/world-books、/scenarios、/settings、静态托管
+│   ├── orchestration/          # TurnOrchestrator、ProposalQueue、Resolver、关键词解析、模板叙事（含世界设定注入与用户场景钩子）
 │   ├── agents/                 # IntentParseAgent、DeterministicCharacterAgent、CraftAgent、Narrator/Character/Judge Agent
 │   ├── tools/                  # @tool JSON Schema、ToolRegistry 白名单/actor_scope、ToolGate
-│   ├── services/               # GameEngine（唯一写入者）、Query/Action/Audit/Card/WorldBook Service、TurnResult
-│   ├── persistence/            # SQLAlchemy SQLite：events/snapshots/current/idempotency/audit_events/character_cards/world_books
+│   ├── services/               # GameEngine（唯一写入者）、Query/Action/Audit/Card/WorldBook/Scenario Service、TurnResult
+│   ├── persistence/            # SQLAlchemy SQLite：events/snapshots/current/idempotency/audit_events/character_cards/world_books/scenarios
 │   ├── domain/                 # 领域层（零框架依赖）：types/results/events/models/reducers/scenario*/world_book/rules/perception
 │   ├── llm/                    # LLMClient 接口与治理、JSON 分级配置、Schema 修复、litellm 唯一 import 点
 │   └── config/                 # pydantic-settings 配置与种子派生
@@ -329,14 +346,15 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 ├── uv.lock                     # 依赖锁定（验收一律 uv sync --frozen）
 ├── .env.example                # 环境变量样例（复制为 .env；.env 已被忽略、不入库）
 ├── .gitattributes              # 行尾规范（*.sh LF、*.ps1 CRLF、web/dist 不转换）
-├── CHANGELOG.md、CONTRIBUTING.md、SECURITY.md、README.en.md
+├── CHANGELOG.md、CONTRIBUTING.md、SECURITY.md、RELEASE.md、README.en.md
 └── README.md
 ```
 
 ## 文档
 
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、vibe coding 开发计划、测试策略、依赖与许可证、风险与开放问题、轻量进度制度，以及 Vue 3 前端设计。
-- [按章拆分版](docs/开发文档/) ｜ [开发进度总览](docs/PROGRESS.md)（含 [H4 进度文档](docs/progress/H4-2026-11-11-worldbook-visual.md)） ｜ [单次进度文档](docs/progress/) ｜ [决策记录（ADR-lite）](docs/decisions/)
+- [按章拆分版](docs/开发文档/) ｜ [开发进度总览](docs/PROGRESS.md)（含 [WB2 世界书详情字段](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 用户内容批次](docs/progress/UC-2026-11-11-user-content-and-llm.md)） ｜ [单次进度文档](docs/progress/) ｜ [决策记录（ADR-lite）](docs/decisions/)（含 [M6 后计划表 D-N1..N7](docs/decisions/2026-11-11-post-m6-roadmap.md)）
+- [docs/design/deployment-and-distribution.md](docs/design/deployment-and-distribution.md)：部署/分发形态对比、Docker 评估（暂不提供镜像）与发布冒烟清单。
 - [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)：炫技类前端效果调研、许可证矩阵、缝合落点与署名要求。
 - [docs/design/world-book-format-compat.md](docs/design/world-book-format-compat.md)：SillyTavern World Info / CCv2 `character_book` 字段表与兼容矩阵。
 - [docs/design/trpg-world-module.md](docs/design/trpg-world-module.md)：跑团式世界模组设计（本轮只写文档）；[story-hazard-copy.md](docs/design/story-hazard-copy.md)：枯井环境伤害文案。
@@ -345,6 +363,6 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 ## 贡献与许可证
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)：环境搭建、四门质量门、golden 回放纪律、世界书改动纪律、视觉/性能红线与密钥/数据约束；[SECURITY.md](SECURITY.md)：安全问题的私下报告方式。
-- [CHANGELOG.md](CHANGELOG.md)：开发期变更记录（当前 `0.1.0` 开发版，尚未对外分发、无版本承诺）。
+- [CHANGELOG.md](CHANGELOG.md)：变更记录（当前可发布快照 **`0.2.0`**，`0.1.0` 为开发期历史）；[RELEASE.md](RELEASE.md)：版本号策略、发布 checklist 与 tag/Release 流程。
 - 本项目采用 **MIT License**（见 [LICENSE](LICENSE)）：`pyproject.toml` 以 SPDX 表达式 `license = "MIT"` 声明，构建元数据同时携带 LICENSE 文件。CI 许可证门禁要求依赖侧 GPL/AGPL/LGPL/未知许可证 0 阻断。
 - 前端视觉仅在技法层面参考 MIT 开源项目（retrozone / Codrops / tsParticles / auto-animate / anime.js / vue-kinesis / @vueuse/motion / TresJS / three.js），**未内联第三方代码**；未来如内联需在 [视觉参考文档](docs/design/frontend-visual-refs.md) §6 与 README 致谢保留版权声明。

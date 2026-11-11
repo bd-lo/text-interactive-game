@@ -1,9 +1,38 @@
 # 变更日志（CHANGELOG）
 
-> 本文件登记**开发期**变更；版本号 `0.1.0` 对应 `pyproject.toml` 当前开发版号，项目尚未对外分发，无对外版本承诺。
-> 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；里程碑/切片编号见 `docs/PROGRESS.md` 与开发文档第 17 章。
+> 本文件登记项目变更；**当前可发布快照 `0.2.0`（2026-11-11）**——M1–M6 全部里程碑 + 用户内容批次
+> （场景 JSON 上传 / 酒馆级世界书 / 运行期 DeepSeek API Key）+ WB2 详情字段可见性，可作单机试玩版本分发。
+> `0.1.0` 为开发期历史版本（未对外分发）。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
+> 里程碑/切片编号见 `docs/PROGRESS.md`、开发文档第 17 章与 M6 后计划表（§17.9）。
+> 发布流程/版本号/tag 规则见 [RELEASE.md](RELEASE.md)；分发与 Docker 评估见
+> [deployment-and-distribution](docs/design/deployment-and-distribution.md)。
 
-## [0.1.0] - 开发版（未对外分发）
+## [0.2.0] - 2026-11-11（首个可发布快照）
+
+### 新增
+
+- **WB2 世界书详情字段可见性（2026-11-11）**：`GET /api/v1/world-books/{world_book_id}` 条目新增 14 字段
+  （`probability`/`use_probability`/`group`/`group_weight`/`group_override`/`group_scoring`/`scan_depth`/
+  `sticky`/`cooldown`/`delay` + `case_sensitive`/`match_whole_words`/`exclude_recursion`/`prevent_recursion`），
+  其中 `raw_json` 字段由 `parse_entry_extras` 还原（与激活同一解析函数、无迁移）；网页详情条目表展示
+  概率/包含组/定时效果/position-depth/扫描深度/递归开关（中文标签）。契约四处同步（schemas / TS types /
+  client 运行时校验 / 契约测试）。全量 pytest **2156 passed**、replay 68、web **53 files/329 tests**、
+  e2e **25 步/122 断言**。详见 [WB2 进度文档](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md)。
+- **M6 后计划表（2026-11-11）**：第 17 章新增 §17.9（四条轨道 + 029–060 编号区间 + 通用出口门禁），
+  ADR [D-N1..N7](docs/decisions/2026-11-11-post-m6-roadmap.md) 定案编号/优先级/发布就绪定义/流式阶段 1
+  边界/DSL v2 边界/跑团模组唯一 EventType 例外/不做清单；PROGRESS §4 与第 22 章同步。
+- **发布就绪（N4 049–053）**：版本号 `0.2.0`（`pyproject.toml` + `textgame.__version__`）、本 CHANGELOG
+  发布段、README 发布段、英文 README 补全、`RELEASE.md` 发布 checklist（含 tag/release notes 流程）、
+  Docker 评估落文档（[deployment-and-distribution](docs/design/deployment-and-distribution.md)，
+  结论：默认 wheel/zip + `play` 脚本分发，镜像暂不提供），`uv build` wheel 干净环境安装冒烟
+  （console/网页入口 + 内嵌 `web/dist`）。
+- 自 `0.1.0` 以来的全部玩家可见变更（场景 JSON/世界书/API Key 等）见下节历史记录，不重复登记。
+
+### 变更
+
+- 版本记录：`0.1.0`（开发版）→ `0.2.0`（首个可发布快照）；此后按发布 checklist 打 tag（`v0.2.0`，由维护者执行）。
+
+## [0.1.0] - 开发版（未对外分发，历史记录）
 
 ### 新增
 
