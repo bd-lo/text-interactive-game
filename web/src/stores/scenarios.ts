@@ -200,12 +200,13 @@ export const useScenariosStore = defineStore('scenarios', {
         this.importError = { title: '内容不对', message: check.error, detail: check.error }
         return null
       }
-      const actionKey = this.pendingImportKey ?? getOrCreate('scenario-import')
+      const actionName = 'scenario-import'
+      const actionKey = this.pendingImportKey ?? getOrCreate(actionName)
       this.pendingImportKey = actionKey
       this.importBusy = true
       try {
         const response = await importScenario(text, actionKey, options.filename)
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(actionName)
         this.pendingImportKey = null
         this.importResult = response
         this.importWarnings = response.warnings
@@ -214,7 +215,7 @@ export const useScenariosStore = defineStore('scenarios', {
         this.importError = describeScenarioError(error)
         if (error instanceof ApiClientError && (error.status === 409 || error.code === 'CONFLICT')) {
           // 同键异参：清键，下一次提交自动换新键（不是自动重试）
-          clearIdempotencyKey(actionKey)
+          clearIdempotencyKey(actionName)
           this.pendingImportKey = null
         }
         return null

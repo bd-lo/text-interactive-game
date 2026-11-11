@@ -209,6 +209,8 @@ describe('cards store（列表/详情/校验/导入）', () => {
     expect(gameId).toBe('g1')
     expect(game.version).toBe(1)
     expect(JSON.parse(bodyOf(mock, 0))).toEqual({ card_id: SUMMARY.card_id })
+    // R-24：发给服务端的是「逻辑动作名 → 一次性 UUID」。动作名只留在 sessionStorage
+    // 映射里；若把动作名本身当 Idempotency-Key，同卡再次开局会命中服务端幂等回放。
     expect(headersOf(mock, 0).get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
   })
 })

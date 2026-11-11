@@ -1,11 +1,15 @@
-import { mount } from '@vue/test-utils'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import CrtOverlay from '@/components/CrtOverlay.vue'
+import AtmosphereOverlay from '@/components/AtmosphereOverlay.vue'
 import VisualSettings from '@/components/VisualSettings.vue'
 import { vReveal, revealAnimationsEnabled } from '@/directives/reveal'
+import { useThemeStore } from '@/stores/theme'
 import { useVisualStore } from '@/stores/visual'
+
+// 组件在用例结束后必须卸载：否则遗留的 window 监听会污染下一条用例的 rAF 计数。
+enableAutoUnmount(afterEach)
 
 function stubMatchMedia(matches: boolean): void {
   Object.defineProperty(window, 'matchMedia', {
@@ -19,37 +23,84 @@ function stubMatchMedia(matches: boolean): void {
   })
 }
 
+let rafCallbacks: FrameRequestCallback[] = []
+
+function stubRaf(): void {
+  rafCallbacks = []
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    rafCallbacks.push(callback)
+    return rafCallbacks.length
+  })
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+}
+
 beforeEach(() => {
   setActivePinia(createPinia())
   localStorage.clear()
+  document.head.innerHTML = ''
   delete document.documentElement.dataset.visual
   delete document.documentElement.dataset.reducedMotion
+  delete document.documentElement.dataset.theme
+  stubRaf()
 })
 
 afterEach(() => {
   useVisualStore().dispose()
+  useThemeStore().dispose()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: undefined })
 })
 
-describe('CrtOverlay（纯 CSS CRT 层）', () => {
-  it('纯装饰：aria-hidden + 四层（扫描线/噪点/暗角/电子束）', () => {
-    const wrapper = mount(CrtOverlay)
-    expect(wrapper.find('.crt-layer').attributes('aria-hidden')).toBe('true')
-    expect(wrapper.find('.crt-scanlines').exists()).toBe(true)
-    expect(wrapper.find('.crt-noise').exists()).toBe(true)
-    expect(wrapper.find('.crt-vignette').exists()).toBe(true)
-    expect(wrapper.find('.crt-beam').exists()).toBe(true)
+describe('AtmosphereOverlay（极光氛围层）', () => {
+  it('纯装饰：aria-hidden + 极光四团 / 聚光 / 颗粒', () => {
+    const wrapper = mount(AtmosphereOverlay)
+    expect(wrapper.find('.atmosphere-layer').attributes('aria-hidden')).toBe('true')
+    expect(wrapper.findAll('.aurora-blob')).toHaveLength(4)
+    expect(wrapper.find('.atmosphere-spotlight').exists()).toBe(true)
+    expect(wrapper.find('.atmosphere-grain').exists()).toBe(true)
+  })
+
+  it('全特效下指针移动会更新聚光坐标（rAF 节流）', () => {
+    stubMatchMedia(false)
+    const visual = useVisualStore()
+    visual.init()
+    visual.setMode('full')
+    visual.setSystemReducedMotion(false)
+
+    const wrapper = mount(AtmosphereOverlay)
+    expect(rafCallbacks).toHaveLength(0)
+
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 120, clientY: 80 }))
+    expect(rafCallbacks.length).toBe(1)
+
+    rafCallbacks.forEach((callback) => callback(0))
+    const layer = wrapper.find('.atmosphere-layer').element as HTMLElement
+    expect(layer.style.getPropertyValue('--spot-x')).toBe('120px')
+    expect(layer.style.getPropertyValue('--spot-y')).toBe('80px')
+  })
+
+  it('非全特效（低功耗/关闭）不更新聚光坐标', () => {
+    stubMatchMedia(false)
+    const visual = useVisualStore()
+    visual.init()
+    visual.setMode('low')
+
+    const wrapper = mount(AtmosphereOverlay)
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 12, clientY: 34 }))
+
+    expect(rafCallbacks).toHaveLength(0)
+    const layer = wrapper.find('.atmosphere-layer').element as HTMLElement
+    expect(layer.style.getPropertyValue('--spot-x')).toBe('')
   })
 })
 
-describe('VisualSettings（视觉设置）', () => {
+describe('VisualSettings（外观与视觉设置）', () => {
   function mountSettings() {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(VisualSettings, { global: { plugins: [pinia] } })
-    return { wrapper, visual: useVisualStore() }
+    return { wrapper, visual: useVisualStore(), theme: useThemeStore() }
   }
 
   it('顶栏显示当前档位；一键开关可关/开特效', async () => {
@@ -68,7 +119,7 @@ describe('VisualSettings（视觉设置）', () => {
     expect(visual.mode).toBe('full')
   })
 
-  it('三档 radio 切换并持久化（低功耗档）', async () => {
+  it('动效三档切换并持久化（低功耗档）', async () => {
     stubMatchMedia(false)
     const { wrapper, visual } = mountSettings()
     visual.init()
@@ -79,6 +130,19 @@ describe('VisualSettings（视觉设置）', () => {
     expect(visual.lowPower).toBe(true)
     expect(JSON.parse(String(localStorage.getItem('textgame:visual-settings')))).toEqual({
       mode: 'low',
+    })
+  })
+
+  it('外观三档切换并持久化（夜间）', async () => {
+    stubMatchMedia(false)
+    const { wrapper, theme } = mountSettings()
+
+    await wrapper.find('input[value="dark"]').setValue(true)
+
+    expect(theme.resolved).toBe('dark')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(JSON.parse(String(localStorage.getItem('textgame:theme-settings')))).toEqual({
+      theme: 'dark',
     })
   })
 

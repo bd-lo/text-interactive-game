@@ -86,7 +86,25 @@ describe('GameView 生产构建分支（P2-1 诊断信息不入玩家页面）',
     expect(wrapper.text()).toContain('哨站地窖')
     expect(wrapper.text()).toContain('余烬哨站')
     expect(wrapper.text()).toContain('冒险记录')
-    expect(wrapper.text()).toContain('查看/背包等只读指令的正文只在当前会话显示，刷新后不保留（不写入回放）')
+    expect(wrapper.text()).toContain('只读指令不产生事件')
+    expect(wrapper.text()).toContain('不写入回放')
+    expect(wrapper.text()).toContain('最近回应')
     expect(wrapper.text()).toContain('18/20')
+  })
+
+  it('生产构建渲染「最近回应」：零事件只读回合正文对玩家可见（R-23 回归点）', async () => {
+    const readonlyText = '你环顾四周，把入口看了一遍。'
+    const wrapper = await mountGame({ history: [], lastText: readonlyText, narrativeSource: '' })
+
+    const response = wrapper.find('.last-response')
+    expect(response.exists()).toBe(true)
+    expect(response.attributes('aria-live')).toBe('polite')
+    expect(response.text()).toContain('你环顾四周，把入口看了一遍。')
+    // 事件回合已进冒险记录 → 不重复展示
+    const afterEvent = await mountGame({
+      history: [{ id: 'turn:2', kind: 'narrative', text: '你捡起了火把。', turnId: 2 }],
+      lastText: '你捡起了火把。',
+    })
+    expect(afterEvent.find('.last-response').exists()).toBe(false)
   })
 })

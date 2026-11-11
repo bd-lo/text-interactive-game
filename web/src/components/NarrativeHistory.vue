@@ -106,6 +106,8 @@ watch(
       </li>
     </ol>
     <p v-else class="muted">这里会出现你的冒险记录。</p>
-    <p class="muted history-readonly-hint">查看/背包等只读指令的正文只在当前会话显示，刷新后不保留（不写入回放）。</p>
+    <p class="muted history-readonly-hint">
+      查看/背包等只读指令不产生事件、不写入回放，因此不会出现在冒险记录里；正文见下方「最近回应」，刷新后不保留。
+    </p>
   </section>
 </template>

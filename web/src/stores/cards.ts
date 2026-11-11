@@ -194,12 +194,13 @@ export const useCardsStore = defineStore('cards', {
         this.importErrorCode = 'CLIENT'
         return null
       }
-      const actionKey = this.pendingImportKey ?? getOrCreate('card-import')
+      const actionName = 'card-import'
+      const actionKey = this.pendingImportKey ?? getOrCreate(actionName)
       this.pendingImportKey = actionKey
       this.importBusy = true
       try {
         const response = await importCard(text, actionKey, 'card.json')
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(actionName)
         this.pendingImportKey = null
         this.importCardId = response.card_id
         this.importWarnings = response.warnings
@@ -212,7 +213,7 @@ export const useCardsStore = defineStore('cards', {
           this.importViolations = formatViolations(error.violations)
           if (info.status === 409) {
             // 同键异参：清键，下一次提交自动换新键（不是自动重试）
-            clearIdempotencyKey(actionKey)
+            clearIdempotencyKey(actionName)
             this.pendingImportKey = null
           }
         }

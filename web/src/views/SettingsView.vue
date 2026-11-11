@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import { vReveal } from '@/directives/reveal'
+import { useFreeCraftStore } from '@/stores/freeCraft'
 import { useLlmSettingsStore } from '@/stores/llmSettings'
 import {
   checkApiKeyInput,
@@ -17,6 +18,7 @@ import {
 } from '@/utils/llm'
 
 const store = useLlmSettingsStore()
+const freeCraft = useFreeCraftStore()
 
 /** 表单字段（明文 key 只存在组件内存；保存成功后立即清空）。 */
 const apiKey = ref('')
@@ -27,6 +29,14 @@ const localError = ref('')
 
 const status = computed(() => store.status)
 const showRetry = computed<boolean>(() => store.loadError !== null)
+const freeCraftStatus = computed(() => freeCraft.status)
+const freeCraftToggleDisabled = computed<boolean>(
+  () =>
+    freeCraftStatus.value === null ||
+    freeCraft.loading ||
+    freeCraft.saveBusy ||
+    (!freeCraft.enabled && !freeCraft.canEnable),
+)
 const sourceLabel = computed<string>(() =>
   status.value === null ? '读取中…' : labelLlmSource(status.value.source),
 )
@@ -40,6 +50,30 @@ async function load(): Promise<void> {
   } catch {
     // 错误已入 store.loadError，由 ErrorBanner 展示（手动重试）
   }
+}
+
+async function loadFreeCraft(): Promise<void> {
+  try {
+    await freeCraft.load()
+  } catch {
+    // 错误已入 freeCraft.loadError，由 ErrorBanner 展示（手动重试）
+  }
+}
+
+/** 开关点击：已开启则直接关闭；未开启先弹风险确认，不直接请求。 */
+async function onFreeCraftToggle(): Promise<void> {
+  if (freeCraft.saveBusy) return
+  if (freeCraft.enabled) {
+    await freeCraft.disable()
+    return
+  }
+  if (freeCraft.canEnable) {
+    freeCraft.armEnable()
+  }
+}
+
+async function onConfirmFreeCraft(): Promise<void> {
+  await freeCraft.enable()
 }
 
 async function onSave(): Promise<void> {
@@ -58,6 +92,8 @@ async function onSave(): Promise<void> {
   if (saved) {
     // 安全：明文 key 不留在输入框/内存
     apiKey.value = ''
+    // LLM 开关变化会影响自由制造的 available 状态。
+    void loadFreeCraft()
   }
 }
 
@@ -76,11 +112,13 @@ async function onClear(): Promise<void> {
   const cleared = await store.clear()
   if (cleared) {
     apiKey.value = ''
+    void loadFreeCraft()
   }
 }
 
 onMounted(() => {
   void load()
+  void loadFreeCraft()
 })
 </script>
 
@@ -89,7 +127,7 @@ onMounted(() => {
     <header class="game-head">
       <h2>设置</h2>
       <p class="game-meta">
-        配置你自己的 DeepSeek API Key：保存后当前进程立即生效（无需重启），下次启动自动恢复。
+        配置你自己的 DeepSeek API Key：保存后当前进程立即生效（无需重启），下次启动自动恢复。自由制造开关也在此页，开启前会提示风险。
       </p>
     </header>
 
@@ -132,6 +170,80 @@ onMounted(() => {
         <dd>{{ status.has_saved_user_key ? '是' : '否' }}</dd>
       </dl>
       <p class="llm-status-detail">{{ status.detail }}</p>
+    </section>
+
+    <!-- 自由制造开关：默认关闭；开启前必须确认 Resolver 内调 LLM 的风险 -->
+    <section v-reveal class="panel free-craft-card" aria-label="自由制造">
+      <div class="llm-status-head">
+        <h3 class="panel-title">自由制造</h3>
+        <span class="world-tag" :class="{ 'world-tag-constant': !freeCraft.enabled }">
+          {{ freeCraft.enabled ? '已开启' : '已关闭' }}
+        </span>
+        <span v-if="freeCraftStatus !== null" class="world-tag free-craft-source">
+          {{ freeCraftStatus.source === 'user' ? '本机设置' : freeCraftStatus.source === 'env' ? '环境默认' : '默认关闭' }}
+        </span>
+      </div>
+      <p class="field-hint muted">
+        不命中固定配方时，允许大模型临时生成制造草稿。开启后会在裁决链路内调用大模型，可能因重试产生额外费用；建议只在单人本地使用。
+      </p>
+
+      <ErrorBanner
+        :title="freeCraft.loadError?.title"
+        :message="freeCraft.loadError?.message ?? ''"
+        :detail="freeCraft.loadError?.detail"
+        :retryable="freeCraft.loadError !== null"
+        @retry="loadFreeCraft"
+      />
+      <p v-if="freeCraft.loading" class="muted" role="status">正在读取自由制造状态…</p>
+
+      <div v-if="freeCraftStatus !== null" class="free-craft-row">
+        <div class="free-craft-copy">
+          <p class="free-craft-detail">{{ freeCraftStatus.detail }}</p>
+          <p v-if="!freeCraftStatus.available && !freeCraftStatus.enabled" class="field-hint muted">
+            先在下方配置并启用大模型 API Key，才能开启自由制造。
+          </p>
+        </div>
+        <button
+          type="button"
+          class="free-craft-switch"
+          role="switch"
+          :aria-checked="freeCraft.enabled"
+          :aria-label="freeCraft.enabled ? '关闭自由制造' : '开启自由制造'"
+          :disabled="freeCraftToggleDisabled"
+          @click="onFreeCraftToggle"
+        >
+          <span class="free-craft-thumb" aria-hidden="true" />
+        </button>
+      </div>
+
+      <div v-if="freeCraft.confirmArmed" class="panel free-craft-warning" role="alertdialog" aria-label="自由制造风险确认">
+        <p>
+          <strong>开启前确认：</strong>
+          自由制造会在裁决/重试链路内调用大模型，可能重复计费；它不属于纯确定性裁决。
+        </p>
+        <div class="game-tools">
+          <button class="btn" type="button" :disabled="freeCraft.saveBusy" @click="onConfirmFreeCraft">
+            {{ freeCraft.saveBusy ? '开启中…' : '确认开启' }}
+          </button>
+          <button
+            class="btn btn-small btn-secondary"
+            type="button"
+            :disabled="freeCraft.saveBusy"
+            @click="freeCraft.disarmEnable()"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+
+      <p v-if="freeCraft.saveNotice !== ''" class="panel llm-notice" role="status">
+        {{ freeCraft.saveNotice }}
+      </p>
+      <ErrorBanner
+        :title="freeCraft.saveError?.title"
+        :message="freeCraft.saveError?.message ?? ''"
+        :detail="freeCraft.saveError?.detail"
+      />
     </section>
 
     <!-- 表单：API Key / 供应商 / 模型 / 高级 API 地址；保存并启用、测试、清除 -->

@@ -124,7 +124,7 @@ describe('世界书 API client（H4-CONTRACT §2）', () => {
     expect(call[1]?.method).toBe('POST')
     expect(call[1]?.body).toBeInstanceOf(FormData)
     const headers = new Headers(call[1]?.headers)
-    expect(headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headers.get('Idempotency-Key')).toBe('wb-import-key')
     expect(headers.get('Content-Type')).toBeNull() // 浏览器自动带 multipart boundary
     const form = call[1]?.body as FormData
     expect(form.get('name')).toBe('自定义名')
@@ -159,6 +159,6 @@ describe('世界书 API client（H4-CONTRACT §2）', () => {
     const call = mock.mock.calls[0] as [RequestInfo | URL, RequestInit | undefined]
     expect(String(call[0])).toBe('/api/v1/world-books/wb_abc')
     expect(call[1]?.method).toBe('DELETE')
-    expect(new Headers(call[1]?.headers).get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(new Headers(call[1]?.headers).get('Idempotency-Key')).toBe('wb-delete-key')
   })
 })

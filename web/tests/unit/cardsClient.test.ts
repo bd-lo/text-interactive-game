@@ -109,7 +109,7 @@ describe('卡库 API client（M6-026）', () => {
     expect(file).not.toBeNull()
     expect((file as File).name).toBe('card.json')
     const headers = new Headers(init?.headers)
-    expect(headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headers.get('Idempotency-Key')).toBe('card-import')
     expect(headers.get('Content-Type')).toBeNull() // 由 FormData 自动带 boundary
   })
 

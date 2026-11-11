@@ -1,12 +1,13 @@
 /**
- * 视觉特效偏好（H4 炫酷化）：全局「特效开关 / 低功耗」持久化 + 系统 reduced-motion 降级。
+ * 视觉特效偏好（Aurora Glass）：全局「特效开关 / 低功耗」持久化 + 系统 reduced-motion 降级。
  *
- * 口径（H4-BRIEF §2A）：
- * - 所有特效层（Canvas 余烬粒子 / CRT 层 / 打字机 / glitch / 面板动效）只读本 store；
- * - `off` = 关闭全部特效（仅保留静态配色）；`low` = 低功耗（少粒子、低帧率、关 glitch/打字机）；
+ * 口径：
+ * - 所有特效层（极光氛围 / 微光粒子 / 聚光 / 打字机 / 面板动效）只读本 store；
+ * - `off` = 关闭全部特效（仅保留静态配色与玻璃质感）；`low` = 低功耗（少粒子、低帧率、关聚光/打字机）；
  * - 尊重系统 `prefers-reduced-motion: reduce`：无法探测的环境（SSR/jsdom）按「减少动态」保守降级，
  *   保证测试与无 matchMedia 环境不跑动画；
  * - 偏好写 `localStorage`，并把 `data-visual` / `data-reduced-motion` 写到 `<html>` 供纯 CSS 降级；
+ * - 主题（日/夜）由 `stores/theme.ts` 独立管理，二者正交；
  * - 设置项本身无动画，关闭特效不影响可用性与信息架构。
  */
 
@@ -94,16 +95,16 @@ export const useVisualStore = defineStore('visual', {
     lowPower(state): boolean {
       return state.mode === 'low'
     },
-    /** CRT 层是否渲染（关闭特效时整层不渲染，降低合成开销）。 */
-    crtEnabled(state): boolean {
+    /** 氛围层（极光/颗粒/聚光）是否渲染（关闭特效时整层不渲染，降低合成开销）。 */
+    atmosphereEnabled(state): boolean {
       return state.mode !== 'off'
     },
     /** CSS 动效（面板进场/页面过渡/reveal）是否启用。 */
     animationsEnabled(state): boolean {
       return state.mode !== 'off' && !state.systemReducedMotion
     },
-    /** glitch 标题效果（仅在完整特效下）。 */
-    glitchEnabled(state): boolean {
+    /** 鼠标聚光（仅在完整特效下；日/夜皮肤都可用）。 */
+    spotlightEnabled(state): boolean {
       return state.mode === 'full' && !state.systemReducedMotion
     },
     /** 叙事打字机（仅在完整特效下；可点击跳过）。 */

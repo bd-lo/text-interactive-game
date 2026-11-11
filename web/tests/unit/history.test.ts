@@ -7,6 +7,7 @@ import {
   displayHistory,
   ENDING_ENTRY_ID,
   historyFromReplay,
+  lastResponseText,
   mergeReplayHistory,
   narrativeOfEvent,
   OPENING_ENTRY_ID,
@@ -185,5 +186,33 @@ describe('冒险记录纯函数（replay → 回合日志）', () => {
       endingText: endedView.ending_text,
     })
     expect(second).toEqual(first)
+  })
+
+  it('R-23 最近回应：零事件正文（不在记录里）展示；事件回合/开场结局派生行不重复展示', () => {
+    const entries = [{ id: 'turn:2', kind: 'narrative' as const, text: '你捡起了火把。', turnId: 2 }]
+
+    // 零事件只读回合（看/背包）：正文只存在于 lastText，不在冒险记录里 → 展示
+    expect(lastResponseText('你环顾四周，把入口看了一遍。', entries)).toBe(
+      '你环顾四周，把入口看了一遍。',
+    )
+    // 事件回合：正文已写入冒险记录 → 不重复展示
+    expect(lastResponseText('你捡起了火把。', entries)).toBe('')
+    // 空/纯空白 → 不展示
+    expect(lastResponseText('', entries)).toBe('')
+    expect(lastResponseText('   \n ', entries)).toBe('')
+    // 空局无记录 → 展示（并做 trim）
+    expect(lastResponseText(' 你环顾四周。 ', [])).toBe('你环顾四周。')
+    // 与「开场」派生正文相同（刷新后 last_text 可能等于开场描述）→ 不重复展示
+    const opening = [{ id: OPENING_ENTRY_ID, kind: 'opening' as const, text: '墙上的信标还暗着。', turnId: null }]
+    expect(lastResponseText('墙上的信标还暗着。', opening)).toBe('')
+    // 与「结局」派生正文相同 → 不重复展示
+    const ending = [{ id: ENDING_ENTRY_ID, kind: 'ending' as const, text: '信标在风里亮起。', turnId: null }]
+    expect(lastResponseText('信标在风里亮起。', ending)).toBe('')
+    // 最近一条是非叙事系统行时继续向前找叙事行
+    const withNotice = [
+      ...entries,
+      { id: 'notice:1', kind: 'notice' as const, text: '（该指令未生效）', turnId: null },
+    ]
+    expect(lastResponseText('你捡起了火把。', withNotice)).toBe('')
   })
 })

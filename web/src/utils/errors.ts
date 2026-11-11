@@ -140,6 +140,18 @@ export function describeError(error: unknown): PlayerErrorInfo {
   return { title: '出了点问题', message: String(error), detail: String(error) }
 }
 
+/** 自由制造设置失败 → 玩家可读错误（409 是“还不能开启”，不是幂等重复）。 */
+export function describeFreeCraftError(error: unknown): PlayerErrorInfo {
+  if (error instanceof ApiClientError && (error.status === 409 || error.code === 'CONFLICT')) {
+    return {
+      title: '还不能切换自由制造',
+      message: error.message,
+      detail: `${error.code}（HTTP ${error.status}）：${error.message}`,
+    }
+  }
+  return describeError(error)
+}
+
 /** 回合业务失败（HTTP 200 + ok=false）→ 玩家可读信息。 */
 export function describeTurnFailure(code: string | null, text: string): PlayerErrorInfo {
   const detail = `${code ?? 'INVALID_INPUT'}：${text}`

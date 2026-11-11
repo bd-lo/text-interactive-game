@@ -207,7 +207,7 @@ export const useCardGenerateStore = defineStore('cardGenerate', {
           { brief, schema_version: '1.0', options },
           actionKey,
         )
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(GENERATE_IDEMPOTENCY_ACTION)
         this.pendingGenerateKey = null
         this.applyGenerated(response)
         return true
@@ -219,7 +219,7 @@ export const useCardGenerateStore = defineStore('cardGenerate', {
         this.errorDetail = info.detail
         this.retryAfterSeconds = info.retryAfterSeconds
         if (info.clearKey) {
-          clearIdempotencyKey(actionKey)
+          clearIdempotencyKey(GENERATE_IDEMPOTENCY_ACTION)
           this.pendingGenerateKey = null
         }
         return false
@@ -318,7 +318,7 @@ export const useCardGenerateStore = defineStore('cardGenerate', {
       this.saveBusy = true
       try {
         const response = await saveCard(card, actionKey)
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(SAVE_IDEMPOTENCY_ACTION)
         this.pendingSaveKey = null
         this.savedCardId = response.card_id
         return response.card_id
@@ -329,7 +329,7 @@ export const useCardGenerateStore = defineStore('cardGenerate', {
         this.saveErrorCode = info.code
         this.saveErrorDetail = info.detail
         if (info.clearKey) {
-          clearIdempotencyKey(actionKey)
+          clearIdempotencyKey(SAVE_IDEMPOTENCY_ACTION)
           this.pendingSaveKey = null
         }
         return null

@@ -104,7 +104,7 @@ describe('生成人物卡 API client（M6-028）', () => {
       schema_version: '1.0',
       options: { tone: 'grim' },
     })
-    expect(headersOf(mock, 0).get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headersOf(mock, 0).get('Idempotency-Key')).toBe('card-generate')
     expect(CARD_GENERATE_TIMEOUT_MS).toBe(60_000)
   })
 
@@ -196,7 +196,7 @@ describe('生成人物卡 API client（M6-028）', () => {
     expect(String(url)).toBe('/api/v1/character-cards')
     expect(init?.method).toBe('POST')
     expect(bodyOf(mock, 0)).toEqual(CARD)
-    expect(headersOf(mock, 0).get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headersOf(mock, 0).get('Idempotency-Key')).toBe('card-save')
   })
 
   it('saveCard：响应多个字段 → 契约错误（extra=forbid 对齐）', async () => {

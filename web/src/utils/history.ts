@@ -186,3 +186,28 @@ export function displayHistory(
   const withOpeningEntries = withOpening(history, options.view)
   return withEnding(withOpeningEntries, { status: options.status, endingText: options.endingText })
 }
+
+/**
+ * 「最近回应」展示文本（R-23 配套：零事件只读回合的可见出口）。
+ *
+ * R-23 后冒险记录 = 事件记录：看/背包等零事件回合没有 `Event`，不写入 history，
+ * 正文只存在于 `store.lastText`（刷新后可由 `/games/{id}` 快照的 `last_text` 恢复）。
+ * 规则：`lastText` 去空白后为空 → 不展示；与记录里最近一条叙事（含「开场」「结局」
+ * 派生行）正文相同 → 说明已写入冒险记录，不重复展示；否则返回该正文。
+ */
+export function lastResponseText(lastText: string, entries: readonly HistoryEntry[]): string {
+  const text = lastText.trim()
+  if (text === '') {
+    return ''
+  }
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (entry === undefined) {
+      continue
+    }
+    if (entry.kind === 'narrative' || entry.kind === 'opening' || entry.kind === 'ending') {
+      return entry.text.trim() === text ? '' : text
+    }
+  }
+  return text
+}

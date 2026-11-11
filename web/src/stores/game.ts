@@ -216,6 +216,28 @@ export const useGameStore = defineStore('game', {
       this.lastSuggestedActions = []
       this.view = null
     },
+    /** 切换/载入对局前清空派生状态：加载失败时不得继续展示上一个对局（R-22）。 */
+    resetForLoad(): void {
+      this.gameId = ''
+      this.turn = 0
+      this.version = 0
+      this.snapshotVersion = 0
+      this.status = 'active'
+      this.scenario = 'm2'
+      this.customScenarioId = ''
+      this.seed = null
+      this.cardId = null
+      this.lastText = ''
+      this.history = []
+      this.historyLoading = false
+      this.historyError = ''
+      this.narrativeSource = ''
+      this.lastEffects = []
+      this.lastSuggestedActions = []
+      this.view = null
+      this.lastInput = ''
+      this.pendingKey = null
+    },
     applySnapshot(snapshot: GameViewResponse): void {
       this.gameId = snapshot.game_id
       this.turn = snapshot.turn
@@ -294,12 +316,17 @@ export const useGameStore = defineStore('game', {
       this.customScenarioId = options.scenario_id ?? ''
       this.seed = options.seed ?? null
       this.cardId = options.card_id ?? null
-      const actionKey =
+      // R-24：幂等键由 store 生成「逻辑动作名 → 一次性 UUID」再交给 client 发送。
+      // 不能把动作名本身当 Idempotency-Key：同卡/同场景再次开局会命中服务端幂等回放，
+      // 拿到上一局而开不出新对局（e2e「详情页按此卡开局」曾因此失败）。
+      const actionName =
         `create-game:${options.card_id ?? 'none'}:${options.seed ?? 'default'}` +
-        `:${options.scenario ?? 'm2'}:${options.scenario_id ?? 'none'}`
+        `:${options.scenario ?? 'm2'}:${options.scenario_id ?? 'none'}` +
+        `:${options.world_book_id ?? 'none'}`
+      const actionKey = getOrCreate(actionName)
       try {
         const created = await createGame(options, actionKey)
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(actionName)
         this.applyCreated(created)
         try {
           await this.refreshView()
@@ -321,9 +348,10 @@ export const useGameStore = defineStore('game', {
     async loadGame(gameId: string): Promise<void> {
       this.busy = true
       this.clearError()
+      // R-22：先清空上一个对局的 view/history/version，加载失败时页面不会残留旧对局内容。
+      this.resetForLoad()
       try {
         this.gameId = gameId
-        this.customScenarioId = ''
         const snapshot = await getGame(gameId)
         this.applySnapshot(snapshot)
         this.seed = null
@@ -386,7 +414,8 @@ export const useGameStore = defineStore('game', {
       this.lastSuggestedActions = []
       this.lastInput = text
       // 同一逻辑动作：手动重试复用 pendingKey；新动作由 version 派生新键。
-      const actionKey = this.pendingKey ?? getOrCreate(`turn:${this.gameId}:${this.version}`)
+      const actionName = `turn:${this.gameId}:${this.version}`
+      const actionKey = this.pendingKey ?? getOrCreate(actionName)
       this.pendingKey = actionKey
       try {
         const result = await submitTurnApi(
@@ -394,7 +423,7 @@ export const useGameStore = defineStore('game', {
           actionKey,
         )
         if (result.ok) {
-          clearIdempotencyKey(actionKey)
+          clearIdempotencyKey(actionName)
           this.pendingKey = null
           this.canRetry = false
           this.lastText = result.text
@@ -405,15 +434,19 @@ export const useGameStore = defineStore('game', {
           if (source !== '') {
             this.narrativeSource = source
           }
-          this.history = appendNarrative(this.history, {
-            text: result.text,
-            turnId: result.turn_id,
-          })
+          // R-23：冒险记录 = 事件记录。零事件只读回合（看/背包）没有 Event，刷新后 replay
+          // 无法重建；因此不写入 history，只更新 lastText，避免刷新前后记录不一致。
+          if (result.events.length > 0) {
+            this.history = appendNarrative(this.history, {
+              text: result.text,
+              turnId: result.turn_id,
+            })
+          }
           await this.refreshAfterTurn()
           return
         }
         // 业务失败：HTTP 200 + ok=false，零写入；同一输入重提视为新逻辑动作。
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(actionName)
         this.pendingKey = null
         this.lastEffects = result.effects
         this.lastSuggestedActions = result.suggested_actions
@@ -426,7 +459,7 @@ export const useGameStore = defineStore('game', {
         this.history = appendNotice(this.history)
       } catch (error) {
         if (error instanceof ApiClientError && error.isConflict) {
-          clearIdempotencyKey(actionKey)
+          clearIdempotencyKey(actionName)
           this.pendingKey = null
           await this.healConflict(null, error.message)
         } else {

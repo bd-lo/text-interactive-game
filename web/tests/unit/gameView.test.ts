@@ -216,4 +216,38 @@ describe('GameView（玩家视角：目标/建议/结局/诊断折叠）', () =>
     expect(banner.text()).toContain('这个动作没有生效')
     expect(banner.find('.error-details').attributes('open')).toBeUndefined()
   })
+
+  it('R-23 最近回应：零事件只读回合正文可见，事件回合不重复展示', async () => {
+    const readonlyText = '你环顾四周，把入口看了一遍。'
+    const { wrapper } = await mountGame({ history: [], lastText: readonlyText })
+
+    const response = wrapper.find('.last-response')
+    expect(response.exists()).toBe(true)
+    expect(response.attributes('aria-live')).toBe('polite')
+    expect(response.attributes('aria-label')).toBe('最近回应')
+    expect(response.text()).toContain('最近回应')
+    expect(response.text()).toContain(readonlyText)
+
+    // 事件回合已写入冒险记录 → 不再重复展示（含快照 last_text 已恢复成该回合文本的场景）
+    const afterEvent = await mountGame({
+      history: [{ id: 'turn:2', kind: 'narrative', text: '你捡起了火把。', turnId: 2 }],
+      lastText: '你捡起了火把。',
+    })
+    expect(afterEvent.wrapper.find('.last-response').exists()).toBe(false)
+    expect(afterEvent.wrapper.find('.narrative-history').text()).toContain('你捡起了火把。')
+  })
+
+  it('R-23 lastText 为空或与最近叙事（开场派生行）相同时不渲染「最近回应」', async () => {
+    const empty = await mountGame({ history: [], lastText: '' })
+    expect(empty.wrapper.find('.last-response').exists()).toBe(false)
+
+    // 无 goal 时「开场」正文 = 房间描述；lastText 与之相同 → 不重复展示
+    const viewNoGoal: GamePlayerViewResponse = { ...VIEW, goal: null }
+    const sameAsOpening = await mountGame(
+      { history: [], lastText: '墙上的信标还暗着。' },
+      { view: viewNoGoal },
+    )
+    expect(sameAsOpening.wrapper.find('.history-opening').text()).toContain('墙上的信标还暗着。')
+    expect(sameAsOpening.wrapper.find('.last-response').exists()).toBe(false)
+  })
 })

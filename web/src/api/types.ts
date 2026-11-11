@@ -1,11 +1,11 @@
 /**
  * 前端契约类型快照（M6-025 骨架 + M6-027 回放 + M6-026 卡库导入 + M6-028 生成 + H4 世界书
- * + 用户自上传场景 Scenario Module v1 + LLM 运行期设置 + 启动器控制面）。
+ * + 用户自上传场景 Scenario Module v1 + LLM 运行期设置 + 自由制造开关 + 启动器控制面）。
  *
  * 唯一来源是 live OpenAPI：`create_app().openapi()`（D-M6-2 / 第 23 章 §23.3）。
  * 字段集合由 `tests/integration/test_frontend_contract.py` 静态比对；后端契约变更未同步
  * 到本文件时契约测试会失败。当前使用现有端点（games/turns/replay + character-cards 8 个
- * + world-books 5 个 + scenarios 5 个 + settings 4 个 + app 控制面 3 个）。
+ * + world-books 5 个 + scenarios 5 个 + settings 6 个 + app 控制面 3 个）。
  */
 
 /** 前端实际调用的端点（必须是 live OpenAPI 的子集，契约测试逐项断言）。 */
@@ -40,6 +40,9 @@ export const API_PATHS = {
   saveLlmSettings: '/api/v1/settings/llm',
   testLlmConnection: '/api/v1/settings/llm/test',
   clearLlmSettings: '/api/v1/settings/llm',
+  // 自由制造开关（前端二次确认 + 本机持久化；R-19 运行期 opt-in）
+  getFreeCraftSettings: '/api/v1/settings/free-craft',
+  saveFreeCraftSettings: '/api/v1/settings/free-craft',
   // 启动器控制面（网页「退出游戏」/ 心跳 / 状态；Task A 冻结契约）
   appStatus: '/api/v1/app/status',
   appHeartbeat: '/api/v1/app/heartbeat',
@@ -606,6 +609,31 @@ export interface LlmSettingsSaveResponse {
 /** `DELETE /api/v1/settings/llm` 200 响应（清除本机 key 后的状态快照）。 */
 export interface LlmSettingsClearResponse {
   status: LlmSettingsStatus
+}
+
+// ---------------------------------------------------------------------------
+// 自由制造开关（GET/PUT /api/v1/settings/free-craft）
+// 语义：开启需 LLM 已启用 + 前端二次确认 Resolver LLM 风险；后端持久化到本机 JSON。
+// ---------------------------------------------------------------------------
+
+/** 自由制造状态来源：网页设置 / env 默认 / 内置默认。 */
+export type FreeCraftSource = 'user' | 'env' | 'default'
+
+/** `GET /api/v1/settings/free-craft` 200 响应。 */
+export interface FreeCraftSettingsStatus {
+  enabled: boolean
+  available: boolean
+  llm_configured: boolean
+  llm_enabled: boolean
+  risk_accepted: boolean
+  source: FreeCraftSource
+  detail: string
+}
+
+/** `PUT /api/v1/settings/free-craft` 请求体。 */
+export interface FreeCraftSettingsSaveRequest {
+  enabled: boolean
+  accept_resolver_llm_risk?: boolean
 }
 
 // ---------------------------------------------------------------------------

@@ -54,7 +54,7 @@ describe('api client（第 6 章 §6.7 错误契约 + 运行时字段校验）',
     const call = mock.mock.calls[0] as [RequestInfo | URL, RequestInit | undefined]
     expect(String(call[0])).toBe('/api/v1/games')
     const headers = new Headers(call[1]?.headers)
-    expect(headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headers.get('Idempotency-Key')).toBe('create-game:42:m2')
     expect(headers.get('Content-Type')).toBe('application/json')
     expect(JSON.parse(String(call[1]?.body))).toEqual({ seed: 42, scenario: 'm2' })
   })
@@ -105,7 +105,7 @@ describe('api client（第 6 章 §6.7 错误契约 + 运行时字段校验）',
     const call = mock.mock.calls[0] as [RequestInfo | URL, RequestInit | undefined]
     expect(String(call[0])).toBe('/api/v1/turns')
     const headers = new Headers(call[1]?.headers)
-    expect(headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headers.get('Idempotency-Key')).toBe('turn:g1:1')
     expect(JSON.parse(String(call[1]?.body))).toEqual({
       game_id: 'g1',
       input: '向北走',

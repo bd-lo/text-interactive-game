@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "textgame 2G 文字 MUD Web 客户端（M6-025 骨架；Node 仅构建期，运行期由 FastAPI 托管 web/dist）",
+  "description": "Aurora Glass 双皮肤（日间/夜间）的文字交互游戏 Web 客户端（Vue 3 + Pinia + Vite；Node 仅构建期，运行期由 FastAPI 托管 web/dist）",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

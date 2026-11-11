@@ -200,7 +200,8 @@ export const useWorldBooksStore = defineStore('worldBooks', {
         this.importError = { title: '内容不对', message: check.error, detail: check.error }
         return null
       }
-      const actionKey = this.pendingImportKey ?? getOrCreate('world-book-import')
+      const actionName = 'world-book-import'
+      const actionKey = this.pendingImportKey ?? getOrCreate(actionName)
       this.pendingImportKey = actionKey
       this.importBusy = true
       try {
@@ -209,7 +210,7 @@ export const useWorldBooksStore = defineStore('worldBooks', {
           actionKey,
           { filename: options.filename, name: options.name },
         )
-        clearIdempotencyKey(actionKey)
+        clearIdempotencyKey(actionName)
         this.pendingImportKey = null
         this.importResult = response
         this.importWarnings = response.warnings ?? []
@@ -218,7 +219,7 @@ export const useWorldBooksStore = defineStore('worldBooks', {
         this.importError = describeWorldBookError(error)
         if (error instanceof ApiClientError && (error.status === 409 || error.code === 'CONFLICT')) {
           // 同键异参：清键，下一次提交自动换新键（不是自动重试）
-          clearIdempotencyKey(actionKey)
+          clearIdempotencyKey(actionName)
           this.pendingImportKey = null
         }
         return null

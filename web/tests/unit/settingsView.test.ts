@@ -36,6 +36,32 @@ const NONE_STATUS = {
   detail: '未配置大模型，当前为离线模板叙事',
 }
 
+const FREE_CRAFT_OFF = {
+  enabled: false,
+  available: true,
+  llm_configured: true,
+  llm_enabled: true,
+  risk_accepted: false,
+  source: 'user',
+  detail: '自由制造未开启：未命中配方时会返回不支持。',
+}
+
+const FREE_CRAFT_NO_LLM = {
+  ...FREE_CRAFT_OFF,
+  available: false,
+  llm_configured: false,
+  llm_enabled: false,
+  source: 'default',
+  detail: '自由制造未开启；请先在下方配置并启用大模型 API Key。',
+}
+
+const FREE_CRAFT_ON = {
+  ...FREE_CRAFT_OFF,
+  enabled: true,
+  risk_accepted: true,
+  detail: '自由制造已开启：未命中配方时会调用大模型生成草稿，可能产生额外费用。',
+}
+
 const TEST_OK = {
   ok: true,
   latency_ms: 180,
@@ -78,10 +104,13 @@ async function mountSettings(handler: Handler) {
   return { wrapper, router, mock }
 }
 
-function statusHandler(status: unknown): Handler {
+function statusHandler(status: unknown, freeCraft: unknown = FREE_CRAFT_OFF): Handler {
   return (url) => {
     if (url === '/api/v1/settings/llm') {
       return jsonResponse(200, status)
+    }
+    if (url === '/api/v1/settings/free-craft') {
+      return jsonResponse(200, freeCraft)
     }
     return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: `unexpected ${url}` })
   }
@@ -127,6 +156,9 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
         bodies.push(JSON.parse(String(init.body)))
         return jsonResponse(200, { status: USER_STATUS, test: null })
       }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_OFF)
+      }
       return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: `unexpected ${url}` })
     })
 
@@ -155,7 +187,10 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
 
   it('空 key 本地拦下：给中文提示且不发 PUT', async () => {
     const mock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, NONE_STATUS),
+      async (input: RequestInfo | URL, _init?: RequestInit) =>
+        String(input) === '/api/v1/settings/free-craft'
+          ? jsonResponse(200, FREE_CRAFT_NO_LLM)
+          : jsonResponse(200, NONE_STATUS),
     )
     vi.stubGlobal('fetch', mock)
     const pinia = createPinia()
@@ -185,6 +220,9 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
       if (url === '/api/v1/settings/llm/test' && init?.method === 'POST') {
         return jsonResponse(200, TEST_OK)
       }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_OFF)
+      }
       return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
     })
 
@@ -200,6 +238,9 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
       }
       if (url === '/api/v1/settings/llm/test' && init?.method === 'POST') {
         return jsonResponse(200, { ...TEST_OK, ok: false, latency_ms: null, error: '鉴权失败（401）' })
+      }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_OFF)
       }
       return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
     })
@@ -219,6 +260,9 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
       if (url === '/api/v1/settings/llm' && init?.method === 'DELETE') {
         calls.push('DELETE')
         return jsonResponse(200, { status: NONE_STATUS })
+      }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_NO_LLM)
       }
       return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
     })
@@ -249,6 +293,9 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
         }
         return jsonResponse(200, BASE_STATUS)
       }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_OFF)
+      }
       return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
     })
 
@@ -259,5 +306,70 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
 
     expect(wrapper.text()).toContain('开发环境 .env')
     expect(wrapper.text()).toContain('正在使用 .env 里的开发 key')
+  })
+
+  it('自由制造：未配置 LLM 时开关禁用并提示先配置', async () => {
+    const { wrapper } = await mountSettings(statusHandler(NONE_STATUS, FREE_CRAFT_NO_LLM))
+
+    const toggle = wrapper.find('[role="switch"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    expect(toggle.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('先在下方配置并启用大模型 API Key')
+  })
+
+  it('自由制造：开启前二次确认，确认后 PUT true 并显示已开启', async () => {
+    const bodies: unknown[] = []
+    const { wrapper } = await mountSettings((url, init) => {
+      if (url === '/api/v1/settings/llm') {
+        return jsonResponse(200, BASE_STATUS)
+      }
+      if (url === '/api/v1/settings/free-craft' && init?.method === 'PUT') {
+        bodies.push(JSON.parse(String(init.body)))
+        return jsonResponse(200, FREE_CRAFT_ON)
+      }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_OFF)
+      }
+      return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
+    })
+
+    await wrapper.find('[role="switch"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('开启前确认')
+    expect(bodies).toEqual([])
+
+    const confirm = wrapper.findAll('button').find((button) => button.text() === '确认开启')
+    await confirm?.trigger('click')
+    await flushPromises()
+
+    expect(bodies).toEqual([{ enabled: true, accept_resolver_llm_risk: true }])
+    expect(wrapper.find('[role="switch"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.text()).toContain('自由制造已开启')
+    expect(wrapper.text()).toContain('可能产生额外费用')
+  })
+
+  it('自由制造：已开启时直接关闭，不再弹确认', async () => {
+    const bodies: unknown[] = []
+    const { wrapper } = await mountSettings((url, init) => {
+      if (url === '/api/v1/settings/llm') {
+        return jsonResponse(200, BASE_STATUS)
+      }
+      if (url === '/api/v1/settings/free-craft' && init?.method === 'PUT') {
+        bodies.push(JSON.parse(String(init.body)))
+        return jsonResponse(200, FREE_CRAFT_OFF)
+      }
+      if (url === '/api/v1/settings/free-craft') {
+        return jsonResponse(200, FREE_CRAFT_ON)
+      }
+      return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
+    })
+
+    await wrapper.find('[role="switch"]').trigger('click')
+    await flushPromises()
+
+    expect(bodies).toEqual([{ enabled: false, accept_resolver_llm_risk: false }])
+    expect(wrapper.find('[role="switch"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.text()).toContain('自由制造已关闭')
   })
 })

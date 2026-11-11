@@ -16,7 +16,7 @@ import { vReveal } from '@/directives/reveal'
 import { useGameStore } from '@/stores/game'
 import { useVisualStore } from '@/stores/visual'
 import { IS_DEV } from '@/utils/env'
-import { displayHistory } from '@/utils/history'
+import { displayHistory, lastResponseText } from '@/utils/history'
 import { formatEndingSummary, labelGameStatus, labelScenario } from '@/utils/labels'
 import { isAppAction, suggestActions } from '@/utils/suggestions'
 
@@ -111,6 +111,14 @@ const historyEntries = computed(() =>
   }),
 )
 
+/**
+ * R-23 配套「最近回应」：零事件只读回合不写入冒险记录，正文只在 `store.lastText`
+ * （快照 `last_text` 刷新后可恢复）。事件回合已进 history → 不重复展示。
+ */
+const recentResponse = computed<string>(() =>
+  lastResponseText(store.lastText, historyEntries.value),
+)
+
 /** 服务端建议里混有「刷新对局视图」这类应用动作，不能当游戏指令提交。 */
 function gameCommands(actions: readonly string[]): string[] {
   return actions.filter((action) => action !== '' && !isAppAction(action))
@@ -150,7 +158,12 @@ async function ensureLoaded(): Promise<void> {
   if (id === '') {
     return
   }
-  if (store.gameId === id && store.version > 0 && store.view !== null) {
+  if (
+    store.gameId === id &&
+    store.version > 0 &&
+    store.view !== null &&
+    store.view.game_id === id
+  ) {
     return
   }
   try {
@@ -270,6 +283,17 @@ watch(
           :typewriter="visual.typewriterEnabled"
         />
         <p v-if="store.historyError !== ''" class="muted" role="status">{{ store.historyError }}</p>
+
+        <!-- R-23 配套：零事件只读回合（看/背包）不写冒险记录，正文在这里可见。 -->
+        <section
+          v-if="recentResponse !== ''"
+          class="panel last-response"
+          aria-label="最近回应"
+          aria-live="polite"
+        >
+          <h3 class="panel-title">最近回应</h3>
+          <pre class="last-response-text">{{ recentResponse }}</pre>
+        </section>
 
         <TurnFeedback
           :effects="store.lastEffects"

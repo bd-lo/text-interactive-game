@@ -8,8 +8,6 @@
  * 关键响应先做运行时字段校验再返回（第 23 章 §23.3「不得裸 body as T」）。
  */
 
-import { getOrCreate } from '@/utils/idempotency'
-
 import type {
   ApiErrorEnvelope,
   CardGenerateRequest,
@@ -22,6 +20,8 @@ import type {
   CharacterCardValidateResponse,
   CreateGameRequest,
   CreatedGameResponse,
+  FreeCraftSettingsSaveRequest,
+  FreeCraftSettingsStatus,
   GameListResponse,
   GamePlayerViewResponse,
   GameViewResponse,
@@ -86,7 +86,7 @@ export class ApiClientError extends Error {
 export interface RequestOptions {
   /** 写请求：附带 Idempotency-Key（同键手动重试复用）。 */
   idempotent?: boolean
-  /** 逻辑动作标识；与 sessionStorage 中的键一一对应。 */
+  /** 逻辑动作标识；调用方必须传入**最终**幂等键（store 用 `getOrCreate` 生成并负责清理）。 */
   actionKey?: string
   signal?: AbortSignal
   /** 单请求超时毫秒数（缺省 `DEFAULT_TIMEOUT_MS`）。 */
@@ -143,7 +143,9 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
     headers.set('Content-Type', 'application/json')
   }
   if (options.idempotent === true && options.actionKey !== undefined) {
-    headers.set('Idempotency-Key', getOrCreate(options.actionKey))
+    // R-24：`actionKey` 就是最终幂等键（由 store 统一生成/清理），这里不再二次封装，
+    // 否则实际发送的是第二个 UUID、清理的是第一个，语义脆弱且会泄漏 sessionStorage 项。
+    headers.set('Idempotency-Key', options.actionKey)
   }
   // 超时 + 外部取消：任一触发都 abort；避免网络挂起导致 busy 永久为 true（R2 包 C）。
   const controller = new AbortController()
@@ -1152,6 +1154,16 @@ const LLM_STATUS_KEYS = [
 const LLM_TEST_KEYS = ['ok', 'latency_ms', 'provider', 'model', 'error'] as const
 const LLM_SAVE_KEYS = ['status', 'test'] as const
 const LLM_CLEAR_KEYS = ['status'] as const
+const FREE_CRAFT_STATUS_KEYS = [
+  'enabled',
+  'available',
+  'llm_configured',
+  'llm_enabled',
+  'risk_accepted',
+  'source',
+  'detail',
+] as const
+const FREE_CRAFT_SOURCES = ['user', 'env', 'default'] as const
 
 /** 当前 LLM 配置状态逐字段校验（`extra="forbid"`；漂移即契约错误）。 */
 function parseLlmStatus(value: unknown, label = 'LlmStatusResponse'): LlmSettingsStatus {
@@ -1237,6 +1249,57 @@ export async function clearLlmSettings(signal?: AbortSignal): Promise<LlmSetting
   const record = assertRecord(payload, 'LlmDeleteResponse')
   assertKeys(record, 'LlmDeleteResponse', LLM_CLEAR_KEYS)
   return { status: parseLlmStatus(record.status, 'LlmDeleteResponse.status') }
+}
+
+/** 自由制造状态逐字段校验（`extra="forbid"`；source 未知值即契约错误）。 */
+function parseFreeCraftStatus(
+  value: unknown,
+  label = 'FreeCraftStatusResponse',
+): FreeCraftSettingsStatus {
+  const record = assertRecord(value, label)
+  assertKeys(record, label, FREE_CRAFT_STATUS_KEYS)
+  if (
+    typeof record.enabled !== 'boolean' ||
+    typeof record.available !== 'boolean' ||
+    typeof record.llm_configured !== 'boolean' ||
+    typeof record.llm_enabled !== 'boolean' ||
+    typeof record.risk_accepted !== 'boolean' ||
+    typeof record.detail !== 'string' ||
+    !FREE_CRAFT_SOURCES.includes(record.source as (typeof FREE_CRAFT_SOURCES)[number])
+  ) {
+    throw contractError(label, '自由制造状态字段类型不符')
+  }
+  return record as unknown as FreeCraftSettingsStatus
+}
+
+/** `GET /api/v1/settings/free-craft`：读取开关状态（只读、不联网）。 */
+export async function getFreeCraftSettings(
+  signal?: AbortSignal,
+): Promise<FreeCraftSettingsStatus> {
+  const payload = await request<unknown>(
+    '/api/v1/settings/free-craft',
+    { method: 'GET' },
+    { signal },
+  )
+  return parseFreeCraftStatus(payload)
+}
+
+/**
+ * `PUT /api/v1/settings/free-craft`：开启/关闭自由制造。
+ *
+ * 开启必须由前端二次确认后传 `accept_resolver_llm_risk=true`；写端点按值幂等、
+ * 不带 Idempotency-Key（不产生领域副作用）。
+ */
+export async function saveFreeCraftSettings(
+  body: FreeCraftSettingsSaveRequest,
+  signal?: AbortSignal,
+): Promise<FreeCraftSettingsStatus> {
+  const payload = await request<unknown>(
+    '/api/v1/settings/free-craft',
+    { method: 'PUT', body: JSON.stringify(body) },
+    { signal },
+  )
+  return parseFreeCraftStatus(payload, 'FreeCraftStatusResponse')
 }
 
 // ---------------------------------------------------------------------------

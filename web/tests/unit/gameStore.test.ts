@@ -54,7 +54,15 @@ const TURN_OK = {
   turn_id: 2,
   version: 2,
   text: '你向北走进地窖。',
-  events: [],
+  events: [
+    {
+      turn_id: 2,
+      actor_id: 'char_01J9Z3K4Q7X8Y9Z0ABCDEFGHJN',
+      method: 'move_to',
+      params: { direction: 'north' },
+      result: { narrative: '你向北走进地窖。', narrative_source: 'template' },
+    },
+  ],
   error_code: null,
   effects: [],
   suggested_actions: [],
@@ -185,6 +193,74 @@ describe('game store（服务端权威版本链 + 禁自动重试）', () => {
     expect(store.history.every((entry) => entry.kind === 'narrative')).toBe(true)
     expect(store.historyLoading).toBe(false)
     expect(store.historyError).toBe('')
+    // R-23 配套：刷新/深链载入时快照 last_text 恢复「最近回应」正文源
+    expect(store.lastText).toBe(GAME_VIEW_3.last_text)
+  })
+
+  it('载入失败：不保留上一个对局的 view/history/version（R-22）', async () => {
+    mockFetch((url) => {
+      if (url === '/api/v1/games/g1') return jsonResponse(200, GAME_VIEW_1)
+      if (url === '/api/v1/games/g1/view') return jsonResponse(200, PLAYER_VIEW_1)
+      if (url.startsWith('/api/v1/games/g1/replay')) {
+        return jsonResponse(200, { events: [replayEvent(1, 1, '你在入口。')], from_seq: 1, to_seq: 1 })
+      }
+      if (url === '/api/v1/games/g2') {
+        return jsonResponse(404, { ok: false, error_code: 'NOT_FOUND', message: '存档不存在' })
+      }
+      return unexpected(url)
+    })
+    const store = useGameStore()
+    await store.loadGame('g1')
+    expect(store.view?.game_id).toBe('g1')
+    expect(store.history).toHaveLength(1)
+
+    await expect(store.loadGame('g2')).rejects.toBeTruthy()
+
+    expect(store.view).toBeNull()
+    expect(store.history).toEqual([])
+    expect(store.version).toBe(0)
+    expect(store.turn).toBe(0)
+    expect(store.errorCode).toBe('NOT_FOUND')
+  })
+
+  it('getGame 成功但 /view 失败：不显示旧对局状态（R-22）', async () => {
+    mockFetch((url) => {
+      if (url === '/api/v1/games/g1') return jsonResponse(200, GAME_VIEW_1)
+      if (url === '/api/v1/games/g1/view') return jsonResponse(200, PLAYER_VIEW_1)
+      if (url.startsWith('/api/v1/games/g1/replay')) {
+        return jsonResponse(200, { events: [replayEvent(1, 1, '你在入口。')], from_seq: 1, to_seq: 1 })
+      }
+      if (url === '/api/v1/games/g2') return jsonResponse(200, { ...GAME_VIEW_1, game_id: 'g2' })
+      if (url === '/api/v1/games/g2/view') {
+        return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'boom' })
+      }
+      return unexpected(url)
+    })
+    const store = useGameStore()
+    await store.loadGame('g1')
+
+    await expect(store.loadGame('g2')).rejects.toBeTruthy()
+
+    expect(store.view).toBeNull()
+    expect(store.history).toEqual([])
+    expect(store.gameId).toBe('g2')
+  })
+
+  it('零事件只读回合不写入 history（R-23：刷新后不会凭空消失）', async () => {
+    const readonly = { ...TURN_OK, text: '你环顾四周，把入口看了一遍。', events: [] }
+    mockFetch((url) => {
+      if (url === '/api/v1/games') return jsonResponse(201, CREATED)
+      if (url === '/api/v1/games/g1/view') return jsonResponse(200, PLAYER_VIEW_2)
+      if (url === '/api/v1/turns') return jsonResponse(200, readonly)
+      return unexpected(url)
+    })
+    const store = useGameStore()
+
+    await store.createGame({ seed: 42, scenario: 'story' })
+    await store.submitTurn('环顾四周')
+
+    expect(store.lastText).toBe(readonly.text)
+    expect(store.history).toEqual([])
   })
 
   it('载入对局：replay 失败不阻塞游戏（historyError 提示，view 仍可用）', async () => {

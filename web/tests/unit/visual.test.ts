@@ -60,7 +60,7 @@ describe('视觉特效偏好（H4 炫酷化开关）', () => {
     expect(visual.systemReducedMotion).toBe(true)
     expect(visual.particlesEnabled).toBe(false)
     expect(visual.typewriterEnabled).toBe(false)
-    expect(visual.crtEnabled).toBe(true)
+    expect(visual.atmosphereEnabled).toBe(true)
   })
 
   it('init 探测系统偏好并写 <html data-visual/data-reduced-motion>', () => {
@@ -85,7 +85,7 @@ describe('视觉特效偏好（H4 炫酷化开关）', () => {
     expect(visual.systemReducedMotion).toBe(true)
     expect(visual.particlesEnabled).toBe(false)
     expect(visual.animationsEnabled).toBe(false)
-    expect(visual.glitchEnabled).toBe(false)
+    expect(visual.spotlightEnabled).toBe(false)
     expect(document.documentElement.dataset.reducedMotion).toBe('true')
   })
 
@@ -97,12 +97,12 @@ describe('视觉特效偏好（H4 炫酷化开关）', () => {
     visual.init()
 
     expect(visual.mode).toBe('off')
-    expect(visual.crtEnabled).toBe(false)
+    expect(visual.atmosphereEnabled).toBe(false)
     expect(visual.particlesEnabled).toBe(false)
     expect(document.documentElement.dataset.visual).toBe('off')
   })
 
-  it('setMode 持久化并切换能力位（low = 低功耗：有 CRT 氛围、无粒子/glitch/打字机）', () => {
+  it('setMode 持久化并切换能力位（low = 低功耗：有氛围层、无粒子/聚光/打字机）', () => {
     stubMatchMedia(false)
     const visual = useVisualStore()
     visual.init()
@@ -111,7 +111,7 @@ describe('视觉特效偏好（H4 炫酷化开关）', () => {
 
     expect(visual.mode).toBe('low')
     expect(visual.lowPower).toBe(true)
-    expect(visual.crtEnabled).toBe(true)
+    expect(visual.atmosphereEnabled).toBe(true)
     expect(visual.particlesEnabled).toBe(false)
     expect(visual.typewriterEnabled).toBe(false)
     expect(JSON.parse(String(localStorage.getItem(VISUAL_SETTINGS_KEY)))).toEqual({ mode: 'low' })

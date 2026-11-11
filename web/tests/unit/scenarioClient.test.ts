@@ -187,7 +187,7 @@ describe('场景 API client（scenario modules v1 §3.4）', () => {
     expect(call[1]?.method).toBe('POST')
     expect(call[1]?.body).toBeInstanceOf(FormData)
     const headers = new Headers(call[1]?.headers)
-    expect(headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(headers.get('Idempotency-Key')).toBe('scn-import-key')
     expect(headers.get('Content-Type')).toBeNull() // 浏览器自动带 multipart boundary
     const form = call[1]?.body as FormData
     expect((form.get('file') as File).name).toBe('tiny-tower.json')
@@ -213,7 +213,7 @@ describe('场景 API client（scenario modules v1 §3.4）', () => {
     const call = mock.mock.calls[0] as [RequestInfo | URL, RequestInit | undefined]
     expect(String(call[0])).toBe('/api/v1/scenarios/scn_old')
     expect(call[1]?.method).toBe('DELETE')
-    expect(new Headers(call[1]?.headers).get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(new Headers(call[1]?.headers).get('Idempotency-Key')).toBe('scn-delete-key')
 
     mockFetch(() => jsonResponse(404, { ok: false, error_code: 'NOT_FOUND', message: '场景不存在' }))
     const error = (await deleteScenario('scn_old', 'scn-delete-key').catch(

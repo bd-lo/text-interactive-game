@@ -783,11 +783,12 @@ async function submitTurnInBrowser(input, gameId, expectedTurn) {
 }
 
 /**
- * 浏览器内提交只读回合（零事件、回合数不增）：处理完成判定 = 冒险记录 +1 行 且 输入框恢复可编辑。
+ * 浏览器内提交只读回合（零事件、回合数不增、不写冒险记录）。
  *
- * 口径（H4 前端修复后）：新局「开场」派生行会保留到真正的推进回合（turnId≥2），首个只读回合
- * 会**新增** 1 行叙事（1→2）；同时等 `#command-input` 的 readOnly 释放（busy/ended 结束）。
- * 不能等 `.turn-text-body`（生产构建下 TurnTextStream 仅在开发诊断面板内渲染，玩家不可见）。
+ * 口径（R-23 前端修复后）：零事件只会更新 `store.lastText`，**不追加** `.narrative-history`；
+ * 因此完成判定 = 输入框 `readOnly` 释放（busy 结束）+ 冒险记录行数与正文均不变。
+ * 不能再等「冒险记录 +1 行」（旧 H4 口径，已废弃）；也不能等 `.turn-text-body`
+ * （生产构建下 TurnTextStream 仅在开发诊断面板内渲染，玩家不可见）。
  */
 async function submitReadonlyTurnInBrowser(input) {
   // 先等冒险记录就绪（新局开场行出现），避免「加载中 vs 追加」竞态导致计数偏差。
@@ -807,35 +808,34 @@ async function submitReadonlyTurnInBrowser(input) {
     `发送按钮可用（${input}）`,
   )
   await click('form.command-input button[type="submit"]', `发送「${input}」`)
-  await waitFor(
-    `document.querySelectorAll('.narrative-history li').length === ${beforeCount + 1}`,
-    `「${input}」冒险记录 +1 行`,
-  )
-  await waitFor(
-    `(() => {
-      const el = document.querySelector('.narrative-history');
-      if (el === null) return false;
-      const text = (el.innerText ?? '').trim();
-      return text !== '' && text !== ${JSON.stringify(beforeText.trim())};
-    })()`,
-    `「${input}」冒险记录正文更新`,
-  )
+  // R-23：只读回合的唯一可观测完成信号是 busy 释放（readonly → false）。
+  // 先让出一个宏任务，确保 Vue 已把 busy=true 刷到 DOM，避免请求尚未发出就误判完成。
+  await sleep(50)
   await waitFor(
     `(() => {
       const el = document.querySelector('#command-input');
       return el !== null && el.readOnly === false;
     })()`,
-    `「${input}」输入框恢复可编辑`,
+    `「${input}」完成（输入框恢复可编辑）`,
   )
+  // busy 释放后再等一帧，让 refreshView/冒险记录合并落定后再核对（零事件不应触发记录追加）。
+  await sleep(150)
   const afterCount = Number(
     await evaluate(`document.querySelectorAll('.narrative-history li').length`),
   )
+  const afterText = String(
+    await evaluate(`document.querySelector('.narrative-history')?.innerText ?? ''`),
+  )
   check(
-    `只读回合「${input}」在冒险记录新增 1 行（开场行保留）`,
-    afterCount === beforeCount + 1,
+    `只读回合「${input}」不写入冒险记录（行数不变）`,
+    afterCount === beforeCount,
     `${beforeCount}→${afterCount}`,
   )
-  await sleep(100)
+  check(
+    `只读回合「${input}」冒险记录正文不变`,
+    afterText.trim() === beforeText.trim(),
+    truncate(afterText.trim(), 80),
+  )
 }
 
 // ---------------------------------------------------------------------------
