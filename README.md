@@ -96,7 +96,8 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **当前版本 `0.2.0`**（2026-11-11，首个可发布快照 = M1–M6 + 用户内容批次 + WB2）。版本号唯一来源：
   `pyproject.toml` 与 `src/textgame/__init__.py::__version__`；玩家可见变更见 [CHANGELOG.md](CHANGELOG.md)。
 - **怎么发**：[RELEASE.md](RELEASE.md) 给出发布 checklist（测试/四门/e2e/构建冒烟/许可证/安全/文档）、
-  wheel 干净环境冒烟命令与 `git tag` / Release notes 流程（打 tag 与 push 由维护者执行，本仓库默认不自动推送）。
+  wheel 干净环境冒烟命令与 `git tag` / Release notes 流程。**`v0.2.0` 已推送 main 并打注记 tag**
+  （2026-11-11，CI run `43032265398` 全绿）；GitHub Release 与 PyPI 待维护者决定。
 - **分发形态**：默认「仓库克隆 + `play` 脚本」（已含 `web/dist`，无需 Node）或 wheel（内嵌网页版）；
   Docker 评估结论是**暂不提供镜像**（草案与复评条件见[部署与分发评估](docs/design/deployment-and-distribution.md)）；
   PyPI 正式发布暂缓（由维护者拍板）。

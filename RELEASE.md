@@ -29,6 +29,7 @@
 | 9 | 依赖/许可证/安全 | CI `deps` job（pip-licenses 门禁 / pip-audit / SBOM）全绿；[SECURITY.md](SECURITY.md) 核对 | ✅（CI）；报告路径见 §4 |
 | 10 | 文档齐套 | README（中/英）发布段、CHANGELOG `0.2.0` 段、PROGRESS 当前状态、ADR/进度文档同批 | ✅ |
 | 11 | 密钥/数据卫生 | `git ls-files` 无 `.env`/`data/*.db`/凭据文件；`check_secrets.py` pre-commit 通过 | ✅ |
+| 12 | 远端推送与 tag | `git push origin main`（`1f6fc25..0e52814`）+ `git tag -a v0.2.0` + `git push origin v0.2.0`；远端 tag 指向 `0e52814`；CI run [43032265398](https://github.com/bd-lo/text-interactive-game/actions/runs/43032265398) **success** | ✅ 2026-11-11 |
 
 > 说明：e2e 与 `play -Check` 属本地门禁（CI 无浏览器组合，D-M6-11）；CI 覆盖 quality（3.10/3.12 矩阵 +
 > 覆盖率门 + 文档门）、deps、web-build（typecheck/build/vitest/e2e）。
@@ -66,7 +67,7 @@ git diff --stat origin/main   # 确认待发布内容（本仓库历史上未 pu
 # 1) 打注记 tag（tag 名 = v + 版本号）
 git tag -a v0.2.0 -m "textgame 0.2.0（首个可发布快照）"
 
-# 2) 推送 tag 与 main（仅在维护者明确要求时；本会话默认不 push）
+# 2) 推送 main 与 tag（由维护者明确要求后执行；本仓库默认不自动推送）
 git push origin main
 git push origin v0.2.0
 
@@ -76,9 +77,17 @@ gh release create v0.2.0 --title "textgame 0.2.0" --notes-file CHANGELOG.md
 
 - Release notes 至少包含：版本号 + 日期；「新玩什么」（场景 JSON/世界书/设置页）；「怎么开始」（一条命令）；
   「已知限制」（见 README 限制段与 `docs/design/world-book-format-compat.md` §5）；测试数字。
-- **CI 触发**：push main/tag 会触发 `.github/workflows/ci.yml`；发布前必须等待全部 job 绿。
+- **CI 触发**：当前 workflow 监听 `push: branches: [main]` 与 `pull_request`——**push main 会触发**全量 CI；
+  **push tag 不单独触发**（tag 上没有独立 run，以 main push 的 run 为准）。发布前必须等待全部 job 绿。
 - **回滚**：撤销 Release（`gh release delete v0.2.0`）→ 删除本地/远端 tag（`git tag -d`、`git push --delete`）
   → 修正后重新打 tag；已发布包不回滚 wheel，只发修订版。
+
+**首发记录（2026-11-11，维护者授权执行）**：
+
+- 远端 main：`1f6fc25..0e52814` 已推送（9 个提交）；
+- 注记 tag **`v0.2.0`**（tag object `6a8bb1d`，指向 commit `0e52814`）已推送远端；
+- CI run [43032265398](https://github.com/bd-lo/text-interactive-game/actions/runs/43032265398)（sha `0e52814`）**success**；
+- GitHub Release 与 PyPI **未做**（下一步待维护者决定；Release notes 可直接取 CHANGELOG `[0.2.0]` 段）。
 
 ## 5. 不随本次发布的事
 

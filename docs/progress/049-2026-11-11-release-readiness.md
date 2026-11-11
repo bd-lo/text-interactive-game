@@ -81,7 +81,9 @@ DeepSeek API Key 三来源与安全、发布与分发、开发/质量门/e2e、�
 
 ## 5. 已知限制/后续
 
-1. 未真正打 tag / 推远端 / 发 Release（需维护者明确授权；RELEASE.md 给可复制流程）；
+1. **已按维护者授权发布**：推送 `main`（`1f6fc25..0e52814`，9 个提交）并打注记 tag **`v0.2.0`**
+   （tag object `6a8bb1d` → commit `0e52814`），CI run **43032265398 全绿**；GitHub Release 与 PyPI **未做**
+   （下一步待维护者决定；流程见 [RELEASE.md](../../RELEASE.md) §4）；
 2. PyPI 正式发布暂缓（包名/英文文档/版本承诺需拍板，D-N3）；
 3. Docker 镜像不提供（评估见部署文档；如出现服务器/多人需求再立 ADR + CI Docker job）；
 4. N4 剩余 054 m3 叙事受控重基线、055 Playwright/a11y 评估、056 长会话性能基线待启动。

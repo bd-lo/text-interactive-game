@@ -121,7 +121,9 @@ they never write game state, events, saves or replays.
 
 - Version `0.2.0`; version number lives in `pyproject.toml` and `textgame.__version__`; see
   [CHANGELOG.md](CHANGELOG.md). Release checklist, wheel smoke tests and `git tag` / release-notes flow:
-  [RELEASE.md](RELEASE.md).
+  [RELEASE.md](RELEASE.md). **`main` is pushed and the annotated tag `v0.2.0` is published** (commit
+  `0e52814`, CI run `43032265398` green, 2026-11-11); GitHub Release and PyPI are still pending a
+  maintainer decision.
 - Distribution: clone + `play` script (prebuilt `web/dist`) or the Python wheel (embeds the web UI).
   Docker images are **not provided** for now (single-user SQLite + static SPA; rationale and a draft
   Dockerfile for later in [docs/design/deployment-and-distribution.md](docs/design/deployment-and-distribution.md)).

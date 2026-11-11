@@ -2,6 +2,9 @@
 
 > 本文件登记项目变更；**当前可发布快照 `0.2.0`（2026-11-11）**——M1–M6 全部里程碑 + 用户内容批次
 > （场景 JSON 上传 / 酒馆级世界书 / 运行期 DeepSeek API Key）+ WB2 详情字段可见性，可作单机试玩版本分发。
+> **发布状态**：已推送 `main` 并打注记 tag **`v0.2.0`**（指向 `0e52814`，CI run
+> [43032265398](https://github.com/bd-lo/text-interactive-game/actions/runs/43032265398) 全绿）；
+> GitHub Release 与 PyPI 未做（待维护者决定）。
 > `0.1.0` 为开发期历史版本（未对外分发）。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 > 里程碑/切片编号见 `docs/PROGRESS.md`、开发文档第 17 章与 M6 后计划表（§17.9）。
 > 发布流程/版本号/tag 规则见 [RELEASE.md](RELEASE.md)；分发与 Docker 评估见
