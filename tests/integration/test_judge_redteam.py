@@ -341,7 +341,7 @@ def test_default_assembly_has_no_judge_and_empty_production_set() -> None:
 def test_default_production_app_has_no_judge(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """生产组合根（llm_enabled=false）：orchestrator._judge is None，且 m2 回合正常。"""
+    """生产组合根（llm_enabled=false）：裁判常驻但运行期离线（零调用），m2 回合正常。"""
     import textgame.main as main_module
 
     monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "false")
@@ -352,7 +352,8 @@ def test_default_production_app_has_no_judge(
     try:
         with TestClient(app) as client:
             orchestrator = app.state.orchestrator
-            assert getattr(orchestrator, "_judge", "missing") is None
+            assert getattr(orchestrator, "_judge", "missing") is not None
+            assert app.state.llm_runtime.status().enabled is False
             created = client.post(
                 "/api/v1/games",
                 headers={"Idempotency-Key": "redteam-default-game-0001"},
@@ -385,7 +386,7 @@ def test_llm_enabled_assembly_constructs_judge_but_never_calls_it(
     import textgame.main as main_module
 
     fake = FakeLLM()
-    monkeypatch.setattr(main_module, "build_llm_client", lambda settings: fake)
+    monkeypatch.setattr(main_module, "RuntimeLLMClient", lambda settings, **kwargs: fake)
     monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "true")
     monkeypatch.setenv("TEXTGAME_DB_URL", f"sqlite:///{(tmp_path / 'enabled.db').as_posix()}")
     get_settings.cache_clear()

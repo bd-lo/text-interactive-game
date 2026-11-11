@@ -28,11 +28,11 @@ from textgame.domain.scenario import (
 from textgame.domain.scenario_story import build_story_state
 from textgame.services.ports import CommitPayload, GameRepository, SnapshotRecord
 
-Scenario = Literal["m2", "m3", "m4", "story"]
+Scenario = Literal["m2", "m3", "m4", "story", "custom"]
 
 _INITIAL_SNAPSHOT_VERSION = 1
 _GAME_ID_PREFIX = "game_"
-_SCENARIOS: frozenset[str] = frozenset({"m2", "m3", "m4", "story"})
+_SCENARIOS: frozenset[str] = frozenset({"m2", "m3", "m4", "story", "custom"})
 
 
 class GameEngine:
@@ -60,6 +60,7 @@ class GameEngine:
         game_id: str | None = None,
         scenario: Scenario = "m2",
         initial_state: dict[str, Any] | None = None,
+        scenario_id: str | None = None,
         card_id: str | None = None,
         world_book_id: str | None = None,
         world_book_name: str | None = None,
@@ -89,6 +90,12 @@ class GameEngine:
             return Result.fail(ErrorCode.INVALID_INPUT, "save_seed must be a non-empty string")
         if scenario not in _SCENARIOS:
             return Result.fail(ErrorCode.INVALID_INPUT, f"unknown scenario: {scenario!r}")
+        if scenario == "custom" and initial_state is None:
+            # 用户上传场景必须先由场景服务物化初始状态；引擎不做 IO/解析，避免分层污染。
+            return Result.fail(
+                ErrorCode.INVALID_INPUT,
+                "scenario=custom 需要提供 initial_state（由场景服务物化）",
+            )
         new_game_id = game_id or f"{_GAME_ID_PREFIX}{uuid4().hex}"
         if self._repo.load(new_game_id) is not None:
             return Result.fail(ErrorCode.CONFLICT, f"game already exists: {new_game_id}")
@@ -106,13 +113,23 @@ class GameEngine:
             base_state = build_story_state(save_seed=save_seed)
         else:
             base_state = build_initial_state(save_seed=save_seed)
+        # 用户上传场景（scenario="custom"）的出生房间来自物化状态，而不是内置常量；
+        # 其它场景/人物卡路径保持 ROOM_ENTRY，旧事件 params 逐字不变（golden 零影响）。
+        starting_room_id = ROOM_ENTRY
+        if scenario == "custom":
+            custom_player = base_state.characters.get(PLAYER_ID)
+            if custom_player is not None:
+                starting_room_id = custom_player.location
         created_params: dict[str, Any] = {
             "card_id": card_id,
-            "starting_room_id": ROOM_ENTRY,
+            "starting_room_id": starting_room_id,
             "initial_character_id": PLAYER_ID,
             "save_seed": save_seed,
             "snapshot_version": _INITIAL_SNAPSHOT_VERSION,
         }
+        # 仅用户场景写入 scenario_id（加法字段）；旧场景 params/事件哈希逐字不变。
+        if scenario_id is not None:
+            created_params["scenario_id"] = scenario_id
         # H4：仅建局显式绑定世界书时追加（旧请求 params 逐字不变；含 name 便于回放/审计）。
         if world_book_id is not None:
             created_params["world_book_id"] = world_book_id

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "slug": "tiny-tower",
+  "meta": {
+    "title": "小塔",
+    "author": "示例",
+    "description": "两房间最小可玩场景：上楼、拿火石、到达即结局"
+  },
+  "player": {
+    "name": "旅人",
+    "hp": 10,
+    "max_hp": 10,
+    "location": "gate",
+    "inventory": []
+  },
+  "rooms": [
+    {
+      "key": "gate",
+      "name": "塔门",
+      "description": "一扇虚掩的木门，门缝里透出风。",
+      "exits": { "north": "hall" }
+    },
+    {
+      "key": "hall",
+      "name": "塔厅",
+      "description": "螺旋楼梯向上，墙上挂着一盏没点亮的灯。",
+      "exits": { "south": "gate" },
+      "items": ["flint"],
+      "on_enter": { "hp_delta": -2, "hint": "冷风从楼梯间灌下来。" }
+    }
+  ],
+  "items": [
+    {
+      "key": "flint",
+      "name": "火石",
+      "description": "一块干燥的火石。",
+      "tags": ["quest"]
+    }
+  ],
+  "npcs": [],
+  "goal": {
+    "title": "爬上塔顶",
+    "description": "带着火石进入塔厅。",
+    "objectives": [
+      {
+        "key": "climb",
+        "text": "带着火石进入塔厅",
+        "when": { "all": [{ "in_room": "hall" }, { "has_item": "flint" }] }
+      }
+    ]
+  },
+  "endings": [
+    {
+      "key": "win",
+      "kind": "win",
+      "title": "你登了上去",
+      "text": "塔顶的风很大，但灯终于亮了。",
+      "priority": 10,
+      "when": { "all": [{ "in_room": "hall" }, { "has_item": "flint" }] }
+    }
+  ]
+}

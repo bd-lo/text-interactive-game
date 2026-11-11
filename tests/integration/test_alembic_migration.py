@@ -1,16 +1,18 @@
-"""M3/M4/M6/H4 集成测试：Alembic 迁移链（0001 baseline → 0002 复合主键 → 0003 人物卡表 → 0004 世界书两表）。
+"""M3/M4/M6/H4/场景库集成测试：Alembic 迁移链（0001 baseline → 0002 复合主键 → 0003 人物卡表
+→ 0004 世界书两表 → 0005 玩家自上传场景表）。
 
 覆盖：
 
-- ``alembic upgrade head`` 在临时 SQLite 文件库上建出全部 8 张表
+- ``alembic upgrade head`` 在临时 SQLite 文件库上建出全部 9 张表
   （events / snapshots / game_state_current / idempotency / audit_events / character_cards /
-  world_books / world_book_entries）、``alembic_version=0004``，``events`` 为 ``(game_id, seq)`` 复合主键 +
-  ``(game_id, event_uid)`` 复合唯一 + ``(game_id, turn_id, seq)`` 索引；
+  world_books / world_book_entries / scenarios）、``alembic_version=0005``，``events`` 为
+  ``(game_id, seq)`` 复合主键 + ``(game_id, event_uid)`` 复合唯一 + ``(game_id, turn_id, seq)`` 索引；
 - 迁移库 schema 与 ORM ``Base.metadata.create_all`` 的**表/列/主键/索引/唯一约束**
   一致（防止迁移与 tables.py 漂移）；
 - 重复 ``upgrade head`` 幂等；``downgrade base`` 删除全部表后可再次 upgrade；
 - 0003 往返：``downgrade 0002`` 只删 ``character_cards`` 且保留事件数据，再 ``upgrade`` 恢复；
 - 0004 往返：``downgrade 0003`` 只删世界书两表且保留人物卡/事件数据，再 ``upgrade`` 恢复；
+- 0005 往返：``downgrade 0004`` 只删 ``scenarios`` 且保留其余表/数据，再 ``upgrade`` 恢复；
 - 0001（M3 schema）单存档数据 upgrade head 后行级保留、可插入第二个存档
   （同 seq=1 可共存），删掉第二个存档数据后可 downgrade 回 0001（旧全局唯一约束）再
   upgrade，数据仍保留；
@@ -47,8 +49,9 @@ _EXPECTED_TABLES = {
     "character_cards",
     "world_books",
     "world_book_entries",
+    "scenarios",
 }
-_HEAD_REVISION = "0004"
+_HEAD_REVISION = "0005"
 _CHARACTER_CARD_COLUMNS = {
     "card_id",
     "schema_version",
@@ -90,6 +93,19 @@ _WORLD_BOOK_ENTRY_COLUMNS = {
     "exclude_recursion",
     "prevent_recursion",
     "raw_json",
+}
+_SCENARIO_COLUMNS = {
+    "scenario_id",
+    "slug",
+    "title",
+    "author",
+    "description",
+    "schema_version",
+    "definition_json",
+    "summary_json",
+    "warnings_json",
+    "created_at",
+    "deleted_at",
 }
 _TS = "2026-11-09 00:00:00.000000"
 
@@ -254,6 +270,15 @@ def test_upgrade_head_creates_all_tables(tmp_path: Path) -> None:
         assert "ix_world_book_entries_world_book_id" in {
             str(index["name"]) for index in inspector.get_indexes("world_book_entries")
         }
+        # 0005 场景表：列集合/主键/created_at 索引与 ORM 一致（场景库 v1）
+        scenario_columns = {column["name"] for column in inspector.get_columns("scenarios")}
+        assert scenario_columns == _SCENARIO_COLUMNS
+        assert tuple(inspector.get_pk_constraint("scenarios")["constrained_columns"] or ()) == (
+            "scenario_id",
+        )
+        assert "ix_scenarios_created_at" in {
+            str(index["name"]) for index in inspector.get_indexes("scenarios")
+        }
     finally:
         engine.dispose()
 
@@ -388,6 +413,40 @@ def test_0004_world_books_roundtrip_keeps_other_tables(tmp_path: Path) -> None:
         assert _alembic_revision(engine) == _HEAD_REVISION
         tables = set(inspect(engine).get_table_names())
         assert {"world_books", "world_book_entries"} <= tables
+    finally:
+        engine.dispose()
+
+
+def test_0005_scenarios_roundtrip_keeps_other_tables(tmp_path: Path) -> None:
+    """0005 往返：``downgrade 0004`` 只删场景表，事件/世界书/人物卡保留；再 upgrade 恢复。"""
+    db_url = _db_url(tmp_path)
+    _upgrade(db_url)
+    engine = _engine(db_url)
+    try:
+        with engine.begin() as connection:
+            _insert_raw_event(connection, game_id="game-scn", seq=1, uid="evt_000001")
+        assert "scenarios" in set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    command.downgrade(_alembic_config(db_url), "0004")
+    engine = _engine(db_url)
+    try:
+        assert _alembic_revision(engine) == "0004"
+        tables = set(inspect(engine).get_table_names())
+        assert "scenarios" not in tables
+        assert {"world_books", "world_book_entries", "character_cards"} <= tables
+        with engine.connect() as connection:
+            count = connection.execute(text("SELECT COUNT(*) FROM events")).scalar()
+        assert count == 1
+    finally:
+        engine.dispose()
+
+    _upgrade(db_url, "head")  # 0004 → head 重新建出场景表
+    engine = _engine(db_url)
+    try:
+        assert _alembic_revision(engine) == _HEAD_REVISION
+        assert "scenarios" in set(inspect(engine).get_table_names())
     finally:
         engine.dispose()
 
@@ -621,3 +680,8 @@ def test_orm_metadata_contains_all_baseline_tables() -> None:
         "uq_world_book_entries_book_uid",
         ("world_book_id", "entry_uid"),
     ) in entry_uniques
+    # 0005 场景表与 ORM 定义一致（场景库 v1）
+    scenarios = Base.metadata.tables["scenarios"]
+    assert [column.name for column in scenarios.primary_key.columns] == ["scenario_id"]
+    assert {column.name for column in scenarios.columns} == _SCENARIO_COLUMNS
+    assert "ix_scenarios_created_at" in {index.name for index in scenarios.indexes}

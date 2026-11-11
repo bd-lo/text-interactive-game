@@ -216,11 +216,16 @@ def _offline_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
 def test_default_offline_assembly_does_not_construct_llm_narrator(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """默认离线装配：叙事器是 TemplateNarrator（非 LLMNarratorAgent），回合来源恒 template。"""
+    """默认离线装配：叙事器常驻 LLM 版本但**离线时回退模板**，回合来源恒 template。
+
+    2026-11-11 运行期凭据改造后：组合根总是构造 ``LLMNarratorAgent``（内含运行期客户端），
+    离线时其 ``_fallback`` 是 ``TemplateNarrator``，输出与旧离线装配一致（零联网）。
+    """
     app = _offline_app(monkeypatch, tmp_path)
     orchestrator = app.state.orchestrator
-    assert isinstance(orchestrator._narrator, TemplateNarrator)
-    assert not isinstance(orchestrator._narrator, LLMNarratorAgent)
+    assert isinstance(orchestrator._narrator, LLMNarratorAgent)
+    assert isinstance(orchestrator._narrator._fallback, TemplateNarrator)
+    assert app.state.llm_runtime.status().enabled is False
 
     with TestClient(app) as client:
         created = client.post(

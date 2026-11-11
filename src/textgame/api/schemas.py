@@ -36,6 +36,10 @@ class CreateGameBody(BaseModel):
 
     H4 加法（D-H4）：可选 ``world_book_id`` 绑定世界书（未知/已删除 404；可与
     ``seed``/``scenario``/``card_id`` 共存）；不提供时旧请求行为与事件参数逐字不变。
+
+    场景库加法（设计契约 §3.4）：可选 ``scenario_id`` 按玩家自上传场景建局（与
+    ``card_id``/``scenario`` 互斥，同给 422；未知/已软删 404）；不提供时行为与旧请求
+    逐字不变。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -44,6 +48,9 @@ class CreateGameBody(BaseModel):
     seed: int | None = Field(default=None, ge=0)
     scenario: Literal["m2", "m3", "m4", "story"] = "m2"
     world_book_id: str | None = Field(default=None, min_length=1, max_length=64)
+    # 玩家自上传场景加法（设计契约 §3.4）：与 card_id/scenario 互斥，未知/已删 404；
+    # 互斥/存在性校验由接入层（routes/games.py）与编排层完成，本模型只承载字段。
+    scenario_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class CreatedGameResponse(BaseModel):
@@ -474,6 +481,102 @@ class WorldBookDeleteResponse(BaseModel):
     deleted: bool
 
 
+class ScenarioStatsResponse(BaseModel):
+    """场景统计（``summary``）：6 个计数，键固定（前端契约逐键断言）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rooms: int
+    items: int
+    npcs: int
+    objectives: int
+    endings: int
+    suggestions: int
+
+
+class ScenarioWarningResponse(BaseModel):
+    """场景告警项：``[{path, message}]``（不阻断导入；``path`` 为 JSON 路径）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    message: str
+
+
+class ScenarioValidationErrorResponse(BaseModel):
+    """场景校验错误项：``{path, message}``（与告警同构；``path`` 如 ``rooms[2].exits.east``）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    message: str
+
+
+class ScenarioSummaryResponse(BaseModel):
+    """``GET /api/v1/scenarios`` 列表项（按 ``created_at`` 倒序）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    slug: str
+    title: str
+    author: str
+    description: str
+    schema_version: int
+    created_at: datetime
+    summary: ScenarioStatsResponse
+    warnings: list[ScenarioWarningResponse]
+
+
+class ScenarioListResponse(BaseModel):
+    """``GET /api/v1/scenarios`` 200 响应 ``{scenarios, total}``（不含已软删）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenarios: list[ScenarioSummaryResponse]
+    total: int
+
+
+class ScenarioDetailResponse(BaseModel):
+    """``GET /api/v1/scenarios/{scenario_id}`` 200 响应（含原始定义对象、summary、warnings）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    slug: str
+    title: str
+    author: str
+    description: str
+    schema_version: int
+    created_at: datetime
+    definition: dict[str, Any]
+    summary: ScenarioStatsResponse
+    warnings: list[ScenarioWarningResponse]
+
+
+class ScenarioValidateResponse(BaseModel):
+    """``POST /api/v1/scenarios/validate`` 200 响应（只读预检，无副作用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    errors: list[ScenarioValidationErrorResponse]
+    warnings: list[ScenarioWarningResponse]
+    summary: ScenarioStatsResponse
+
+
+class ScenarioImportResponse(BaseModel):
+    """``POST /api/v1/scenarios`` 201 响应（导入成功）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    slug: str
+    title: str
+    summary: ScenarioStatsResponse
+    warnings: list[ScenarioWarningResponse]
+
+
 class AuditRecordResponse(BaseModel):
     """``GET /api/v1/games/{game_id}/audit`` 单条审计记录（读模型）。"""
 
@@ -529,6 +632,14 @@ __all__ = [
     "ReplayEventResponse",
     "ReplayResponse",
     "RoomViewResponse",
+    "ScenarioDetailResponse",
+    "ScenarioImportResponse",
+    "ScenarioListResponse",
+    "ScenarioStatsResponse",
+    "ScenarioSummaryResponse",
+    "ScenarioValidateResponse",
+    "ScenarioValidationErrorResponse",
+    "ScenarioWarningResponse",
     "TurnRequestBody",
     "WorldBookDeleteResponse",
     "WorldBookDetailBodyResponse",

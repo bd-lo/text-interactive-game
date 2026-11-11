@@ -16,6 +16,7 @@ from textgame.domain.results import ErrorCode
 from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.services.audit_service import AuditService
 from textgame.services.query_service import QueryService
+from textgame.services.scenario_service import ScenarioService
 
 KEY_MIN_LENGTH = 8
 KEY_MAX_LENGTH = 128
@@ -45,6 +46,23 @@ def get_audit_service(request: Request) -> AuditService:
     return audit_service
 
 
+def get_scenario_service(request: Request) -> ScenarioService:
+    """返回组合根注入的 ``ScenarioService``；缺失视为组合根装配错误（500）。"""
+    scenario_service: ScenarioService | None = getattr(request.app.state, "scenario_service", None)
+    if scenario_service is None:
+        raise ApiError(ErrorCode.INTERNAL, "服务未完成场景服务装配")
+    return scenario_service
+
+
+def get_scenario_service_or_none(request: Request) -> ScenarioService | None:
+    """返回组合根注入的 ``ScenarioService``；未装配返回 ``None``（旧行为降级用）。
+
+    与 :func:`get_scenario_service` 的区别：调用方（如 ``POST /games``）需要在「未装配
+    场景服务」时保持旧请求行为而不是 500，因此这里不抛错。
+    """
+    return getattr(request.app.state, "scenario_service", None)
+
+
 def require_idempotency_key(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> str:
@@ -65,5 +83,7 @@ __all__ = [
     "get_audit_service",
     "get_orchestrator",
     "get_query_service",
+    "get_scenario_service",
+    "get_scenario_service_or_none",
     "require_idempotency_key",
 ]

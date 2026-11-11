@@ -216,7 +216,8 @@ def _main_app(
     monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "true" if llm_enabled else "false")
     monkeypatch.setenv("TEXTGAME_FREE_CRAFT_ENABLED", "false")
     if llm_client is not None:
-        monkeypatch.setattr(main_module, "build_llm_client", lambda settings: llm_client)
+        # 运行期 LLM 改造后组合根构造 RuntimeLLMClient；测试注入替身时直接替换构造结果。
+        monkeypatch.setattr(main_module, "RuntimeLLMClient", lambda settings, **kwargs: llm_client)
     get_settings.cache_clear()
     return main_module._build_app()
 
@@ -249,14 +250,15 @@ def _normalized_result(result: TurnResult) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 1) 默认离线 / judge=None 等价
 # ---------------------------------------------------------------------------
-def test_default_offline_assembly_has_no_judge_and_zero_calls(
+def test_default_offline_assembly_wires_judge_but_zero_calls(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    """``llm_enabled=false`` 生产组合根：不构造裁判、agent_assisted 空集、回合正常。"""
+    """``llm_enabled=false`` 生产组合根：裁判常驻但运行期离线 → 零裁判调用、回合正常。"""
     app = _main_app(monkeypatch, tmp_path, llm_enabled=False)
     try:
         orchestrator = app.state.orchestrator
-        assert orchestrator._judge is None
+        assert isinstance(orchestrator._judge, LLMJudgeAgent)
+        assert app.state.llm_runtime.status().enabled is False
         assert orchestrator._registry.agent_assisted_tools() == frozenset()
         assert orchestrator._rules.agent_assisted_tools == frozenset()
         with TestClient(app) as client:

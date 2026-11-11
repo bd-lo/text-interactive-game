@@ -15,6 +15,7 @@ from textgame.domain.events import Event, EventType
 from textgame.domain.models import NPC, GameState
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.scenario import DIRECTION_NAMES
+from textgame.domain.scenario_runtime import ScenarioRuntime
 from textgame.domain.scenario_story import story_reply
 from textgame.domain.types import Direction, ItemId, NpcId
 from textgame.services.query_service import QueryService
@@ -95,9 +96,27 @@ def _npc_inspect_text(npc: NPC) -> str:
 class ActionService:
     """动作写方法；构造注入只读查询服务，``look`` 复用房间视图。"""
 
-    def __init__(self, query: QueryService) -> None:
-        """``query`` 用于 ``look`` 读取房间视图（只读，不产生状态）。"""
+    def __init__(
+        self,
+        query: QueryService,
+        *,
+        scenario_runtime: ScenarioRuntime | None = None,
+    ) -> None:
+        """``query`` 用于 ``look`` 读取房间视图（只读，不产生状态）。
+
+        ``scenario_runtime``（用户上传场景）：可选场景钩子注册表；提供时 ``talk_to`` 优先
+        走用户场景对话定义，未命中再回退 ``story_reply``（内置场景行为逐字不变）。
+        """
         self._query = query
+        self._scenario_runtime = scenario_runtime
+
+    def _npc_reply(self, npc_id: NpcId, topic: str) -> dict[str, Any] | None:
+        """NPC 回复：用户场景钩子优先，缺省回退内置 story 对话（旧场景不变）。"""
+        if self._scenario_runtime is not None:
+            reply = self._scenario_runtime.npc_reply(npc_id, topic)
+            if reply is not None:
+                return reply
+        return story_reply(npc_id, topic)
 
     def look(self, ctx: ToolContext, state: GameState) -> Result:
         """``READ_ONLY``：返回房间描述文本，不产生事件。"""
@@ -203,16 +222,18 @@ class ActionService:
         npc = state.npcs.get(npc_id)
         if npc is None or npc.room_id != character.location:
             return Result.fail(ErrorCode.NOT_FOUND, "这里没有可以交谈的人")
-        reply = story_reply(npc_id, topic)
+        reply = self._npc_reply(npc_id, topic)
         if reply is not None:
-            dialogue_state = str(reply["dialogue_state"])
-            reply_text = str(reply["reply"])
+            raw_state = reply.get("dialogue_state")
+            dialogue_state = raw_state if isinstance(raw_state, str) and raw_state else "greeted"
+            reply_text = str(reply.get("reply") or "")
             if dialogue_state != "briefed" and npc.dialogue_state != "briefed":
                 # 玩家第一次和守夜人搭话（且 LLM 解析出的 topic 没命中任务关键词）时，
                 # 仍给任务说明：否则「和守夜人老兵说话」这类最自然的开局会永远完不成目标 1。
-                directed = story_reply(npc_id, "任务")
-                if directed is not None and directed["dialogue_state"] == "briefed":
-                    reply_text = str(directed["reply"])
+                # 用户上传场景同理：第一次对话若未命中话题关键词，补一次「任务」关键词探测。
+                directed = self._npc_reply(npc_id, "任务")
+                if directed is not None and directed.get("dialogue_state") == "briefed":
+                    reply_text = str(directed.get("reply") or reply_text)
                     dialogue_state = "briefed"
             draft = Event(
                 turn_id=ctx.turn_id,

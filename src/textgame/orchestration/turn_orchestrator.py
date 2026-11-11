@@ -39,6 +39,7 @@ from textgame.domain.models import (
 )
 from textgame.domain.results import ErrorCode, Result
 from textgame.domain.scenario import DIRECTION_NAMES, PLAYER_ID
+from textgame.domain.scenario_runtime import ScenarioRuntime
 from textgame.domain.scenario_story import is_story_state, story_ending, story_room_damage
 from textgame.domain.suggestions import failure_feedback, suggest_actions
 from textgame.domain.world_book import (
@@ -203,9 +204,13 @@ class CreateGameRequest(BaseModel):
 
     seed: int | None = None
     idempotency_key: str = Field(min_length=8, max_length=128)
-    scenario: Literal["m2", "m3", "m4", "story"] = "m2"
+    scenario: Literal["m2", "m3", "m4", "story", "custom"] = "m2"
     card_id: str | None = Field(default=None, min_length=1, max_length=64)
     card: dict[str, Any] | None = None
+    #: 用户上传场景（``scenario="custom"``）：场景 ID 与物化好的初始状态（由场景服务提供）。
+    #: 缺省 ``None`` 时请求哈希/创建参数/事件与旧版本逐字一致（旧场景零影响）。
+    scenario_id: str | None = Field(default=None, min_length=1, max_length=64)
+    initial_state: dict[str, Any] | None = None
     #: H4 加法：可选世界书 id（存在性由编排层通过 ``world_book_provider`` 校验，未知 404）。
     #: 缺省 ``None`` 时请求哈希/创建参数/事件与旧版本逐字一致（旧场景零影响）。
     world_book_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -568,6 +573,7 @@ class TurnOrchestrator:
         agent_scheduler: AgentSchedulerLike | None = None,
         judge: JudgeAgentLike | None = None,
         world_book_provider: WorldBookProvider | None = None,
+        scenario_runtime: ScenarioRuntime | None = None,
     ) -> None:
         """装配依赖；``narrator=None`` 时使用内置确定性模板叙事。
 
@@ -598,9 +604,20 @@ class TurnOrchestrator:
         self._judge = judge
         # H4：可选世界书提供者（None = 不启用世界书；旧场景零计算、零注入）。
         self._world_book_provider = world_book_provider
+        # 用户上传场景：可选钩子注册表（None = 只有内置 4 场景，行为逐字不变）。
+        self._scenario_runtime = scenario_runtime
         # D-M4-15/G-1：同 Idempotency-Key 的回合在进程内串行，避免两个线程同时未命中
         # 幂等缓存、后到者拿到 CONFLICT/INVALID_INPUT 而非首结果；固定分段避免锁增长。
         self._idempotency_locks = tuple(threading.Lock() for _ in range(_IDEMPOTENCY_LOCK_STRIPES))
+
+    @property
+    def save_seed_default(self) -> str:
+        """服务端默认存档种子（``--seed`` 未给时的派生 seed）。
+
+        用户上传场景建局时接入层需要先物化初始状态（其 ``rng_state.save_seed`` 必须与
+        引擎实际使用的 seed 一致），因此把组合根注入的默认值暴露为只读属性。
+        """
+        return self._save_seed_default
 
     @property
     def multi_actor_enabled(self) -> bool:
@@ -678,17 +695,29 @@ class TurnOrchestrator:
         )
         return format_lore_entries(active)
 
-    @staticmethod
-    def _environment_damage_draft(
-        *, state: GameState, drafts: Sequence[Event], turn_id: int
-    ) -> Event | None:
-        """L1：story 存档进入受伤房间后，生成同回合同批提交的 ``ENVIRONMENT_DAMAGE`` 草稿。
-
-        只在「本回合有 ``CHARACTER_MOVED`` 且目标房间在 ``story_room_damage`` 有定义」时生成；
-        旧三场景 ``is_story_state`` 恒假 → 永不产生该事件（golden 零影响）。
-        """
+    def _ending_of(self, state: GameState) -> dict[str, Any] | None:
+        """结局视图：用户场景钩子优先，缺省回退内置 story 判定（旧场景行为不变）。"""
+        if self._scenario_runtime is not None:
+            ending = self._scenario_runtime.ending(state)
+            if ending is not None:
+                return cast(dict[str, Any], ending)
         if not is_story_state(state):
             return None
+        return story_ending(state)
+
+    def _environment_damage_draft(
+        self, *, state: GameState, drafts: Sequence[Event], turn_id: int
+    ) -> Event | None:
+        """L1：进入受伤房间后，生成同回合同批提交的 ``ENVIRONMENT_DAMAGE`` 草稿。
+
+        两个来源（互斥，均确定性）：
+
+        - **用户上传场景**：``ScenarioRuntime`` 按房间 ID 查 ``rooms[].on_enter.hp_delta``
+          （``scenario_runtime=None`` 或非用户场景时不命中）；
+        - **内置 story**：``story_room_damage``（``is_story_state`` 恒假 → 旧三场景 golden 零影响）。
+
+        只在「本回合有 ``CHARACTER_MOVED`` 且目标房间有伤害定义」时生成。
+        """
         target_room: str | None = None
         for draft in drafts:
             if draft.event_type is not EventType.CHARACTER_MOVED:
@@ -700,6 +729,27 @@ class TurnOrchestrator:
                 target_room = to_room
                 break
         if target_room is None:
+            return None
+        user_hooks = (
+            self._scenario_runtime.resolve(state) if self._scenario_runtime is not None else None
+        )
+        if user_hooks is not None:
+            user_delta = user_hooks.room_damage(target_room)
+            if user_delta is None:
+                return None
+            user_result: dict[str, Any] = {"hp_delta": user_delta}
+            hint = user_hooks.room_damage_hint(target_room)
+            if hint:
+                user_result["hint"] = hint
+            return Event(
+                turn_id=turn_id,
+                actor_id=PLAYER_ID,
+                method="environment_damage",
+                event_type=EventType.ENVIRONMENT_DAMAGE,
+                params={"room_id": target_room},
+                result=user_result,
+            )
+        if not is_story_state(state):
             return None
         hp_delta = story_room_damage(target_room)
         if hp_delta is None:
@@ -746,6 +796,9 @@ class TurnOrchestrator:
         hash_payload: dict[str, Any] = {"seed": request.seed, "scenario": request.scenario}
         if request.card_id is not None:
             hash_payload["card_id"] = request.card_id
+        if request.scenario_id is not None:
+            # 用户上传场景：场景 ID 进入请求哈希（同键不同场景 = 异参 409）。
+            hash_payload["scenario_id"] = request.scenario_id
         if request.world_book_id is not None:
             # H4 加法：仅在显式绑定世界书时进入请求哈希（旧请求哈希逐字不变）。
             hash_payload["world_book_id"] = request.world_book_id
@@ -786,11 +839,24 @@ class TurnOrchestrator:
             if book is None:
                 raise CreateGameError(ErrorCode.NOT_FOUND, "世界书不存在")
             world_book_name = book.name
+        custom_initial_state: dict[str, Any] | None = None
+        if request.scenario == "custom":
+            # 用户上传场景：初始状态由场景服务物化（本层不解析 JSON、不做 IO）。
+            if request.card_id is not None:
+                raise CreateGameError(
+                    ErrorCode.INVALID_INPUT, "scenario_id 不能与 card_id 同时提供"
+                )
+            if request.scenario_id is None or request.initial_state is None:
+                raise CreateGameError(ErrorCode.INVALID_INPUT, "用户场景建局缺少场景初始状态")
+            custom_initial_state = request.initial_state
         engine_kwargs: dict[str, Any] = {
             "save_seed": save_seed,
             "idempotency_key": request.idempotency_key,
             "scenario": request.scenario,
-            "initial_state": card_initial_state,
+            "initial_state": card_initial_state
+            if card_initial_state is not None
+            else custom_initial_state,
+            "scenario_id": request.scenario_id,
             "card_id": request.card_id,
         }
         if request.world_book_id is not None:
@@ -871,8 +937,9 @@ class TurnOrchestrator:
             return TurnResult.failed(
                 ErrorCode.CONFLICT, version=record.version, text=_VERSION_CONFLICT_TEXT
             )
-        # D3：剧情场景已到结局（读时求值，不写状态）后拒绝新回合；旧三场景恒不触发。
-        if is_story_state(record.state) and story_ending(record.state) is not None:
+        # D3：剧情/用户场景已到结局（读时求值，不写状态）后拒绝新回合；旧三场景恒不触发。
+        ended = self._ending_of(record.state)
+        if ended is not None:
             return TurnResult.failed(
                 ErrorCode.INVALID_INPUT,
                 version=record.version,

@@ -202,7 +202,8 @@ def _main_app(
     monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "false")
     monkeypatch.setenv("TEXTGAME_FREE_CRAFT_ENABLED", "true" if free_enabled else "false")
     if llm_client is not None:
-        monkeypatch.setattr(main_module, "build_llm_client", lambda settings: llm_client)
+        # 运行期 LLM 改为 RuntimeLLMClient（可热切换）；测试注入替身时直接替换构造结果。
+        monkeypatch.setattr(main_module, "RuntimeLLMClient", lambda settings, **kwargs: llm_client)
     get_settings.cache_clear()
     return main_module._build_app()
 
@@ -448,14 +449,22 @@ def test_production_http_free_enabled_commits_with_fake_llm(
 def test_main_default_offline_assembly_is_unchanged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """默认离线组合根：模板叙事 + 确定性角色 Agent，回合结果确定性可玩（零 LLM 调用）。"""
+    """默认离线组合根：LLM Agent 常驻但全部回退确定性路径，回合结果确定性可玩（零联网）。
+
+    用户需求（2026-11-11 运行期 LLM 凭据）后装配改为「Agent 常驻 LLM 版本 + 内部运行期客户端」：
+    ``TEXTGAME_LLM_ENABLED=false`` 时仍必须零 LLM 调用、文案与旧离线装配一致（回退路径）。
+    """
     app = _main_app(monkeypatch, tmp_path, free_enabled=False)
     orchestrator = app.state.orchestrator
-    assert type(orchestrator._narrator).__name__ == "TemplateNarrator"
+    runtime = app.state.llm_runtime
+    assert runtime.status().enabled is False
+    assert type(orchestrator._narrator).__name__ == "LLMNarratorAgent"
+    assert type(orchestrator._narrator._fallback).__name__ == "TemplateNarrator"
     assert all(
-        type(agent).__name__ == "DeterministicCharacterAgent"
+        type(agent).__name__ == "LLMCharacterAgent"
         for agent in orchestrator._character_agents.values()
     )
+    assert type(orchestrator._judge).__name__ == "LLMJudgeAgent"
 
     with TestClient(app) as client:
         created = client.post(

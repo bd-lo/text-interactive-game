@@ -174,6 +174,23 @@ def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket_module.socket, "connect", guarded_connect)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_llm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试默认禁用真实 LLM：即使开发者本机 ``.env`` 有开发 key，也不允许测试自动启用/联网。
+
+    组合根会按「本机有开发 key 则默认启用」判定 LLM；测试必须显式隔离，否则开发者本机
+    会读到 ``.env`` 而尝试真实联网（被上面的 Q9 禁网守卫拦截成 RuntimeError）。
+    需要测「自动启用」的用例自行 ``monkeypatch.setenv("TEXTGAME_LLM_ENABLED", ...)`` 或
+    用 ``Settings(_env_file=None, llm_api_key=...)`` 构造。
+
+    注意：``litellm`` 首次 import 会 ``load_dotenv()`` 把仓库 ``.env`` 写进进程环境
+    （Q9 禁网前它已先 import 过），这样后续用例的 ``Settings()`` 仍会读到开发 key；
+    因此这里同时清掉 API key，保证每个用例要么显式注入、要么保持离线。
+    """
+    monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "false")
+    monkeypatch.delenv("TEXTGAME_LLM_API_KEY", raising=False)
+
+
 @pytest.fixture
 def game_harness() -> Iterator[GameHarness]:
     """按 ``main.py`` 组合根口径装配一套内存游戏应用（M2 单角色路径）。"""

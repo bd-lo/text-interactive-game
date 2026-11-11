@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "slug": "ember-watch",
+  "meta": {
+    "title": "余烬哨站（玩家示例）",
+    "author": "示例",
+    "description": "5 房间解谜小场景：向守夜人打听 → 找到火石与火把 → 登上瞭望塔点亮信号灯",
+    "tags": ["末日", "解谜", "示例"]
+  },
+  "player": {
+    "name": "旅人",
+    "hp": 14,
+    "max_hp": 20,
+    "attributes": {
+      "str": 12,
+      "dex": 14,
+      "con": 12,
+      "int": 10,
+      "wis": 11,
+      "cha": 9
+    },
+    "location": "bridge",
+    "inventory": []
+  },
+  "rooms": [
+    {
+      "key": "bridge",
+      "name": "断桥",
+      "description": "风雪把桥面埋了一半，对岸的哨站只剩一个黑黢黢的轮廓。",
+      "exits": { "east": "hub" },
+      "ambient_tags": ["snow", "ruined"]
+    },
+    {
+      "key": "hub",
+      "name": "哨站入口",
+      "description": "废弃哨站的入口塌了一半，墙角堆着受潮的木箱，守夜人靠着断墙。",
+      "exits": {
+        "west": "bridge",
+        "north": "cellar",
+        "up": "tower",
+        "down": "well"
+      },
+      "npcs": ["watchman"],
+      "ambient_tags": ["ruined", "shelter"]
+    },
+    {
+      "key": "cellar",
+      "name": "哨站地窖",
+      "description": "地窖里几乎没有光，潮湿的泥土味压得人喘不过气，墙上的凹槽里塞着东西。",
+      "exits": { "south": "hub" },
+      "items": ["flint"],
+      "ambient_tags": ["dark", "damp"]
+    },
+    {
+      "key": "tower",
+      "name": "瞭望塔",
+      "description": "塔顶的风很大，废弃的信号灯立在护栏边，灯芯早就干了。",
+      "exits": { "down": "hub" },
+      "items": ["torch"],
+      "ambient_tags": ["signal", "wind"]
+    },
+    {
+      "key": "well",
+      "name": "枯井",
+      "description": "井底结着薄冰，寒气从石缝里渗出来，待久了会冻僵。",
+      "exits": { "up": "hub" },
+      "on_enter": { "hp_delta": -6, "hint": "寒气顺着领口灌进来，手脚开始发麻。" }
+    }
+  ],
+  "items": [
+    {
+      "key": "flint",
+      "name": "火石",
+      "description": "一块干燥的火石，敲两下就能迸出火星。",
+      "tags": ["quest"]
+    },
+    {
+      "key": "torch",
+      "name": "浸油火把",
+      "description": "浸过松脂的火把，还能烧一阵子。",
+      "tags": ["quest"]
+    }
+  ],
+  "npcs": [
+    {
+      "key": "watchman",
+      "name": "守夜人",
+      "room": "hub",
+      "description": "他靠着断墙，眼睛没离开过楼梯口。",
+      "dialogue": {
+        "default": "他抬了抬下巴，示意你继续往里走。",
+        "topics": [
+          {
+            "keywords": ["任务", "怎么", "灯", "帮忙"],
+            "reply": "地窖里有火石，塔顶有火把。两样都带上，去塔顶把信号灯点起来。",
+            "dialogue_state": "briefed"
+          },
+          {
+            "keywords": ["冷", "枯井"],
+            "reply": "别在井边久待，那地方冻人。",
+            "dialogue_state": "warned"
+          }
+        ]
+      }
+    }
+  ],
+  "goal": {
+    "title": "点亮信号灯",
+    "description": "让瞭望塔上的火重新烧起来，给远处的队伍一个方向。",
+    "objectives": [
+      {
+        "key": "listen",
+        "text": "向守夜人打听情况",
+        "when": { "npc_state": { "npc": "watchman", "state": "briefed" } }
+      },
+      {
+        "key": "gather",
+        "text": "找到火石并带上火把",
+        "when": { "all": [{ "has_item": "flint" }, { "has_item": "torch" }] }
+      },
+      {
+        "key": "light",
+        "text": "登上瞭望塔点亮信号灯",
+        "when": {
+          "all": [
+            { "in_room": "tower" },
+            { "has_item": "flint" },
+            { "has_item": "torch" }
+          ]
+        }
+      }
+    ]
+  },
+  "endings": [
+    {
+      "key": "victory",
+      "kind": "win",
+      "title": "灯亮了",
+      "text": "火星落在灯芯上，先是迟疑了一下，然后腾地烧了起来。远处的黑暗里，有回应在靠近。",
+      "priority": 10,
+      "when": {
+        "all": [
+          { "in_room": "tower" },
+          { "has_item": "flint" },
+          { "has_item": "torch" }
+        ]
+      }
+    },
+    {
+      "key": "fallen",
+      "kind": "lose",
+      "title": "倒在雪里",
+      "text": "你倒在雪里，寒气一点点吞掉了最后一点力气。",
+      "priority": 1,
+      "when": { "hp_lte": 0 }
+    }
+  ],
+  "suggestions": [
+    { "when": { "in_room": "hub" }, "text": "去找守夜人聊聊" },
+    { "when": { "in_room": "cellar" }, "text": "拿起火石" },
+    { "when": { "in_room": "tower" }, "text": "带着火石和火把点亮信号灯" }
+  ]
+}

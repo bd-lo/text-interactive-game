@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-flash"
     llm_base_url: str = "https://api.deepseek.com"
     llm_api_key: SecretStr | None = None
+    #: 本机 LLM 凭据文件（网页/终端输入的 API Key 保存位置）：默认 ``data/llm.credentials.json``
+    #: （``data/`` 已 gitignore），env 名 ``TEXTGAME_LLM_CREDENTIALS_FILE``；只在本机单机场景使用。
+    llm_credentials_file: Path | None = None
     # M5-020（D-M5-4）：包内默认 llm/config/llm.default.json 的路径覆盖；
     # env 名为 TEXTGAME_LLM_CONFIG（不是 TEXTGAME_LLM_CONFIG_PATH）。
     llm_config_path: Path | None = Field(

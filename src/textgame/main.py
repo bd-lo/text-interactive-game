@@ -15,7 +15,7 @@ M5 接入；``build_llm_client`` 默认返回 ``DisabledLLMClient``，保证默�
 
 from fastapi import FastAPI
 
-from textgame.agents.character_agent import CharacterAgentLike, DeterministicCharacterAgent
+from textgame.agents.character_agent import DeterministicCharacterAgent
 from textgame.agents.craft_agent import CraftAgent
 from textgame.agents.judge_agent import JudgeAgentLike, LLMJudgeAgent
 from textgame.agents.llm_character_agent import LLMCharacterAgent
@@ -26,13 +26,14 @@ from textgame.config.rng import save_seed_from_settings
 from textgame.config.settings import get_settings
 from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
-from textgame.llm.factory import build_llm_client
+from textgame.llm.runtime import RuntimeLLMClient
 from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
 from textgame.orchestration.resolver import Resolver, ToolGateRouter
-from textgame.orchestration.turn_orchestrator import NarratorLike, TurnOrchestrator
+from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.persistence.card_repository import SqliteCardRepository
 from textgame.persistence.database import init_schema, prepare_db
+from textgame.persistence.scenario_repository import SqliteScenarioRepository
 from textgame.persistence.sqlite_repository import SqliteRepository
 from textgame.persistence.world_book_repository import SqliteWorldBookRepository
 from textgame.services.action_service import ActionService
@@ -43,6 +44,7 @@ from textgame.services.craft_service import CraftService
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
 from textgame.services.recipe_catalog import RecipeCatalog
+from textgame.services.scenario_service import ScenarioService
 from textgame.services.world_book_service import WorldBookService
 from textgame.tools.builtin import build_game_tool_registry
 from textgame.tools.gate import ToolGate
@@ -57,14 +59,24 @@ def _build_app() -> FastAPI:
     game_engine = GameEngine(repo)
     # H4 世界书：独立资料库（不参与事件溯源）；同一 service 作为 WorldBookProvider 注入查询/编排层。
     world_book_service = WorldBookService(SqliteWorldBookRepository(engine))
-    query = QueryService(repo, world_book_provider=world_book_service)
-    action = ActionService(query)
+    # 用户上传场景：独立资料库 + 运行时钩子索引（服务按房间/NPC 派生 ID 分发目标/结局/伤害/对话）。
+    scenario_service = ScenarioService(SqliteScenarioRepository(engine))
+    scenario_service.reload()
+    scenario_runtime = scenario_service.runtime
+    query = QueryService(
+        repo,
+        world_book_provider=world_book_service,
+        scenario_runtime=scenario_runtime,
+    )
+    action = ActionService(query, scenario_runtime=scenario_runtime)
     catalog = RecipeCatalog.load_builtin()
-    llm_client = build_llm_client(settings)
-    # M6 卡生成（028 后端前置）：LLM 可用时走 LLM 草稿生成器，否则（默认离线）模板兜底。
+    # 运行期 LLM（用户需求）：本机 `.env` 开发 key → 默认启用；干净克隆无 key → 离线可玩，
+    # 玩家在网页设置页填入 key 后热切换（无需重启）。默认离线行为与旧装配逐字等价。
+    llm_client = RuntimeLLMClient(settings)
+    # M6 卡生成（028 后端前置）：LLM 草稿生成器常驻；离线时由 LLM_UNAVAILABLE 回退模板兜底。
     card_service = CardService(
         SqliteCardRepository(engine),
-        draft_generator=LLMCardDraftGenerator(llm_client) if settings.llm_enabled else None,
+        draft_generator=LLMCardDraftGenerator(llm_client),
     )
     craft_service = CraftService(
         catalog,
@@ -85,23 +97,16 @@ def _build_app() -> FastAPI:
         save_seed=save_seed_default,
     )
     deterministic_character_agent = DeterministicCharacterAgent(M3_NPC_PLANS)
-    narrator: NarratorLike
-    character_agents: dict[str, CharacterAgentLike]
-    judge: JudgeAgentLike | None
-    if settings.llm_enabled:
-        # M5 出口接线（解析→叙事→角色）：默认 false 时下列分支不执行，装配逐字等价。
-        narrator = LLMNarratorAgent(llm_client, fallback=TemplateNarrator())
-        character_agents = {
-            actor_id: LLMCharacterAgent(llm_client, fallback=deterministic_character_agent)
-            for actor_id in M3_NPC_PLANS
-        }
-        # M5E-2 裁判接线：仅 llm_enabled=true 时构造；needs_judge 生产点当前为空集 →
-        # 生产零裁判调用（默认离线/启用 LLM 两种装配均逐字等价，机制就绪待工具接入）。
-        judge = LLMJudgeAgent(llm_client)
-    else:
-        narrator = TemplateNarrator()
-        character_agents = dict.fromkeys(M3_NPC_PLANS, deterministic_character_agent)
-        judge = None
+    # 用户需求：Agent 常驻 LLM 版本（内部是运行期客户端），离线时各 Agent 自动回退确定性路径：
+    # 叙事→TemplateNarrator、角色→DeterministicCharacterAgent、裁判→确定性裁决。
+    # 这样网页里保存 API Key 后当回合即可生效，无需重启服务。
+    narrator = LLMNarratorAgent(llm_client, fallback=TemplateNarrator())
+    character_agents = {
+        actor_id: LLMCharacterAgent(llm_client, fallback=deterministic_character_agent)
+        for actor_id in M3_NPC_PLANS
+    }
+    # M5E-2 裁判接线：needs_judge 生产点当前为空集 → 生产零裁判调用（机制就绪）。
+    judge: JudgeAgentLike | None = LLMJudgeAgent(llm_client)
     audit_service = AuditService(repo)
     parser = IntentParseAgent(
         llm_client,
@@ -128,14 +133,19 @@ def _build_app() -> FastAPI:
         audit=audit_service,
         judge=judge,
         world_book_provider=world_book_service,
+        scenario_runtime=scenario_runtime,
     )
-    return create_app(
+    app = create_app(
         orchestrator=orchestrator,
         query_service=query,
         audit_service=audit_service,
         card_service=card_service,
         world_book_service=world_book_service,
+        scenario_service=scenario_service,
     )
+    # 设置端点（GET/PUT/DELETE /api/v1/settings/llm）读取同一实例：保存 key 后热切换。
+    app.state.llm_runtime = llm_client
+    return app
 
 
 app = _build_app()

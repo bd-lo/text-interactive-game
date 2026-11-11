@@ -1,12 +1,13 @@
 """SQLAlchemy 2.0 ORM 表：events / snapshots / game_state_current / idempotency / audit_events
-/ character_cards / world_books / world_book_entries。
+/ character_cards / world_books / world_book_entries / scenarios。
 
 M2 契约 §6、M3 契约 §3.5/D-M3-6/D-M3-7、M4 前 D-008-3 与第 14 章 14.3：SQLAlchemy 2.0
 同步 ORM + SQLite，新库建表走 ``Base.metadata.create_all``；迁移走 Alembic
 （``alembic/versions/0001_m3_baseline.py`` 空库 5 表，``0002_composite_event_key.py``
 把 events 改为 ``(game_id, seq)`` 复合主键以支持同库多存档，
 ``0003_character_cards.py`` 增 M6 人物卡库表 ``character_cards``，
-``0004_world_books.py`` 增 H4 世界书两表 ``world_books``/``world_book_entries``）。
+``0004_world_books.py`` 增 H4 世界书两表 ``world_books``/``world_book_entries``，
+``0005_user_scenarios.py`` 增玩家自上传场景表 ``scenarios``）。
 
 ``events.seq`` 是**每存档内**全局单调序号、由 ``EventLog`` 分配（**不使用数据库自增**），
 ``id = f"evt_{seq:06d}"`` 即领域 ``Event.id``——因此 ``event_uid`` 只在存档内唯一，
@@ -221,3 +222,33 @@ class WorldBookEntryRow(Base):
     exclude_recursion: Mapped[bool] = mapped_column(Boolean, nullable=False)
     prevent_recursion: Mapped[bool] = mapped_column(Boolean, nullable=False)
     raw_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ScenarioRow(Base):
+    """玩家自上传场景表（``docs/design/user-scenario-modules.md`` §3.3）：**不参与事件溯源**。
+
+    场景是独立于 ``GameState`` 的资料库：``POST /scenarios`` 由 ``ScenarioService``
+    校验后把定义原文与统计/告警落本表；建局时才把定义物化为初始 ``GameState``
+    （玩家槽位仍是全局 ``PLAYER_ID``，事件基线字段不扩展）。
+
+    - ``definition_json``：原始定义 JSON 原文（规范 JSON）——回放/导出/``reload`` 的唯一来源；
+    - ``summary_json``/``warnings_json``：导入时算好的统计（6 个计数）与告警
+      ``[{path,message}]``，列表/详情直接读，避免每次重解析；
+    - ``deleted_at``：软删除时间戳（``NULL`` = 未删除），删除不物理删行——已开局存档
+      的 runtime 索引仍需保留（``list_for_runtime`` 含已删记录）。
+    """
+
+    __tablename__ = "scenarios"
+    __table_args__ = (Index("ix_scenarios_created_at", "created_at"),)
+
+    scenario_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(48), nullable=False)
+    author: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[str] = mapped_column(String(200), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition_json: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+    warnings_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

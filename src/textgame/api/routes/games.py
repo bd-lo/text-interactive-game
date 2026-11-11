@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -11,6 +11,7 @@ from textgame.api.deps import (
     get_audit_service,
     get_orchestrator,
     get_query_service,
+    get_scenario_service_or_none,
     require_idempotency_key,
 )
 from textgame.api.errors import ApiError
@@ -26,6 +27,7 @@ from textgame.api.schemas import (
     ReplayEventResponse,
     ReplayResponse,
 )
+from textgame.config.rng import save_seed_from_settings
 from textgame.domain.events import Event
 from textgame.domain.results import ErrorCode
 from textgame.orchestration.turn_orchestrator import (
@@ -36,6 +38,7 @@ from textgame.orchestration.turn_orchestrator import (
 from textgame.services.audit_service import AuditService
 from textgame.services.card_service import CardService, CardServiceError
 from textgame.services.query_service import GameNotFoundError, QueryService
+from textgame.services.scenario_service import ScenarioService, ScenarioServiceError
 
 router = APIRouter(prefix="/api/v1", tags=["games"])
 
@@ -87,6 +90,7 @@ def create_game(
     idempotency_key: Annotated[str, Depends(require_idempotency_key)],
     orchestrator: Annotated[TurnOrchestrator, Depends(get_orchestrator)],
     card_service: Annotated[CardService | None, Depends(get_card_service_or_none)],
+    scenario_service: Annotated[ScenarioService | None, Depends(get_scenario_service_or_none)],
     body: CreateGameBody | None = None,
 ) -> CreatedGameResponse:
     """创建存档；同键同参幂等回放（零写入），同键异参 409。
@@ -96,6 +100,8 @@ def create_game(
     ``seed``/``scenario`` 同给 → 422 ``INVALID_INPUT``）；不提供时行为完全不变。
     H4 加法：body 可带 ``world_book_id`` 绑定世界书（未知/已删除 404；可与 seed/scenario/
     card_id 共存）；不提供时行为/事件参数逐字不变。
+    场景库加法（设计契约 §3.4）：body 可带 ``scenario_id`` 按玩家自上传场景建局（未知/
+    已软删 404；与 ``card_id``/``scenario`` 互斥；可与 ``world_book_id``/``seed`` 共存）。
     """
     card_id = body.card_id if body is not None else None
     card: dict[str, Any] | None = None
@@ -109,10 +115,38 @@ def create_game(
             card = card_service.get_card_payload(card_id)
         except CardServiceError as exc:
             raise _card_api_error(exc) from exc
+    scenario_id = body.scenario_id if body is not None else None
+    scenario_initial_state: dict[str, Any] | None = None
+    if scenario_id is not None:
+        explicit_scenario = body is not None and "scenario" in body.model_fields_set
+        if card_id is not None or explicit_scenario:
+            raise ApiError(ErrorCode.INVALID_INPUT, "scenario_id 不能与 card_id/scenario 同时提供")
+        if scenario_service is None:
+            raise ApiError(ErrorCode.INTERNAL, "服务未完成场景服务装配")
+        # 初始状态里的 rng_state.save_seed 必须与引擎实际使用的 seed 一致（回放可复算）。
+        save_seed = (
+            save_seed_from_settings(body.seed)
+            if body is not None and body.seed is not None
+            else orchestrator.save_seed_default
+        )
+        try:
+            scenario_payload = scenario_service.build_game_payload(scenario_id, save_seed)
+        except ScenarioServiceError as exc:
+            raise ApiError(
+                exc.error_code,
+                exc.message,
+                violations=exc.violations,
+                status_override=exc.http_status,
+            ) from exc
+        scenario_initial_state = cast(dict[str, Any], scenario_payload["initial_state"])
     request = CreateGameRequest(
         seed=body.seed if body is not None else None,
         idempotency_key=idempotency_key,
-        scenario=body.scenario if body is not None else "m2",
+        scenario=(
+            "custom" if scenario_id is not None else (body.scenario if body is not None else "m2")
+        ),
+        scenario_id=scenario_id,
+        initial_state=scenario_initial_state,
         card_id=card_id,
         card=card,
         # H4 世界书绑定（存在性校验/名称解析由编排层经 WorldBookProvider 完成，未知 404）；

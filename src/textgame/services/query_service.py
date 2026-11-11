@@ -19,6 +19,7 @@ from textgame.domain.scenario import (
     M4_ROOM_FORGE,
     PLAYER_ID,
 )
+from textgame.domain.scenario_runtime import ScenarioRuntime
 from textgame.domain.scenario_story import (
     STORY_SCENARIO,
     is_story_state,
@@ -75,14 +76,46 @@ class QueryService:
         repo: GameRepository,
         *,
         world_book_provider: WorldBookProvider | None = None,
+        scenario_runtime: ScenarioRuntime | None = None,
     ) -> None:
         """``repo`` 只用于 ``get_game_view`` 读取当前状态与最近事件。
 
         ``world_book_provider``（H4 加法）：可选世界书提供者；缺省 ``None`` 时不计算
         ``world_book``/``lore`` 字段（旧场景/旧装配行为逐字不变）。
+
+        ``scenario_runtime``（用户上传场景）：可选用户场景钩子注册表；缺省 ``None`` 时
+        全部走内置场景逻辑（story/m2/m3/m4 行为逐字不变）。
         """
         self._repo = repo
         self._world_book_provider = world_book_provider
+        self._scenario_runtime = scenario_runtime
+
+    # ------------------------------------------------------------------
+    # 用户上传场景（scenario="custom"）：钩子优先，未命中时回退内置逻辑
+    # ------------------------------------------------------------------
+    def _scenario_name(self, state: GameState) -> str:
+        """场景名：命中用户场景返回 ``"custom"``，否则按内置状态推导（旧行为不变）。"""
+        if self._scenario_runtime is not None:
+            hooks = self._scenario_runtime.resolve(state)
+            if hooks is not None:
+                return "custom"
+        return scenario_name_of_state(state)
+
+    def _goal_of(self, state: GameState) -> dict[str, Any] | None:
+        """目标视图：用户场景钩子优先，缺省回退 ``story_goal``（旧场景不变）。"""
+        if self._scenario_runtime is not None:
+            goal = self._scenario_runtime.goal(state)
+            if goal is not None:
+                return cast(dict[str, Any], goal)
+        return story_goal(state)
+
+    def _ending_of(self, state: GameState) -> dict[str, Any] | None:
+        """结局视图：用户场景钩子优先，缺省回退 ``story_ending``（旧场景不变）。"""
+        if self._scenario_runtime is not None:
+            ending = self._scenario_runtime.ending(state)
+            if ending is not None:
+                return cast(dict[str, Any], ending)
+        return story_ending(state)
 
     # ------------------------------------------------------------------
     # H4 世界书只读投影（与 TurnOrchestrator 共用激活语义；无书 → null）
@@ -328,7 +361,7 @@ class QueryService:
                 last_text = narrative
                 break
         snapshot = self._repo.latest_snapshot(game_id)
-        ending = game_ending_of_state(record.state)
+        ending = self._ending_of(record.state)
         world_book, lore = self._world_book_fields(game_id, record.state)
         return {
             "game_id": game_id,
@@ -337,7 +370,7 @@ class QueryService:
             "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
             "status": "ended" if ending is not None else "active",
             "last_text": last_text,
-            "scenario": scenario_name_of_state(record.state),
+            "scenario": self._scenario_name(record.state),
             "ending_text": str(ending["text"]) if ending is not None else None,
             "world_book": world_book,
             "world_book_id": world_book["world_book_id"] if world_book is not None else None,
@@ -367,7 +400,7 @@ class QueryService:
         character = self._require_character(state, PLAYER_ID)
         max_hp = character.attributes.get("max_hp")
         snapshot = self._repo.latest_snapshot(game_id)
-        ending = game_ending_of_state(state)
+        ending = self._ending_of(state)
         world_book, lore = self._world_book_fields(game_id, state)
         return {
             "game_id": game_id,
@@ -375,12 +408,12 @@ class QueryService:
             "version": record.version,
             "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
             "status": "ended" if ending is not None else "active",
-            "scenario": scenario_name_of_state(state),
+            "scenario": self._scenario_name(state),
             "hp": character.hp,
             "max_hp": max_hp if max_hp is not None else character.hp,
             "inventory": self.get_inventory(state, PLAYER_ID)["items"],
             "room": self.get_room_view(state, PLAYER_ID),
-            "goal": story_goal(state),
+            "goal": self._goal_of(state),
             "ending_text": str(ending["text"]) if ending is not None else None,
             "suggested_actions": suggest_actions(state),
             "world_book": world_book,
@@ -404,7 +437,7 @@ class QueryService:
                     last_text = narrative
                     break
             snapshot = self._repo.latest_snapshot(record.game_id)
-            ending = game_ending_of_state(record.state)
+            ending = self._ending_of(record.state)
             games.append(
                 {
                     "game_id": record.game_id,
@@ -412,7 +445,7 @@ class QueryService:
                     "version": record.version,
                     "snapshot_version": snapshot.snapshot_version if snapshot is not None else 0,
                     "status": "ended" if ending is not None else "active",
-                    "scenario": scenario_name_of_state(record.state),
+                    "scenario": self._scenario_name(record.state),
                     "last_text": last_text,
                     "updated_at": record.updated_at,
                 }
