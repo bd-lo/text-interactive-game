@@ -48,6 +48,7 @@ from textgame.domain.world_book import (
     activate_entries,
     build_activation_context,
     format_lore_entries,
+    history_from_events,
 )
 from textgame.orchestration.direct_gate import ToolGateLike
 from textgame.orchestration.dto import TurnRequest
@@ -671,6 +672,11 @@ class TurnOrchestrator:
         上下文 = 最近叙事 + 玩家输入 + 当前房间名/描述 + 可见物品/NPC 名（
         ``domain.world_book.build_activation_context`` 统一口径）；旧场景/未绑定世界书 →
         空列表（调用方不向 narrator 注入任何字段，文本逐字不变）。
+
+        定时效果（sticky/cooldown/delay，P1）按**逐回合历史**模拟：历史由
+        ``domain.world_book.history_from_events`` 从事件日志纯函数重建——每回合取已提交事件的
+        ``result["narrative"]`` 作为该回合关键词匹配上下文（玩家输入不入事件，零事件只读回合
+        无叙事落库、不进入历史），因此结果确定性、可回放、不写 GameState/事件。
         """
         book = self._world_book_of_game(game_id)
         if book is None:
@@ -692,6 +698,7 @@ class TurnOrchestrator:
             context_texts=context,
             turn_id=state.turn + 1,
             save_seed=state.rng_state.save_seed,
+            history=history_from_events(events),
         )
         return format_lore_entries(active)
 

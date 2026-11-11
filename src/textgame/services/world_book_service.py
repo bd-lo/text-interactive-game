@@ -34,6 +34,7 @@ from textgame.domain.results import ErrorCode
 from textgame.domain.world_book import (
     WorldBook,
     WorldBookEntry,
+    parse_entry_extras,
     parse_import_payload,
 )
 from textgame.services.ports import IdempotencyRecord
@@ -286,11 +287,17 @@ def _entry_to_raw(entry: WorldBookEntry) -> dict[str, Any]:
         "probability": entry.probability,
         "useProbability": entry.use_probability,
         "group": entry.group,
+        "groupWeight": entry.group_weight,
+        "groupOverride": entry.group_override,
+        "useGroupScoring": entry.group_scoring,
         "scanDepth": entry.scan_depth,
         "caseSensitive": entry.case_sensitive,
         "matchWholeWords": entry.match_whole_words,
         "excludeRecursion": entry.exclude_recursion,
         "preventRecursion": entry.prevent_recursion,
+        "sticky": entry.sticky,
+        "cooldown": entry.cooldown,
+        "delay": entry.delay,
     }
 
 
@@ -317,7 +324,13 @@ def _stored_entry(entry: WorldBookEntry, raw: dict[str, Any]) -> StoredWorldBook
 
 
 def _domain_entry(entry: StoredWorldBookEntry) -> WorldBookEntry:
-    """仓储行数据 → domain 条目（供触发引擎/Provider 使用）。"""
+    """仓储行数据 → domain 条目（供触发引擎/Provider 使用）。
+
+    仓储只落库 H4 契约 §3 的固定列；``probability``/``use_probability``/``group``/
+    ``scan_depth`` 与 P1 新增的定时效果/包含组字段从 ``raw_json``（``entry.raw``）恢复，
+    不改表、不加迁移；旧数据只要 raw 里保留了原字段即可自动生效。
+    """
+    extras = parse_entry_extras(entry.raw or {})
     return WorldBookEntry(
         uid=entry.entry_uid,
         keys=entry.keys,
@@ -330,10 +343,20 @@ def _domain_entry(entry: StoredWorldBookEntry) -> WorldBookEntry:
         order=entry.order,
         position=entry.position,
         depth=entry.depth,
+        probability=extras.probability,
+        use_probability=extras.use_probability,
+        group=extras.group,
+        scan_depth=extras.scan_depth,
         case_sensitive=entry.case_sensitive,
         match_whole_words=entry.match_whole_words,
         exclude_recursion=entry.exclude_recursion,
         prevent_recursion=entry.prevent_recursion,
+        sticky=extras.sticky,
+        cooldown=extras.cooldown,
+        delay=extras.delay,
+        group_weight=extras.group_weight,
+        group_override=extras.group_override,
+        group_scoring=extras.group_scoring,
     )
 
 
@@ -637,7 +660,11 @@ class WorldBookService:
 
     @staticmethod
     def _format_warnings(book: WorldBook) -> list[dict[str, Any]]:
-        """格式相关告警（角色卡内嵌 character_book 提取等；不阻塞导入）。"""
+        """格式相关告警（角色卡提取/空书/解析期诊断；不阻塞导入）。
+
+        形状保持既有 ``[{code, message}]``（前端 ``WorldBookWarningResponse`` 未变），
+        只增条目：domain 解析期产出的正则键非法、定时效果越界、未支持字段等诊断在此透传。
+        """
         warnings: list[dict[str, Any]] = []
         if book.source == "character_card":
             warnings.append(
@@ -648,6 +675,7 @@ class WorldBookService:
             )
         if book.source not in _ALLOWED_SOURCES:  # pragma: no cover - 解析器只返回三种 source
             warnings.append({"code": "UNKNOWN_SOURCE", "message": f"未知世界书来源: {book.source}"})
+        warnings.extend({"code": item.code, "message": item.message} for item in book.warnings)
         return warnings
 
     @staticmethod

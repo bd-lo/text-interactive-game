@@ -32,6 +32,7 @@ from textgame.domain.world_book import (
     WorldBookProvider,
     activate_entries,
     build_activation_context,
+    history_from_events,
 )
 from textgame.services.ports import GameRepository
 
@@ -174,11 +175,15 @@ class QueryService:
             if isinstance(narrative, str) and narrative:
                 narratives.append(narrative)
         context = build_activation_context(state, narrative_texts=narratives)
+        # 定时效果（sticky/cooldown/delay）需要逐回合历史：与回合注入同口径，从事件日志重建。
+        # 旧行为（无用户历史/无 timed 字段）不受影响；history 为空元组时仅「开始计时」。
+        history = history_from_events(events)
         active = activate_entries(
             book,
             context_texts=context,
             turn_id=state.turn,
             save_seed=state.rng_state.save_seed,
+            history=history,
         )
         lore = {
             "active_entries": [
