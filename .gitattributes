@@ -14,3 +14,7 @@ web/dist/** -text -diff
 
 # golden fixture 内容哈希 pin 按 LF 规范化计算（跨平台检出稳定）
 tests/fixtures/golden/*.json text eol=lf
+
+# 首帧主题脚本由 public/ 原样复制进 web/dist（web/dist/** 为 -text 不转换行尾），必须固定 LF：
+# 否则 Windows 开发机构建出 CRLF、Linux CI 重建出 LF，dist 漂移门禁会失败。
+web/public/theme-init.js text eol=lf
