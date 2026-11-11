@@ -1445,6 +1445,15 @@ async function runFlow() {
         keys: ['老兵', '守夜人'],
         content: '守夜人老兵在哨站守了很多年，火盆边永远放着一根旧烟斗，他记得每一个没能回来的人。',
         order: 20,
+        // P1 触发语义：详情页可见性断言用（概率/包含组/定时效果/position-depth/扫描深度）。
+        position: 4,
+        depth: 4,
+        probability: 100,
+        useProbability: true,
+        scanDepth: 4,
+        group: 'old-watch',
+        sticky: 2,
+        cooldown: 1,
       },
     ],
   }
@@ -1494,6 +1503,22 @@ async function runFlow() {
       '详情页展示书名与条目触发词/内容',
       detailTitle.includes(WORLD_BOOK_NAME) && detailRows >= 2 && detailText.includes('断桥'),
       `${detailTitle} / rows=${detailRows}`,
+    )
+    // P1 触发语义可见性（D-WB-3 缺口补齐）：概率/包含组、定时效果、position-depth/扫描深度。
+    check(
+      '详情页展示概率与包含组语义',
+      detailText.includes('概率 100%') && detailText.includes('组「old-watch」'),
+      truncate(detailText, 200),
+    )
+    check(
+      '详情页展示定时效果（粘性/冷却）',
+      detailText.includes('粘性 2 回合') && detailText.includes('冷却 1 回合'),
+      truncate(detailText, 200),
+    )
+    check(
+      '详情页展示 position-depth 与扫描深度',
+      detailText.includes('按深度插入') && detailText.includes('depth 4') && detailText.includes('扫描深度 4'),
+      truncate(detailText, 200),
     )
     await checkNoInternalIdsVisible('世界书详情页')
     worldBookId = String(

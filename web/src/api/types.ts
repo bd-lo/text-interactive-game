@@ -384,7 +384,11 @@ export interface WorldBookListResponse {
   total: number
 }
 
-/** 世界书条目（`WorldBookEntryResponse`；触发语义字段与 H4-CONTRACT §2 一致）。 */
+/** 世界书条目（`WorldBookEntryResponse`；触发语义字段与 H4-CONTRACT §2 一致）。
+ *
+ * P1 加法：`probability`/`use_probability`/组字段/`scan_depth` 与定时效果
+ * `sticky`/`cooldown`/`delay` 由服务端从 `raw_json` 还原后返回（旧数据回退默认值）。
+ */
 export interface WorldBookEntry {
   entry_uid: number
   keys: string[]
@@ -397,6 +401,20 @@ export interface WorldBookEntry {
   depth: number
   selective: boolean
   selective_logic: number
+  case_sensitive: boolean
+  match_whole_words: boolean
+  exclude_recursion: boolean
+  prevent_recursion: boolean
+  probability: number
+  use_probability: boolean
+  group: string
+  group_weight: number
+  group_override: boolean
+  group_scoring: boolean
+  scan_depth: number | null
+  sticky: number
+  cooldown: number
+  delay: number
 }
 
 /** 详情页世界书摘要（`WorldBookDetailBodyResponse`）。 */

@@ -24,6 +24,20 @@ const ENTRY = {
   depth: 4,
   selective: false,
   selective_logic: 0,
+  case_sensitive: false,
+  match_whole_words: false,
+  exclude_recursion: false,
+  prevent_recursion: false,
+  probability: 100,
+  use_probability: false,
+  group: '',
+  group_weight: 1,
+  group_override: false,
+  group_scoring: false,
+  scan_depth: null,
+  sticky: 0,
+  cooldown: 0,
+  delay: 0,
 }
 
 function jsonResponse(status: number, body: unknown): Response {

@@ -160,8 +160,29 @@ def test_import_list_detail_delete_roundtrip(
                 "depth",
                 "selective",
                 "selective_logic",
+                "case_sensitive",
+                "match_whole_words",
+                "exclude_recursion",
+                "prevent_recursion",
+                "probability",
+                "use_probability",
+                "group",
+                "group_weight",
+                "group_override",
+                "group_scoring",
+                "scan_depth",
+                "sticky",
+                "cooldown",
+                "delay",
             }
             assert entry["keys"] == ["哨站", "大桥"]
+            # raw_json 缺 P1 字段时按解析默认值返回（前端不因缺字段崩）
+            assert entry["probability"] == 100
+            assert entry["use_probability"] is False
+            assert entry["scan_depth"] is None
+            assert entry["group"] == ""
+            assert entry["group_weight"] == 1.0
+            assert (entry["sticky"], entry["cooldown"], entry["delay"]) == (0, 0, 0)
             assert payload["entries"][2]["enabled"] is False
 
             deleted = client.delete(

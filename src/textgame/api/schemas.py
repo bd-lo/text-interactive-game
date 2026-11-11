@@ -388,7 +388,12 @@ class WorldBookListResponse(BaseModel):
 
 
 class WorldBookEntryResponse(BaseModel):
-    """世界书条目（详情页/导入预览用；触发语义字段与 H4-CONTRACT §2 一致）。"""
+    """世界书条目（详情页/导入预览用；触发语义字段与 H4-CONTRACT §2 一致）。
+
+    P1 加法（D-WB-3 可见性）：``probability``/``use_probability``/``group`` 组字段/
+    ``scan_depth`` 与定时效果 ``sticky``/``cooldown``/``delay`` 由服务层从 ``raw_json``
+    还原后返回，只读展示；旧数据缺字段时回退解析默认值（100/False/""/None/0）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -403,6 +408,20 @@ class WorldBookEntryResponse(BaseModel):
     depth: int
     selective: bool
     selective_logic: int
+    case_sensitive: bool
+    match_whole_words: bool
+    exclude_recursion: bool
+    prevent_recursion: bool
+    probability: int
+    use_probability: bool
+    group: str
+    group_weight: float
+    group_override: bool
+    group_scoring: bool
+    scan_depth: int | None
+    sticky: int
+    cooldown: int
+    delay: int
 
 
 class WorldBookDetailBodyResponse(BaseModel):

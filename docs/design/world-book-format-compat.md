@@ -189,6 +189,18 @@ CCv2 的 `CharacterBook`（`spec_v2.md`，独立实现，不复制规范文本�
   `(position 升序, depth 降序, order 升序, uid 升序)` 排序后返回，用于 lore 块拼接顺序；
   **不改变 LLM prompt 的消息结构**（仍是 system + user 两条；世界设定事实段以条目顺序追加），
   因此 `narrate@v2` cassette 不破。缺省 position=0/depth=4 时等价旧 `(order, uid)` 排序。
+- **D-11 详情 API 可见性（P1 后补）**：`GET /api/v1/world-books/{world_book_id}` 的
+  `entries[]` 在 H4 固定字段之外，再返回 14 个触发语义字段：`probability`/`use_probability`/
+  `group`/`group_weight`/`group_override`/`group_scoring`/`scan_depth`/`sticky`/`cooldown`/
+  `delay`/`case_sensitive`/`match_whole_words`/`exclude_recursion`/`prevent_recursion`。
+  - 前 10 个「固定列之外」的字段由 `domain.world_book.parse_entry_extras` 从 `raw_json`
+    还原——**与激活决策同一解析函数**，保证「详情里看到的」=「运行时会用的」；无新表/迁移。
+  - 缺字段的旧数据按解析默认值返回（`100`/`False`/`""`/`1.0`/`None`/`0`），前端无需判空。
+  - 只增不改：H4 既有响应字段逐字保留（`extra="forbid"` 契约同步更新
+    `api/schemas.py` + `web/src/api/types.ts` + `web/src/api/client.ts` 运行时校验 +
+    `tests/integration/test_frontend_contract.py`）。
+  - 详情页 `WorldBookEntryTable.vue` 展示：概率/包含组/定时效果/position-depth/扫描深度/
+    递归与大小写开关；展示层零业务判断，激活行为仍由 `domain/world_book.py` 决定。
 
 ## 6. 示例 payload（最小可导入）
 

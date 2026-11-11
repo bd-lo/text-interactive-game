@@ -664,6 +664,21 @@ const WORLD_BOOK_ENTRY_KEYS = [
   'depth',
   'selective',
   'selective_logic',
+  // P1 加法（D-WB-3 可见性）：触发语义明细由服务端从 raw_json 还原后返回。
+  'case_sensitive',
+  'match_whole_words',
+  'exclude_recursion',
+  'prevent_recursion',
+  'probability',
+  'use_probability',
+  'group',
+  'group_weight',
+  'group_override',
+  'group_scoring',
+  'scan_depth',
+  'sticky',
+  'cooldown',
+  'delay',
 ] as const
 const WORLD_BOOK_IMPORT_KEYS = ['world_book_id', 'name', 'entry_count', 'source', 'warnings'] as const
 const WORLD_BOOK_VALIDATE_KEYS = ['valid', 'errors', 'warnings', 'preview'] as const

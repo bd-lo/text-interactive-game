@@ -83,6 +83,44 @@ export function labelSelectiveLogic(value: number): string {
   return '任一命中（AND_ANY）'
 }
 
+/** `position` 数字 → 中文（SillyTavern 插入位置枚举；未知值回退「位置 N」）。 */
+export function labelWorldBookPosition(value: number): string {
+  if (value === 0) {
+    return '角色设定前'
+  }
+  if (value === 1) {
+    return '角色设定后'
+  }
+  if (value === 2) {
+    return '作者注释前'
+  }
+  if (value === 3) {
+    return '作者注释后'
+  }
+  if (value === 4) {
+    return '按深度插入'
+  }
+  if (value === 5) {
+    return '示例消息前'
+  }
+  if (value === 6) {
+    return '示例消息后'
+  }
+  if (value === 7) {
+    return '宏插入点'
+  }
+  return `位置 ${value}`
+}
+
+/** 定时效果（粘性/冷却/延迟）回合数 → 中文标签；0 表示关闭（返回空串）。 */
+export function labelTimedEffect(turns: number, kind: 'sticky' | 'cooldown' | 'delay'): string {
+  if (!Number.isFinite(turns) || turns <= 0) {
+    return ''
+  }
+  const name = kind === 'sticky' ? '粘性' : kind === 'cooldown' ? '冷却' : '延迟'
+  return `${name} ${Math.trunc(turns)} 回合`
+}
+
 /** 世界书相关错误的玩家可读文案（413 特例 + 其余复用统一映射）。 */
 export function describeWorldBookError(error: unknown): PlayerErrorInfo {
   if (error instanceof ApiClientError && error.status === 413) {

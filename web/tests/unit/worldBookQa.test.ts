@@ -18,6 +18,8 @@ import {
   describeWorldBookError,
   labelDetectedFormat,
   labelSelectiveLogic,
+  labelTimedEffect,
+  labelWorldBookPosition,
   labelWorldBookSource,
 } from '@/utils/worldBooks'
 
@@ -45,6 +47,20 @@ const ENTRY = {
   depth: 4,
   selective: true,
   selective_logic: 0,
+  case_sensitive: false,
+  match_whole_words: false,
+  exclude_recursion: false,
+  prevent_recursion: false,
+  probability: 100,
+  use_probability: false,
+  group: '',
+  group_weight: 1,
+  group_override: false,
+  group_scoring: false,
+  scan_depth: null,
+  sticky: 0,
+  cooldown: 0,
+  delay: 0,
 }
 
 const VALIDATE_BODY = {
@@ -149,6 +165,18 @@ describe('世界书 utils（客户端预检/人话/标签）', () => {
     expect(labelSelectiveLogic(1)).toContain('NOT_ALL')
     expect(labelSelectiveLogic(2)).toContain('NOT_ANY')
     expect(labelSelectiveLogic(3)).toContain('AND_ALL')
+  })
+
+  it('P1 标签：插入位置与定时效果（0/未知值有稳定回退）', () => {
+    expect(labelWorldBookPosition(0)).toBe('角色设定前')
+    expect(labelWorldBookPosition(1)).toBe('角色设定后')
+    expect(labelWorldBookPosition(4)).toBe('按深度插入')
+    expect(labelWorldBookPosition(99)).toBe('位置 99')
+    expect(labelTimedEffect(2, 'sticky')).toBe('粘性 2 回合')
+    expect(labelTimedEffect(1, 'cooldown')).toBe('冷却 1 回合')
+    expect(labelTimedEffect(3, 'delay')).toBe('延迟 3 回合')
+    expect(labelTimedEffect(0, 'sticky')).toBe('')
+    expect(labelTimedEffect(-1, 'delay')).toBe('')
   })
 
   it('413 错误人话：提示 256KB 上限（不透出后端原始报错）', () => {

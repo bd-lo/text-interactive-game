@@ -84,7 +84,7 @@
 
 1. 场景 JSON v1 不支持：自定义配方/制造链、战斗系统、脚本表达式、flag/quest/时间条件、模组编辑器与分享市场；
 2. 世界书仍不支持：`vectorized` 向量检索、`outlet` 宏插入、`characterFilter`、`useGroupScoring` 评分（导入给 warning）；
-3. 世界书 `GET /world-books/{id}` 详情 schema/前端暂不展示 timed/group 新字段（激活已生效；展示需另开小任务）；
+3. 世界书 `GET /world-books/{id}` 详情 schema/前端暂不展示 timed/group 新字段 —— **已由 [WB2](WB2-2026-11-11-worldbook-detail-fields.md)（2026-11-11）补齐**（详情返回 14 个触发语义字段 + 前端展示；无迁移）；
 4. 玩家 API Key 存本机明文文件（单机单用户可接受；不要用共享账号 key、不要监听公网，见第 20 章 R-T13/Q6）；
 5. 真实 LLM 首回合延迟（无流式）仍在（R-T8）；流式/SSE 按 Q7-B 发布期复评；
 6. 场景库/设置页未接 Playwright/a11y（沿用 D-M6-11 口径）；e2e 已覆盖新页面主链路。

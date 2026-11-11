@@ -1522,6 +1522,11 @@ html[data-visual='off'] .reveal {
   border-color: var(--warn);
 }
 
+.world-tag-timed {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* 导入页：拖拽区 */
 .world-book-dropzone {
   border: 1px dashed var(--border);
@@ -1594,6 +1599,15 @@ html[data-visual='off'] .reveal {
 .world-entry-secondary {
   margin: 4px 0 0;
   font-size: 0.8rem;
+}
+
+.world-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 6px 0 0;
+  color: var(--fg-dim);
+  font-size: 0.75rem;
 }
 
 /* 对局内「世界设定」面板 */

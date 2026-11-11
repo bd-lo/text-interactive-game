@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import WorldLorePanel from '@/components/WorldLorePanel.vue'
+import WorldBookEntryTable from '@/components/WorldBookEntryTable.vue'
 import WorldBookDetailView from '@/views/WorldBookDetailView.vue'
 import WorldBookImportView from '@/views/WorldBookImportView.vue'
 import WorldBookLibraryView from '@/views/WorldBookLibraryView.vue'
@@ -25,10 +26,44 @@ const ENTRY = {
   enabled: true,
   constant: true,
   order: 10,
-  position: 0,
+  position: 4,
   depth: 4,
   selective: false,
   selective_logic: 0,
+  case_sensitive: true,
+  match_whole_words: true,
+  exclude_recursion: true,
+  prevent_recursion: true,
+  probability: 60,
+  use_probability: true,
+  group: 'signal',
+  group_weight: 2,
+  group_override: false,
+  group_scoring: false,
+  scan_depth: 2,
+  sticky: 2,
+  cooldown: 1,
+  delay: 3,
+}
+
+/** 旧数据/缺字段时的默认值（服务端解析回退口径）。 */
+const DEFAULT_ENTRY = {
+  ...ENTRY,
+  entry_uid: 2,
+  position: 0,
+  selective: false,
+  case_sensitive: false,
+  match_whole_words: false,
+  exclude_recursion: false,
+  prevent_recursion: false,
+  probability: 100,
+  use_probability: false,
+  group: '',
+  group_weight: 1,
+  scan_depth: null,
+  sticky: 0,
+  cooldown: 0,
+  delay: 0,
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -143,6 +178,11 @@ describe('世界书页面（H4）', () => {
     expect(wrapper.text()).toContain('哨站')
     expect(wrapper.text()).toContain('常驻')
     expect(wrapper.text()).toContain('信标已经灭了两夜')
+    // P1 触发语义在详情页同样可见（D-WB-3：不再只存 raw_json）
+    expect(wrapper.text()).toContain('概率 60%')
+    expect(wrapper.text()).toContain('组「signal」')
+    expect(wrapper.text()).toContain('粘性 2 回合')
+    expect(wrapper.text()).toContain('按深度插入')
 
     const deleteButton = wrapper.findAll('button').find((button) => button.text() === '删除')
     await deleteButton?.trigger('click')
@@ -153,6 +193,44 @@ describe('世界书页面（H4）', () => {
 
     expect(calls.some((call) => call.startsWith('DELETE '))).toBe(true)
     expect(router.currentRoute.value.name).toBe('world-books')
+  })
+})
+
+describe('世界书条目表（P1 触发语义可见性）', () => {
+  it('渲染概率/包含组/定时效果/位置与递归元信息', () => {
+    const wrapper = mount(WorldBookEntryTable, { props: { entries: [ENTRY] } })
+    const text = wrapper.text()
+    for (const expected of [
+      '概率 60%',
+      '组「signal」',
+      '粘性 2 回合',
+      '冷却 1 回合',
+      '延迟 3 回合',
+      '按深度插入',
+      'depth 4',
+      '扫描深度 2',
+      '区分大小写',
+      '整词匹配',
+      '不参与递归',
+      '阻止向下递归',
+    ]) {
+      expect(text, `应展示 ${expected}`).toContain(expected)
+    }
+  })
+
+  it('默认值条目不渲染定时/概率/组标签，position 非 @D 不显示 depth', () => {
+    const wrapper = mount(WorldBookEntryTable, {
+      props: { entries: [DEFAULT_ENTRY] },
+    })
+    const text = wrapper.text()
+    expect(text).toContain('角色设定前')
+    expect(text).not.toContain('概率')
+    expect(text).not.toContain('组「')
+    expect(text).not.toContain('粘性')
+    expect(text).not.toContain('冷却')
+    expect(text).not.toContain('延迟')
+    expect(text).not.toContain('depth')
+    expect(text).not.toContain('扫描深度')
   })
 })
 

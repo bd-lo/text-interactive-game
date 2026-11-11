@@ -360,6 +360,45 @@ def _domain_entry(entry: StoredWorldBookEntry) -> WorldBookEntry:
     )
 
 
+def _entry_detail(entry: StoredWorldBookEntry) -> dict[str, Any]:
+    """仓储行 → 详情响应条目（固定列 + ``raw_json`` 恢复的触发语义字段）。
+
+    详情/预览要能看到玩家导入的完整触发语义（P1 D-WB-3 可见性缺口）：``probability``/
+    ``use_probability``/``group``/``group_weight``/``group_override``/``group_scoring``/
+    ``scan_depth`` 以及定时效果 ``sticky``/``cooldown``/``delay`` 只存在于 ``raw_json``，
+    这里用 ``parse_entry_extras`` 还原后随响应返回（只读展示，不参与触发决策；触发仍走
+    ``_domain_entry`` 的同一解析结果，两者保证一致）。
+    """
+    extras = parse_entry_extras(entry.raw or {})
+    return {
+        "entry_uid": entry.entry_uid,
+        "keys": list(entry.keys),
+        "secondary_keys": list(entry.secondary_keys),
+        "content": entry.content,
+        "enabled": entry.enabled,
+        "constant": entry.constant,
+        "order": entry.order,
+        "position": entry.position,
+        "depth": entry.depth,
+        "selective": entry.selective,
+        "selective_logic": entry.selective_logic,
+        "case_sensitive": entry.case_sensitive,
+        "match_whole_words": entry.match_whole_words,
+        "exclude_recursion": entry.exclude_recursion,
+        "prevent_recursion": entry.prevent_recursion,
+        "probability": extras.probability,
+        "use_probability": extras.use_probability,
+        "group": extras.group,
+        "group_weight": extras.group_weight,
+        "group_override": extras.group_override,
+        "group_scoring": extras.group_scoring,
+        "scan_depth": extras.scan_depth,
+        "sticky": extras.sticky,
+        "cooldown": extras.cooldown,
+        "delay": extras.delay,
+    }
+
+
 def _normalized_entry_payloads(book: WorldBook) -> list[tuple[WorldBookEntry, dict[str, Any]]]:
     """规范化条目 + 尽力找回的原始 JSON 配对（用于落库）。"""
     return [(entry, _raw_entry_best_effort(book.raw, entry)) for entry in book.entries]
@@ -457,22 +496,7 @@ class WorldBookService:
                 "entry_count": stored.entry_count,
                 "updated_at": stored.updated_at,
             },
-            "entries": [
-                {
-                    "entry_uid": entry.entry_uid,
-                    "keys": list(entry.keys),
-                    "secondary_keys": list(entry.secondary_keys),
-                    "content": entry.content,
-                    "enabled": entry.enabled,
-                    "constant": entry.constant,
-                    "order": entry.order,
-                    "position": entry.position,
-                    "depth": entry.depth,
-                    "selective": entry.selective,
-                    "selective_logic": entry.selective_logic,
-                }
-                for entry in entries
-            ],
+            "entries": [_entry_detail(entry) for entry in entries],
         }
 
     # ------------------------------------------------------------------

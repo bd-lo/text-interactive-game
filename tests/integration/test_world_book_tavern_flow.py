@@ -239,6 +239,44 @@ def test_stored_book_restores_p0_and_p1_fields_from_raw_json(
     assert (entry.sticky, entry.cooldown, entry.delay) == (2, 1, 3)
 
 
+def test_detail_exposes_p1_trigger_fields_from_raw_json(
+    service: WorldBookService,
+) -> None:
+    """详情 API 的 entry 也带 P1 触发语义字段（D-WB-3 可见性缺口）。"""
+    payload = {
+        "entries": {
+            "0": {
+                "uid": 0,
+                "key": ["灯"],
+                "content": "灯。",
+                "probability": 40,
+                "useProbability": True,
+                "scanDepth": 2,
+                "group": "signal",
+                "groupWeight": "2.5",
+                "groupOverride": True,
+                "useGroupScoring": True,
+                "sticky": 2,
+                "cooldown": 1,
+                "delay": 3,
+            }
+        }
+    }
+    imported = _import(service, payload, key="wb-tavern-detail-fields")
+
+    detail = service.get_detail(str(imported["world_book_id"]))
+    entry = detail["entries"][0]
+
+    assert entry["probability"] == 40
+    assert entry["use_probability"] is True
+    assert entry["scan_depth"] == 2
+    assert entry["group"] == "signal"
+    assert entry["group_weight"] == 2.5
+    assert entry["group_override"] is True
+    assert entry["group_scoring"] is True
+    assert (entry["sticky"], entry["cooldown"], entry["delay"]) == (2, 1, 3)
+
+
 def test_restored_timed_fields_drive_activation(service: WorldBookService) -> None:
     """落库→读回后的 sticky 字段参与激活：触发后 2 回合内无关键词仍激活。"""
     payload = {
