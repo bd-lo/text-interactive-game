@@ -284,7 +284,7 @@ v1 不承诺「缺材料聚焦建议」的自适应（列入 P1）。
 | P1 体验 | ✅ 已交付 | `/scenarios` 列表/导入（拖放+校验预览）/详情；Home「场景」下拉；对局页场景徽章（URL query 带 `scenario_id`，`/view` 不加字段）；e2e 增 3 步（25/25 步、119/119 断言） |
 | P2 世界书联动 | ⏳ 部分 | 建局 `scenario_id + world_book_id` 已允许组合；世界书字段语义升级（timed effects/regex keys/inclusion group 等）见 `docs/design/world-book-format-compat.md` 回写（同批） |
 | P3 LLM 运行期凭据 | ✅ 已交付 | `.env` 开发 key 优先 → 本机 `data/llm.credentials.json` → 离线；`GET/PUT/DELETE /api/v1/settings/llm` + `POST /test`；`/settings` 页 + Home 未配置横幅；保存后当回合生效（`RuntimeLLMClient` 热切换） |
-| P4 技术债/文档 | ⏳ 进行中 | 条件 DSL 扩展（flags/quests）未做；本文件与 PROGRESS/CHANGELOG/README/ADR 已回写 |
+| P4 技术债/文档 | ✅ 本批收口（2026-11-12） | 条件 DSL v2（flags/目标进度/物品/NPC/时间）见 §6.1；场景分享（单文件导出/导入）见 §6.2；本文件 §6 已回填 |
 
 ### 实施偏离登记（相对本文 §2/§3）
 
@@ -299,3 +299,46 @@ v1 不承诺「缺材料聚焦建议」的自适应（列入 P1）。
 6. **进入伤害的 hint** 写入 `ENVIRONMENT_DAMAGE` 事件 `result.hint`（当前模板叙事不消费，回放可审计）。
 7. **slug 不唯一**：每次导入生成新的 `scn_` ID（同一 JSON 可重复导入为不同存档场景），
    派生实体 ID 含 `scenario_id` 因此互不冲突。
+
+---
+
+## 6. 回填：v2 条件 DSL 与场景分享（2026-11-12，N1 029–030 / 032）
+
+### 6.1 v2 条件 DSL（029 设计 + 030 实现，ADR D-N1-1）
+
+- 权威契约：`docs/design/scenario-dsl-v2.md`；本文件 §2/§3 的 v1 规则不变（**逐字兼容**）。
+- `schema_version=2` 加法：白名单谓词 `flag` / `objective_done` / `has_item_tag_count` /
+  `item_in_room` / `npc_in_room` / `turn_gte` / `turn_lte` / `world_time_gte` / `world_time_lte`
+  + 顶层 `flags[]` 派生命题；仍纯数据 + 白名单求值（无 eval/脚本/表达式），未知谓词/未知引用/
+  依赖环 = 结构化错误（JSON 路径）。
+- 多结局选择语义冻结：`priority` 降序 → 声明顺序 → 首个满足；兜底「目标全完成」优先于
+  「HP≤0」；结局是**读时视图**（不写事件/状态，`state_hash` 不漂移），`status=ended` 后拒绝
+  新回合；玩家「选择」只由既有动作造成的状态差异表达（不新增选择动作/菜单）。
+- v1 兼容：v1 文件语义/字段/校验零变化；v1 声明里出现 v2 字段/谓词 → 结构化错误（不静默升级；
+  旧 v1 读取器读 v2 文件按 `schema_version` 上限明确拒绝）。
+- 示例与证据：`examples/scenarios/lantern-vigil.json`（v2 可玩示例）；进度
+  `docs/progress/029/030-2026-11-12-scenario-dsl-v2-*.md`；本文件 §5 P4 行已更新。
+
+### 6.2 场景分享 = 单文件导出/导入（032 后端）
+
+- 契约新增（v1 五个端点不变，合计 6 端点）：`GET /api/v1/scenarios/{scenario_id}/export` →
+  `application/json` 附件（`Content-Disposition: attachment; filename="<slug>.json"`；slug 受
+  `^[a-z0-9-]{2,32}$` 约束，天然 ASCII 安全）；响应体 = 入库定义原文重新序列化，**保留
+  `schema_version` / 标题 / 作者 / 房间 / flags 等全部字段**，不含 summary/时间戳/服务器路径/
+  凭据等库内字段；同一文件可直接作为 `POST /api/v1/scenarios` 的 body 再导入
+  （分享 = 文件交换，不托管用户内容）。
+- 护栏：只读 GET、**零写入**、无 `Idempotency-Key`；未知/已软删/库内定义损坏 → 404；
+  体积与导入同口径 ≤256KB（超限 422）；导入侧 256KB/白名单/幂等校验完全不变。
+- 示例：`examples/scenarios/moonlit-market.json`（v2 分享示例）+ `examples/scenarios/README.md`
+  （作者/标题/进入方式/分享步骤说明）；`lantern-vigil.json` 同批复用。
+- 测试：导出→再导入 roundtrip（v1 + v2×2 逐字段断言、导出体再次 validate 通过）、确定性/
+  零写入/404/不泄漏库内字段（`tests/integration/test_scenario_api.py`；服务层
+  `tests/unit/test_scenario_service.py`）。
+- **未完成（归后续前端批次）**：网页场景详情的「导出/下载」按钮、导入页的分享入口与 e2e 步骤；
+  本批 `web/src` 未改（后端先行，契约已稳定可直接接）。
+
+### 6.3 后续
+
+- 031 场景编辑器（N1）：只产出 JSON + 实时 `/scenarios/validate`；flags/`schema_version` 表单；
+  详情「导出」按钮可复用 032 端点。
+- 035–036 示例内容包：在本目录 4 个示例基础上扩充（v2 优先）。

@@ -68,6 +68,10 @@
 | 2026-11-11 | **流式叙事阶段 1 设计与边界（D-N2-1..N2-8）**：独立 NDJSON 端点、增量提取 narrative 字段、客户端流式治理、提交时机、前端降级、开关与回滚 | 已定案（设计） | N2 037（设计）→ 038 后端 / 039 前端 / 040 验收 | [2026-11-11-streaming-phase1.md](2026-11-11-streaming-phase1.md) |
 | 2026-11-11 | **玩家启动器与退出体验（D-LA-1..N6）**：双击启动器、控制面三端点（status/heartbeat/shutdown）、游戏内退出/空闲自动退出/兜底脚本、回环安全、默认零变化、版本 0.3.0 | 已定案 | N5 057（发布体验轨；058 便携包评估未排期） | [2026-11-11-player-launcher-and-exit.md](2026-11-11-player-launcher-and-exit.md) |
 | 2026-11-11 | **前端视觉双皮肤 Aurora Glass（D-UI-3）**：日间默认 / 夜间 / 跟随系统；旧「2G 深绿终端」皮肤退役；自建 token 化玻璃拟态，零 UI 组件库 | 已定案 | 范围外玩家体验批次 R4（视觉基线）+ R5 发布口径 | [2026-11-11-aurora-glass-theme.md](2026-11-11-aurora-glass-theme.md) |
+| 2026-11-12 | **场景 DSL v2 设计与实现边界（D-N1-1）**：schema_version=2、9 个白名单原子谓词 + `all/any/not`、flag 为派生命题（依赖图环检测/无持久化变量）、多结局 priority 确定性、v1 逐字兼容、无 eval/脚本；历史类条件明确归 033–034（D-N6 需用户拍板） | 已定案（设计+实现） | N1 029 设计 / 030 实现（兼容矩阵见 `docs/design/scenario-dsl-v2.md`） | [2026-11-12-scenario-dsl-v2.md](2026-11-12-scenario-dsl-v2.md) |
+| 2026-11-12 | **m3 叙事受控重基线（D-N4-1）**：受控重基线定义/审批/双跑对比/证据格式/回滚；本轮只交付工具与流程（`scripts/rebaseline_golden.py` dry-run 0-diff + 临时副本受控 apply 演练），不改变任何 golden/叙事文本；真实触发点=m3 建模重构批次 | 已定案（流程就绪） | N4 054 | [2026-11-12-m3-narrative-rebaseline.md](2026-11-12-m3-narrative-rebaseline.md) |
+| 2026-11-12 | **Playwright/a11y 工具口径复评（D-N4-2；D-M6-11 复审）**：结论继续以零依赖 CDP（`scripts/e2e-web.mjs`）为唯一 e2e 工具与 CI 口径，不引入 Playwright、不建长期 CI 浏览器矩阵；含三选项成本/回滚/复评触发条件 | 已定案 | N4 055 | [2026-11-12-playwright-a11y-eval.md](2026-11-12-playwright-a11y-eval.md) |
+| 2026-11-12 | **便携包 / PyInstaller / 安装包评估（D-N5-1）**：本轮不实现、不新增构建依赖/CI 打包 job/exe；维持「仓库/zip + uv + 启动器 + wheel」分发；保留方案对比与复评触发条件 | 已定案（评估：不实现） | N5 058 | [2026-11-12-portable-package-eval.md](2026-11-12-portable-package-eval.md) |
 
 ## 7. 记录模板
 

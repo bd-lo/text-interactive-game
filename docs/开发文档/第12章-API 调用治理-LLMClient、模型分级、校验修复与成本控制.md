@@ -195,3 +195,25 @@ class LLMClient:                                   # D-M5-1：M5 权威签名为
 - **降级与安全边界全部成立**：解析失败→关键词兜底、叙事失败→模板、NPC 失败→确定性计划、自由制造关闭→fail-closed；越权/提示注入/超纲/重复操作一律零事件零写入；自由制造数值由框架 `calculate_craft_result` 重算（实测模型草案合法但骰失败 → `success=false`，叙事如实说失败）。
 - **离线保证**：显式关闭时 58 次客户端尝试全部 0–1ms `LLM_UNAVAILABLE`、零外部网络；15 条离线探针 0 崩溃；同 seed 两局屏文本/事件/view 逐字一致。
 - **已知偏差（详见 R5 §4 遗留）**：m3 真实 LLM 下每回合 4 次调用（1 解析 + 2 NPC + 1 叙事），超出 §12.8 的「默认 2 次、最多 3 次」设计预算 → M6 更新预算口径或限制 NPC 并发；Windows 上凭据文件 `chmod 0o600` 无效（实测 0o666，依赖 `data/` 目录 ACL）；零事件只读回合 `narrative_source=null` 但文本实际来自 LLM（L3 设计口径，前端显示「来源未知」）；`0.6` 置信阈值与「参数名≠实体 ID」是自由度/玩法瓶颈（见 R5 §4）。
+
+### 12.12 流式补全扩展（N2-038/040，2026-11-12 落地）
+
+- **契约（只增不改）**：新增**可选** Protocol `StreamingLLMClient.complete_json_stream(req, on_delta) -> Result`，
+  **不并入** `LLMClient`——`DisabledLLMClient`/测试 Fake 不实现也不破坏既有契约，调用方用 `supports_streaming()`
+  探测。`on_delta` 语义 = **供应商原始 JSON 文本片段**（`narrative` 增量提取在叙事 Agent，见第 8 章 §8.6）；
+  成功 `Result` 仍返回 `{content, repaired, usage}`，最终校验/修复链与非流式完全一致。
+- **治理**：RPM 只按次前置；**首 chunk 前**允许 tenacity 重试/供应商回退，**首 chunk 后不重试、不换供应商**
+  （已显示文本不可回退）；整链 deadline + chunk 间空闲超时；usage 取末 chunk（`stream_options.include_usage`）；
+  缓存/幂等命中一次下发；失败/回调异常不得影响回合提交（D-N2-4/D-N2-5）。
+- **记录**：`LLMCallRecord.streamed: bool = False`（只增字段；流式成功/失败/缓存命中均 `True`，旧非流式记录与
+  断言不变；字段定义见 §12.2）。生产组合根用 `RuntimeLLMClient` 热切换委托；内部客户端不支持流式时退回
+  `complete_json` 并一次下发，调用方不感知差别。
+- **端点/开关（前端见第 23 章）**：`POST /api/v1/turns/stream` NDJSON 5 事件（`start`/`delta`/`replace`/`done`/
+  `error`，`done.result` 与 `/turns` 的 `TurnResult` 同一 DTO）；业务失败只发 `error`（HTTP 200、零写入），
+  协议错误在流开始前 4xx；`TEXTGAME_STREAM_ENABLED=false` → 404 统一信封（一键回滚），旧 `/turns`/事件/golden 不变；
+  前端禁用 `EventSource`（`fetch` + `ReadableStream`）。
+- **证据（N2-040 验收）**：离线生产装配单 delta + `done.result` 与 `/turns` 等价、开关 404 回滚可逆、断连不撤销
+  （含 gate 因果证明）共 5 例验收测试；真实 DeepSeek 探针首 delta **1.79–2.09s**、总 **2.53–2.99s**、
+  `narrative_source=llm`、增量拼接与最终文本一致、`LLMCallRecord.streamed=true`；真实浏览器 e2e 29/29 步、
+  157/157 断言。详见 [ADR D-N2-1..N2-8](../decisions/2026-11-11-streaming-phase1.md)、
+  `docs/design/narrative-streaming.md` §9 与 [040 进度文档](../progress/040-2026-11-12-streaming-acceptance.md)。

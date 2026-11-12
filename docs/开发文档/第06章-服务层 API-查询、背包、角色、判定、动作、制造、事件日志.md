@@ -439,6 +439,23 @@ Content-Type: application/json
 
 **前端只经 API 写入**：前端不得连接数据库、不得持有 `GameState`/`EventLog` 引用，也不得在本地“预提交”任何状态；游戏世界的写操作只能经 `POST /turns`/`POST /games` 进入 Resolver → `GameEngine`，人物卡库写操作只能经上述 API 由 `CharacterCardService` 校验后落库；读接口（列表/详情/回放/schema）只返回数据，供前端展示。
 
+### 6.8 存档导出/导入（N3-048，2026-11-12；设计详见 `docs/design/save-export-import.md`）
+
+玩家把一局游戏导出为**单个 JSON 文件**、导入本机库后从同一进度继续玩；只读安全、非法/篡改拒绝、回放哈希一致。导出包是数据文件，不新增数据库表/迁移、不新增 `EventType`、不改 `GameState` 字段与 `/turns` 契约。
+
+| 方法 | 路径 | 服务方法 | 成功 | 主要错误 |
+| --- | --- | --- | --- | --- |
+| GET | `/games/{game_id}/export` | `SaveService.export_save`（只读：不写事件/快照/幂等表） | 200 存档包 JSON | `NOT_FOUND`（未知/已删除 404）；`OUT_OF_RANGE`（包 >8MB 或事件 >20000 → 422） |
+| POST | `/saves/import` | `SaveService.import_save`（校验后经唯一写入者重放为新存档；必带 `Idempotency-Key`） | 201 `{game_id, turn, version, snapshot_version}` | `SCHEMA_VIOLATION`（结构/checksum/回放不一致 422，带 `violations`）；`INVALID_INPUT`（版本不支持/事件数 422、包体 413、缺/短幂等键 422）；`CONFLICT`（同键异包 409）；`INTERNAL`（写库基础设施异常 500） |
+
+**导出包（`export_version="1"`，字段白名单 `extra="forbid"`）**：`{export_version, exported_at, game{game_id, turn, version, snapshot_version, save_seed, scenario, created_at, event_count}, events[{id, seq, turn_id, actor_id, method, event_type, params, result, rng_seed, ts}], snapshot{state_hash, version, last_event_seq, turn, snapshot_version}, checksum}`。`snapshot.state_hash` 取**当前提交状态**（`sha256(canonical_json(GameState))`，第 14 章 14.4 口径）；`checksum = sha256(canonical_json(包去掉 checksum))`，只做完整性校验、不是签名。导出端只读事件表/当前状态/最新快照，不读 `Settings`/凭据/日志，故包内无 API Key。
+
+**导入校验（全部在写库之前，失败零写入）**：① checksum 比对（不一致 422，`loc=["checksum"]`）；② 上限（规范化 JSON ≤8 MiB、事件 ≤20000；HTTP 层对该路径单独放行 8MB+64KB，其余端点仍 1MB）；③ 结构白名单解析；④ `export_version` 必须为 `"1"`（不猜未来格式）；⑤ 事件经领域 `Event` 模型重校验（未知 `EventType` 拒绝）；⑥ `EventLog(save_seed)` 盖章校验 `seq`/`id`/`rng_seed`（`derive_seed(save_seed, turn_id, actor_id, method, seq)`）+ `apply_events(None, events)` 全量回放；⑦ 重放 `state_hash`、`turn`、`version`（= distinct `turn_id` 数）、`last_event_seq`、`event_count`、`save_seed`、快照版本逐一与包内声明比对 + 回合号从 1 连续/同回合相邻；⑧ 幂等：存储键 `save:import:<key>`，同键同包回放首次 201、同键异包 409，非法包不写幂等表。
+
+**写入路径（唯一写入者）**：校验通过后 `GameEngine.create_game(save_seed, scenario="custom", initial_state=首事件.result.initial_state)` 重建新 `game_created`，再按回合把后续事件转草稿逐次 `GameEngine.submit(expected_version)` 重放；`seq`/`rng_seed` 由同一 `save_seed` 派生故与导出端一致（`ts` 为导入时刻，不参与状态哈希），版本链/快照节奏与导出端相同，导入存档 `state_hash` 与包内声明一致，可 `/view`、`/replay` 并继续 `POST /turns`。导入总是新 `game_id`，不改源存档。
+
+**已知限制**：checksum 非数字签名（重签后仅改叙事展示文本的篡改检测不到，本地文件交换场景接受）；绑定元数据（`card_id`/`scenario_id`/`world_book_id`）不随包迁移，世界书条目注入不保留（状态本身完整；后续如需保留在包内加可选 `bindings` 并做存在性校验）；网页/CLI 入口由后续批次接入。
+
 ### 本章结论
 
 1. 服务层七个模块定稿：`QueryService`、`InventoryService`、`CharacterService`、`RuleService`、`ActionService`、`CraftService`、`EventService`，分别落 `services/query_service.py`、`inventory_service.py`、`character_service.py`、`rule_service.py`、`action_service.py`、`craft_service.py`、`event_service.py`（第 16 章目录权威命名）；`RuleEngine`（`domain/rules/`）与 `EventLog`（`domain/events.py`）保留第 4 章核心组件名，服务层只做门面。

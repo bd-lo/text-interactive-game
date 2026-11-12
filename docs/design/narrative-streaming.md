@@ -1,9 +1,9 @@
 # 流式叙事阶段 1 设计与评估（Narrative Streaming, Phase 1）
 
 > 归属：N2 体验轨 **037 streaming-phase1-design**（对应 [D-N2-1..N2-8](../decisions/2026-11-11-streaming-phase1.md)）；
-> 路线图 [D-N4](../decisions/2026-11-11-post-m6-roadmap.md)；风险 R-T8 / 开放项 Q7-B。
-> 状态：**设计与可行性评估完成（2026-11-11）**；实现排入 038（后端）/039（前端）/040（验收）。
-> 本批**不改运行时代码**，既有 `POST /api/v1/turns` 与默认离线路径逐字不变。
+> 路线图 [D-N4](../decisions/2026-11-11-post-m6-roadmap.md)；风险 **R-T15（旧口径 R-T8，2026-11-12 关闭）** / 开放项 Q7-B（2026-11-12 关闭）。
+> 状态：**设计/评估完成（037，2026-11-11）；后端 038 + 前端 039 + 验收 040 均已交付（2026-11-12，见 §9）**。
+> 运行时边界：旧 `POST /api/v1/turns`、`TurnResult`/事件/`GameState` 与默认离线路径逐字不变（038 只做加法：新端点 + 可选流式方法）。
 
 ## 0. TL;DR
 
@@ -190,6 +190,108 @@
 | --- | --- |
 | 第 12 章 §12.2/§12.6/§12.7/§12.8 | `complete_json_stream` 契约、增量提取、重试/超时/计量口径 |
 | 第 23 章 §23.3/§23.4 | NDJSON 客户端、流式渲染与降级、无 EventSource |
-| 第 17 章 §17.9.2 N2 | 037 状态更新（本设计完成）、038–040 待启动 |
-| README / FAQ | 「流式叙事」说明与开关（实现后） |
-| 第 20 章 R-T8 | 流式阶段 1 落地后状态更新（实现后） |
+| 第 17 章 §17.9.2 N2 | 037–042 状态更新（2026-11-12：037–042 已交付，§17.9.6 有交付状态表） |
+| README / FAQ | 「流式叙事」说明与开关（039/040 已交付；README 回写归 Lead 统一批次） |
+| 第 20 章 R-T15（旧口径 R-T8） | **已更新（2026-11-12，040 验收后关闭）**；见 §20.4 |
+
+## 9. 实施结果（038 流式叙事后端，2026-11-12）
+
+> 本切片已实现并自验：独立 NDJSON 端点、JSON 叙事增量提取、客户端流式治理、`on_delta` 注入与
+> 断连不撤销测试。设计边界（D-N2-1..N2-8）未放宽；**旧 `/turns`、`TurnResult`、事件、`GameState`、
+> 默认离线路径零改动**。下表登记实现口径与设计文本的差异（实现细节以代码 docstring 为准）。
+
+### 9.1 交付清单
+
+| 文件 | 内容 |
+| --- | --- |
+| `src/textgame/llm/streaming.py`（新增） | 纯函数 `extract_narrative_prefix(buffer)` + 有状态 `NarrativeDeltaExtractor`：JSON 转义/`\uXXXX`/UTF-16 代理对/跨 chunk 不完整转义/`150+64` 提取上限/非字符串值/结束 flush；增量拼接与最终文本 `exact match` |
+| `src/textgame/llm/client.py` | 可选 `StreamingLLMClient` Protocol + `DeltaCallback` + `supports_streaming()`（不并入 `LLMClient`，`DisabledLLMClient`/Fake 无需实现） |
+| `src/textgame/llm/providers.py` | `chat_completion_stream()`（`stream=True` + `stream_options.include_usage` + `num_retries=0`，仍是全仓唯一 SDK import 点） |
+| `src/textgame/llm/litellm_client.py` | `complete_json_stream(req, on_delta)`：RPM 只按次前置、首 chunk 前 tenacity 重试/回退、**首 chunk 后不重试不换供应商**、整链 deadline + chunk 间空闲超时、末 chunk usage、缓存/幂等命中一次下发、`streamed=True` 记录 |
+| `src/textgame/llm/records.py` | `LLMCallRecord.streamed: bool = False`（只增字段，旧记录/断言不变） |
+| `src/textgame/llm/runtime.py` | `RuntimeLLMClient.complete_json_stream` 热切换委托；内部客户端不支持流式时退回 `complete_json` 并一次下发 |
+| `src/textgame/llm/validation.py` | 公开 `build_repair_request`（流式完整 JSON 不合格后复用原一次修复链） |
+| `src/textgame/agents/narrator_agent.py` | `render_with_meta_stream`：chunk → 增量提取器 → 只把 narrative 前缀交给 `on_delta`；完整 JSON 到达后走原校验/一次修复；失败回退模板 |
+| `src/textgame/orchestration/turn_orchestrator.py` | `run(request, on_delta=None)` 及内部链路透传；叙事器实现可选 `render_with_meta_stream` 时走流式，提交时机/唯一写入者/CAS/幂等不变 |
+| `src/textgame/config/settings.py`、`.env.example` | `TEXTGAME_STREAM_ENABLED`（默认 `true`；`false` 时端点 404 一键回滚） |
+| `src/textgame/api/schemas.py`、`api/routes/turns.py` | 5 个 NDJSON 事件模型 + `POST /api/v1/turns/stream`（sync generator + `queue.Queue` + 工作线程桥接；断连只停止消费、提交继续） |
+| `tests/unit/test_streaming_extractor.py` 等 3 个单测文件 + `tests/integration/test_turn_stream_api.py` | 新增 **70** 例（见 §9.4） |
+
+### 9.2 实测事件序列（示例，均来自集成测试输出）
+
+成功（LLM 叙事增量可用；`done.result` 即权威 `TurnResult`）：
+
+```text
+{"type":"start","turn_id":2,"expected_version":1}
+{"type":"delta","text":"你沿着北边的通道动身"}
+{"type":"delta","text":"，脚下的石板缝里积着陈年的灰"}
+{"type":"done","result":{"ok":true,"turn_id":2,"version":2,"text":"你沿着北边……","events":[…],"narrative_source":"llm"}}
+```
+
+校验失败/修复后文本变化（或首 chunk 后 LLM 失败回退模板）：
+
+```text
+{"type":"start","turn_id":2,"expected_version":1}
+{"type":"delta","text":"太短"}
+{"type":"replace","text":"……权威完整文本……","reason":"NARRATIVE_REVISED"}
+{"type":"done","result":{"ok":true,"turn_id":2,"version":2,"text":"……权威完整文本……","narrative_source":"llm"}}
+```
+
+业务失败（回合未提交，HTTP 仍 200；无 `done`）：
+
+```text
+{"type":"start","turn_id":2,"expected_version":0}
+{"type":"error","error_code":"CONFLICT","message":"你的对局版本已经过期，请刷新对局视图后重试。"}
+```
+
+模板叙事/幂等重放（无增量收益时服务端补一条完整 `delta`，不是 `replace`）：
+
+```text
+{"type":"start","turn_id":2,"expected_version":1}
+{"type":"delta","text":"你弯下腰，把火把从地上拾起来……"}
+{"type":"done","result":{"ok":true,…,"narrative_source":"template"}}
+```
+
+### 9.3 与设计的偏差（实现口径登记）
+
+| # | 设计文本 | 实际实现 | 理由/影响 |
+| --- | --- | --- | --- |
+| 1 | `complete_json_stream` 的 `on_delta` 语义未明确到层 | `on_delta` 交付**供应商原始 JSON 文本片段**；增量提取在 `LLMNarratorAgent`（`llm/streaming.py` 纯函数） | 客户端只做治理（限流/重试/计量/记录），不感知叙事 Schema；缓存/幂等命中下发完整 JSON 由提取器统一处理，前端永不接触原始 JSON |
+| 2 | `start.turn_id` = 回合开始 | 取 `expected_version + 1` 的**预告值**；只读回合不推进，权威值以 `done.result.turn_id` 为准 | 流开始于 CAS 前置校验之前（设计 §4.2 示例本身也含 start 后 error）；不额外读仓储/不改变唯一写入者 |
+| 3 | `replace.reason` 示例 `SCHEMA_VIOLATION` | 固定枚举 `TEMPLATE_FALLBACK`（回退模板）/ `NARRATIVE_REVISED`（修复/多角色拼接后文本变化） | 机器可读原因需覆盖「LLM 中途失败」等非 Schema 场景；前端只消费 `text` |
+| 4 | 流内失败口径 | 业务失败只发 `error`，**不发 `done`**（HTTP 200）；协议错误（缺 `Idempotency-Key`/body 非法）在流开始前 4xx 统一信封 | 与 D-N2-2/设计 §4.2 失败示例一致；`error` 已表达「回合未提交」 |
+| 5 | 开关默认 + 关闭行为（404 或 4xx 二选一） | 默认 `true`（端点常开）；`false` → **404** 统一失败信封 | 前端 039 按「端点不存在」降级普通 `/turns`；旧客户端不调用 = 死代码无副作用 |
+| 6 | chunk 间空闲超时 | 在 chunk 边界用注入时钟检测（`> config.timeout_s` 视为失败）；同步迭代器无法抢占阻塞中的读取，单次读取超时仍由 transport timeout 兜底 | 阶段 1 同步 generator + 线程桥接；取消/抢占留阶段 2 |
+| 7 | 「完整 JSON 到达后仍走原校验/修复链」 | 校验失败后的一次修复请求走**非流式** `complete_json`（复用 `build_repair_request`）；修复成功→`replace` 权威文本 | 修复是第二次供应商调用，无需再流式；避免已显示增量与修复文本混排 |
+| 8 | 模板叙事单 chunk 回退 | 无已显示增量时发单条完整 `delta`（不标 `replace`）；仅当已有部分增量后回退模板才 `replace` | 与 D-N2-5「幂等重放返回完整结果（单段 delta + done）」一致 |
+| 9 | 多角色叙事 | m3 下 LLM 屏文本 + NPC 确定性短句拼接后若与已显示增量不同，发 `replace`（`NARRATIVE_REVISED`）；`done.result.text` 权威 | 不改变 `_compose_text` 既有长度收敛/提交口径；m2/m4 不受影响 |
+| 10 | 「记录 `streamed=True`」（字段只增） | `LLMCallRecord.streamed` 默认 `False`；流式成功/失败/缓存命中均 True | 旧非流式记录/断言不变 |
+| 11 | 未覆盖「CAS 重试时叙事器被再次调用」 | 多角色链路 CAS 冲突重试会重新渲染叙事 → 已有增量可能与最终文本不同，服务端以 `replace`（`NARRATIVE_REVISED`）兜底 | 罕见并发路径；提交语义（重试只重渲染/不写半截事件）不变；阶段 1 不做增量去重 |
+
+### 9.4 测试与证据（038 自验）
+
+- 新增 **70** 例全通过：提取器 34（含参数化：转义/代理对/任意 chunk 大小/超长/非字符串）、
+  流式客户端治理 18（首 chunk 前重试/后不重试不换供应商/空闲超时/usage/缓存/幂等/RPM/回调异常）、
+  开关配置 4、NDJSON 端点集成 14（事件顺序、`done.result` 与 `/turns` 等价、模板单段、`error`、
+  幂等重放、同键异参、`replace`、转义跨 chunk exact match、开关 404、**生成器 close 断连后仍提交**）。
+- 相关回归：`tests/unit/test_llm*` **103 passed**；回合/接线相关集成 **52 passed**；
+  更广定向批次 **198 passed**；`tests/replay` **69 passed**（无 golden 改动）；
+  `python -m textgame.demo --check` **7/7**、`python -m textgame.console --check` **4/4** 自检通过
+  （默认离线路径逐字行为未变）。
+- 质量门：`ruff format --check` / `ruff check` 变更文件通过；`mypy src/textgame` Success（117 files）；
+  `lint-imports` 2 contracts KEPT。全量 pytest 由 Lead 在合并前统一跑。
+
+### 9.5 状态与下一步（2026-11-12 更新）
+
+**状态：038/039/040 均已交付，阶段 1 闭环**（039 前端 `web/src/api/client.ts::streamTurn`；040 验收见下）。
+
+1. **039 前端（已交付）**：`streamTurn`（`fetch`+`ReadableStream`、逐事件运行时校验、幂等键/`AbortSignal`/超时、
+   `replace` 覆盖、失败降级 `/turns` 一次、可取消）；进度文档
+   [039](../progress/039-2026-11-12-streaming-frontend.md)；
+2. **040 验收（已交付）**：离线双路径（生产组合根 `TEXTGAME_LLM_ENABLED=false` 单 delta 与 `/turns` 等价、
+   `TEXTGAME_STREAM_ENABLED=false` 404 回滚、断连不撤销）+ 真实 DeepSeek 探针：**首 delta 1.79–2.09s、
+   总 2.53–2.99s、`narrative_source=llm`、增量拼接 == 最终文本、`LLMCallRecord.streamed=true`**；真实浏览器
+   e2e **29/29 步、157/157 断言**。进度文档 [040](../progress/040-2026-11-12-streaming-acceptance.md)；风险
+   R-T15（旧口径 R-T8）已在第 20 章 §20.4 关闭；
+3. 修复链仍为第二次非流式调用：真实 LLM 下「流式首轮不合格 + 修复」的成本口径由 040 手跑记录（本次未触发修复场景）；
+4. 阶段 2（未排期）：取消/断线重连恢复、异步化、SSE vs NDJSON 复评（见 ADR §6）。
