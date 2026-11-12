@@ -421,3 +421,66 @@ def test_create_game_rejects_initial_state_seed_mismatch() -> None:
     assert result.error_code is ErrorCode.SCHEMA_VIOLATION
     assert repo.load(_GAME_ID) is None
     assert repo.read_events(_GAME_ID) == []
+
+
+# ---------------------------------------------------------------------------
+# R-21：_verified_games 有界 LRU（逐出后重新全量校验，正确性不受影响）
+# ---------------------------------------------------------------------------
+class _CountingRepo(InMemoryRepository):
+    """统计全量 ``read_events`` 次数的仓储（引擎完整性校验路径的可观测点）。"""
+
+    def __init__(self) -> None:
+        """初始化底层仓储与计数器。"""
+        super().__init__()
+        self.full_reads = 0
+
+    def read_events(self, game_id: str, *, after_seq: int = 0) -> list[Event]:
+        """记录一次全量事件读取（引擎只在未命中 LRU 时调用）。"""
+        self.full_reads += 1
+        return super().read_events(game_id, after_seq=after_seq)
+
+
+def test_verified_games_cache_is_bounded_lru_and_reverifies_evicted() -> None:
+    """R-21：已校验存档 LRU 上限生效；被逐出的存档下次提交重新全量校验且仍成功。"""
+    repo = _CountingRepo()
+    engine = GameEngine(repo, max_verified_games=2)
+    game_ids = ["game_lru_a", "game_lru_b", "game_lru_c"]
+    for game_id in game_ids:
+        assert engine.create_game(save_seed=_SAVE_SEED, game_id=game_id).ok
+
+    # 建局即记录；上限 2 → 最久未用的 A 已被逐出。
+    assert list(engine._verified_games) == ["game_lru_b", "game_lru_c"]
+    assert len(engine._verified_games) == 2
+    assert repo.full_reads == 0
+
+    # A 已不在缓存：首次提交重新全量 replay 校验（1 次），之后命中缓存不再读全量。
+    assert engine.submit(game_id="game_lru_a", expected_version=1, drafts=[_move_draft()]).ok
+    assert repo.full_reads == 1
+    assert list(engine._verified_games) == ["game_lru_c", "game_lru_a"]
+
+    assert engine.submit(
+        game_id="game_lru_a", expected_version=2, drafts=[_talk_draft(turn_id=3)]
+    ).ok
+    assert repo.full_reads == 1  # 未再逐出 → 不重复校验
+    record = repo.load("game_lru_a")
+    assert record is not None and record.version == 3
+
+    # 再建两局把 A 逐出（LRU 顺序 [C, A] → [A, D] → [D, E]），第三次提交 A 再次全量校验
+    # （内容仍一致 → 成功）。
+    assert engine.create_game(save_seed=_SAVE_SEED, game_id="game_lru_d").ok
+    assert "game_lru_a" in engine._verified_games
+    assert engine.create_game(save_seed=_SAVE_SEED, game_id="game_lru_e").ok
+    assert "game_lru_a" not in engine._verified_games
+    assert engine.submit(
+        game_id="game_lru_a", expected_version=3, drafts=[_move_draft(turn_id=4)]
+    ).ok
+    assert repo.full_reads == 2
+    assert len(engine._verified_games) == 2
+
+
+def test_engine_rejects_non_positive_max_verified_games() -> None:
+    """R-21：LRU 上限为 0/负数属于装配错误。"""
+    repo = InMemoryRepository()
+
+    with pytest.raises(ValueError):
+        GameEngine(repo, max_verified_games=0)

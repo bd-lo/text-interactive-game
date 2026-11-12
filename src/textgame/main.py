@@ -13,6 +13,12 @@ M3 采用第 3 章 §3.6 方案 A（离线确定性）：解析/叙事/角色 Ag
 key 时降级离线并如实报告；``llm/factory.py`` 的「启用缺 key fail-fast」仅保留为历史/测试
 路径）。无 key 或 LLM 失败时各 Agent 回退确定性路径，保证默认装配零联网、可复现
 (第 12 章 12.1、D-M5-6、D-LLM-1；2026-11-12 真实运行期实测口径见第 12 章备注)。
+
+R-19（2026-11）：自由制造草稿由编排层在进入 ``Resolver`` 之前经 pre-queue 生成一次
+（``TurnOrchestrator`` → 工具门 → ``CraftService.prepare_free_craft``）；``Resolver``/
+CAS 重试只执行已生成草稿、不重调模型。``TEXTGAME_ALLOW_RESOLVER_LLM`` 保留为无头显式
+开启自由制造的历史兼容二次确认（原「Resolver 内调 LLM」技术风险已消除，M5 后评估是否
+简化该必填逻辑）。
 """
 
 import logging
@@ -67,7 +73,8 @@ def _build_app(launcher_controller: LauncherController | None = None) -> FastAPI
     """
     settings = get_settings()
     # 网页设置页持久化的自由制造偏好优先于 env（用户关掉后不会被 env 默认值重新打开）；
-    # 无偏好文件时继续沿用 env + R-19 fail-fast，保证无头部署的显式 opt-in 语义不变。
+    # 无偏好文件时沿用 env；无头显式开启仍要求二次确认 TEXTGAME_ALLOW_RESOLVER_LLM
+    # （R-19 迁移 pre-queue 后该确认仅保留历史兼容语义，不加严/不改变默认关闭）。
     free_craft_store = FreeCraftSettingsStore(settings.free_craft_settings_file)
     stored_free_craft = free_craft_store.load()
     if stored_free_craft is not None:
@@ -78,11 +85,15 @@ def _build_app(launcher_controller: LauncherController | None = None) -> FastAPI
             _LOGGER.warning("自由制造偏好缺少风险确认，按关闭处理：%s", free_craft_store.path)
     elif settings.free_craft_enabled:
         if not settings.allow_resolver_llm:
-            # R-19：自由制造会在 Resolver 内调 LLM（CAS 重试可能重复扣费），无头默认禁止。
+            # R-19：自由制造草稿由编排层 pre-queue 生成一次，Resolver/CAS 重试纯执行、
+            # 不重调模型（原「Resolver 内调 LLM、重试可能重复扣费」风险已消除）。
+            # TEXTGAME_ALLOW_RESOLVER_LLM 保留为无头显式开启的历史兼容二次确认；
+            # 默认仍 fail-closed，M5 后评估是否简化。
             raise RuntimeError(
-                "TEXTGAME_FREE_CRAFT_ENABLED=true 需要在 Resolver 内调用 LLM（已知 K4 风险）。"
-                "无头/生产请同时设置 TEXTGAME_ALLOW_RESOLVER_LLM=true 表示接受；"
-                "或者在网页设置页开启自由制造（前端二次确认等价于运行期 opt-in）。"
+                "TEXTGAME_FREE_CRAFT_ENABLED=true 需要显式二次确认"
+                "（TEXTGAME_ALLOW_RESOLVER_LLM=true）：该开关保留为无头开启自由制造的"
+                "历史兼容确认；R-19 已把草稿生成迁到进入 Resolver 前的 pre-queue，"
+                "裁决/CAS 重试不会重复调用模型。也可在网页设置页开启自由制造。"
             )
         free_craft_source = "env"
         free_craft_enabled = True

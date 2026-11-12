@@ -31,7 +31,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from textgame.domain.models import NPC, Character, GameState, Item, RngState, Room
 from textgame.domain.scenario import PLAYER_ID
@@ -144,12 +153,16 @@ class NpcStateCondition(BaseModel):
 
 
 class ItemTagCountCondition(BaseModel):
-    """``{"has_item_tag_count": {"tag": t, "at_least": n}}`` 的载荷（收集类目标）。"""
+    """``{"has_item_tag_count": {"tag": t, "at_least": n}}`` 的载荷（收集类目标）。
+
+    ``at_least`` 用 ``StrictInt``（QA P2-7）：v2 新增字段不接受 ``"2"`` 之类的 lax 强转，
+    避免「导入成功但语义被静默改写」；v1 字段语义保持冻结（不在此收紧）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     tag: str = Field(min_length=1, max_length=32)
-    at_least: int = Field(ge=1, le=64)
+    at_least: StrictInt = Field(ge=1, le=64)
 
 
 class ItemRoomCondition(BaseModel):
@@ -187,20 +200,22 @@ class Condition(BaseModel):
     hp_lte: int | None = None
     hp_gte: int | None = None
     # v2 原子谓词（只读既有派生状态；flags 为顶层 `flags` 声明的派生命题）
+    # QA P2-7：v2 新增的数值/布尔字段用 Strict 校验（拒绝 "3"/"true" 之类 lax 强转）；
+    # v1 字段（hp_lte/hp_gte 等）语义冻结，继续按 Pydantic 默认 lax 读取，避免破坏旧文件。
     flag: str | None = Field(default=None, pattern=_KEY_PATTERN)
     objective_done: str | None = Field(default=None, pattern=_KEY_PATTERN)
     has_item_tag_count: ItemTagCountCondition | None = None
     item_in_room: ItemRoomCondition | None = None
     npc_in_room: NpcRoomCondition | None = None
-    turn_gte: int | None = Field(default=None, ge=1, le=_CONDITION_COUNT_LIMIT)
-    turn_lte: int | None = Field(default=None, ge=1, le=_CONDITION_COUNT_LIMIT)
-    world_time_gte: int | None = Field(default=None, ge=0, le=_CONDITION_COUNT_LIMIT)
-    world_time_lte: int | None = Field(default=None, ge=0, le=_CONDITION_COUNT_LIMIT)
-    # 组合子（v1/v2 共用）
+    turn_gte: StrictInt | None = Field(default=None, ge=1, le=_CONDITION_COUNT_LIMIT)
+    turn_lte: StrictInt | None = Field(default=None, ge=1, le=_CONDITION_COUNT_LIMIT)
+    world_time_gte: StrictInt | None = Field(default=None, ge=0, le=_CONDITION_COUNT_LIMIT)
+    world_time_lte: StrictInt | None = Field(default=None, ge=0, le=_CONDITION_COUNT_LIMIT)
+    # 组合子（v1/v2 共用）；``always`` 是常量谓词，字符串 "true"/"false" 同样拒绝。
     all: tuple[Condition, ...] | None = Field(default=None, min_length=1, max_length=16)
     any: tuple[Condition, ...] | None = Field(default=None, min_length=1, max_length=16)
     negate: Condition | None = Field(default=None, alias="not")
-    always: bool | None = None
+    always: StrictBool | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self) -> Condition:

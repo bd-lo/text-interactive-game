@@ -169,6 +169,29 @@ class SqliteRepository:
             ).all()
         return [self._event_from_row(row) for row in reversed(rows)]
 
+    def read_last_narrative_event(self, game_id: str) -> Event | None:
+        """按 ``seq`` 取该存档**最后一条带非空叙事**的事件（R-21 有界查询）。
+
+        列表页 ``last_text`` 只需最近一条 ``result.narrative``；旧实现只扫尾部 200 条事件，
+        最后一条叙事在窗口之外时会误显示为空。这里用单条 SQL（``ORDER BY seq DESC LIMIT 1``
+        + SQLite JSON1 的 ``json_extract`` 过滤）直接定位，读取量与尾部窗口大小无关。
+        无叙事/无存档返回 ``None``。
+        """
+        narrative = func.json_extract(EventRow.result, "$.narrative")
+        with self._session_factory() as session:
+            row = session.scalars(
+                select(EventRow)
+                .where(
+                    EventRow.game_id == game_id,
+                    narrative.is_not(None),
+                    narrative != "",
+                    func.json_type(EventRow.result, "$.narrative") == "text",
+                )
+                .order_by(EventRow.seq.desc())
+                .limit(1)
+            ).first()
+        return None if row is None else self._event_from_row(row)
+
     def read_first_event(self, game_id: str) -> Event | None:
         """读该存档第一条事件（``seq`` 最小，即 ``game_created``）；无存档返回 ``None``。
 

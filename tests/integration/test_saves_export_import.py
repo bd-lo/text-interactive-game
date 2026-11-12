@@ -28,6 +28,7 @@ from textgame.config.settings import get_settings
 from textgame.services.save_service import (
     MAX_SAVE_EVENTS,
     MAX_SAVE_PACKAGE_BYTES,
+    SavePackage,
     package_checksum,
 )
 
@@ -527,3 +528,46 @@ def test_import_same_key_different_package_conflicts(
     body = conflict.json()
     assert body["ok"] is False and body["error_code"] == "CONFLICT"
     assert _games_total(client) == total_after_first
+
+
+# ---------------------------------------------------------------------------
+# 5. QA P2-6：导出/导入的 OpenAPI 响应模型声明（响应 JSON 逐字不变）
+# ---------------------------------------------------------------------------
+def test_export_and_import_openapi_declare_response_models(
+    save_env: tuple[TestClient, Path],
+) -> None:
+    """OpenAPI 为导出 200 / 导入 201 暴露具体响应模型（P2-6）。"""
+    client, _db_path = save_env
+    openapi = client.app.openapi()  # type: ignore[attr-defined]
+
+    export_schema = openapi["paths"]["/api/v1/games/{game_id}/export"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+    assert export_schema.get("$ref") == "#/components/schemas/SavePackage"
+    import_schema = openapi["paths"]["/api/v1/saves/import"]["post"]["responses"]["201"]["content"][
+        "application/json"
+    ]["schema"]
+    assert import_schema.get("$ref") == "#/components/schemas/SaveImportResponse"
+    schemas = openapi["components"]["schemas"]
+    assert "SavePackage" in schemas and "SaveImportResponse" in schemas
+
+
+def test_export_response_json_unchanged_after_response_model(
+    save_env: tuple[TestClient, Path],
+) -> None:
+    """声明 ``response_model=SavePackage`` 后响应 JSON 逐字不变（键顺序/取值/checksum）。"""
+    client, _db_path = save_env
+    game_id, _package = _played_save(client)
+
+    response = client.get(f"/api/v1/games/{game_id}/export")
+
+    assert response.status_code == 200
+    raw = response.text
+    keys = ["export_version", "exported_at", "game", "events", "snapshot", "checksum"]
+    positions = [raw.index(f'"{key}":') for key in keys]
+    assert positions == sorted(positions), "顶层键顺序应保持导出包原顺序"
+    package = response.json()
+    assert list(package) == keys
+    assert package["checksum"] == package_checksum(package)
+    # 响应模型与导出包白名单逐字段一致（无多余/缺失字段）。
+    assert SavePackage.model_validate(package).model_dump(mode="json") == package

@@ -126,3 +126,104 @@ def test_env_override_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 def test_default_path_is_under_data_dir() -> None:
     """默认路径为 ``data/llm.credentials.json``（``data/`` 已 gitignore）。"""
     assert Path("data") / "llm.credentials.json" == DEFAULT_CREDENTIALS_PATH
+
+
+# ---------------------------------------------------------------------------
+# R-25：保存后权限收紧（POSIX 0o600 / Windows icacls，失败不破坏保存）
+# ---------------------------------------------------------------------------
+def test_save_invokes_permission_hardening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """保存成功后调权限收紧钩子（分发点：POSIX chmod / Windows icacls）。"""
+    from textgame.llm import credentials as credentials_module
+
+    hardened: list[Path] = []
+    monkeypatch.setattr(credentials_module, "_restrict_credentials_permissions", hardened.append)
+    store = _store(tmp_path)
+    store.save(provider="deepseek", model="m", api_base="https://a.example", api_key="sk-1")
+    assert hardened == [store.path]
+
+
+def test_posix_permissions_still_chmod_0600(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX 分支仍 chmod 0o600（``_IS_WINDOWS=False`` 时不调用 icacls）。"""
+    from textgame.llm import credentials as credentials_module
+
+    modes: list[tuple[str, int]] = []
+    monkeypatch.setattr(credentials_module, "_IS_WINDOWS", False)
+    monkeypatch.setattr(
+        credentials_module.os,
+        "chmod",
+        lambda path, mode: modes.append((str(path), mode)),
+    )
+    target = tmp_path / "perm.json"
+    target.write_text("{}", encoding="utf-8")
+
+    credentials_module._restrict_credentials_permissions(target)
+
+    assert modes == [(str(target), 0o600)]
+
+
+def test_windows_acl_command_grants_current_user_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows：``icacls`` 去掉继承并只授予当前用户完全控制（``<user>:F``）。"""
+    from textgame.llm import credentials as credentials_module
+
+    recorded: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setenv("USERNAME", "tester")
+    monkeypatch.setattr(
+        credentials_module.subprocess,
+        "run",
+        lambda argv, **kwargs: recorded.append((argv, kwargs)),
+    )
+    target = tmp_path / "cred.json"
+    target.write_text("{}", encoding="utf-8")
+
+    credentials_module._harden_windows_acl(target)
+
+    assert len(recorded) == 1
+    argv, kwargs = recorded[0]
+    assert argv[:2] == ["icacls", str(target)]
+    assert "/inheritance:r" in argv
+    assert "/grant:r" in argv
+    assert "tester:F" in argv
+    assert kwargs["check"] is True
+    assert kwargs["timeout"] > 0
+
+
+def test_windows_acl_failure_is_warning_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``icacls`` 执行失败只记 WARNING、不抛异常（不破坏已完成的保存）。"""
+    import logging
+
+    from textgame.llm import credentials as credentials_module
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise OSError("icacls not found")
+
+    monkeypatch.setenv("USERNAME", "tester")
+    monkeypatch.setattr(credentials_module.subprocess, "run", _raise)
+    target = tmp_path / "cred.json"
+    target.write_text("{}", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger=credentials_module.__name__):
+        credentials_module._harden_windows_acl(target)
+
+    assert "ACL" in caplog.text
+
+
+def test_save_survives_windows_acl_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows ACL 收紧抛异常时凭据文件仍保存成功（权限收紧绝不影响保存）。"""
+    from textgame.llm import credentials as credentials_module
+
+    def _raise(_path: Path) -> None:
+        raise OSError("acl hardening exploded")
+
+    monkeypatch.setattr(credentials_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(credentials_module, "_harden_windows_acl", _raise)
+    store = _store(tmp_path)
+    store.save(provider="deepseek", model="m", api_base="https://a.example", api_key="sk-1")
+
+    assert store.load() is not None
+    assert store.path.exists()

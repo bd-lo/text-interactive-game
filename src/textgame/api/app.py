@@ -76,6 +76,17 @@ _MAX_SAVE_IMPORT_REQUEST_BYTES = MAX_SAVE_PACKAGE_BYTES + 64 * 1024
 #: R-25：默认 Host 白名单（可用 ``TEXTGAME_ALLOWED_HOSTS`` 覆盖；逗号分隔）。
 _DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]", "testserver")
 
+#: R-25：同机反代信任开关（默认 false）。未启用时任何 XFF/Forwarded 请求都拒绝，
+#: 避免「本机反代把外部请求转给 loopback」时伪造头绕过 token 校验。
+TRUST_PROXY_ENV = "TEXTGAME_TRUST_PROXY"
+
+#: R-04/R-05：进程内锁与启动期自动迁移都假设单进程；这些 worker 环境变量 >1 时启动即失败。
+_WORKER_COUNT_ENVS = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS")
+_ALLOW_MULTI_WORKER_ENV = "TEXTGAME_ALLOW_MULTI_WORKER"
+
+#: 布尔环境变量可接受的真值写法（大小写不敏感；其余一律按 false 处理）。
+_ENV_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
 
 def _allowed_hosts() -> list[str]:
     """读取 ``TEXTGAME_ALLOWED_HOSTS``；未设置时用默认本机白名单。"""
@@ -84,8 +95,55 @@ def _allowed_hosts() -> list[str]:
     return hosts or list(_DEFAULT_ALLOWED_HOSTS)
 
 
-class _BodyTooLargeError(Exception):
-    """请求体超过上限（R-18，ASGI receive 层抛出）。"""
+def _env_flag(name: str) -> bool:
+    """读取布尔环境变量（``1/true/yes/on`` 为真；缺省/其它值一律 false）。"""
+    return os.environ.get(name, "").strip().lower() in _ENV_TRUE_VALUES
+
+
+def _multi_worker_setting() -> tuple[str, int] | None:
+    """返回第一个 >1 的 worker 配置 ``(环境变量名, 数量)``；未配置/非法/≤1 返回 ``None``。"""
+    for name in _WORKER_COUNT_ENVS:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            count = int(raw)
+        except ValueError:
+            continue
+        if count > 1:
+            return name, count
+    return None
+
+
+def _assert_single_worker() -> None:
+    """R-04/R-05：启动期拒绝多 worker 部署（单进程假设 fail-fast）。
+
+    进程内锁（CAS/幂等）、启动期自动迁移互斥与 LLM 运行期凭据热切换都按单进程设计；
+    多 worker 下它们会各自为政（SQLite 写串行、迁移可能并发执行）。显式设置
+    ``TEXTGAME_ALLOW_MULTI_WORKER=true`` 表示已知风险并接受。
+    """
+    found = _multi_worker_setting()
+    if found is None or _env_flag(_ALLOW_MULTI_WORKER_ENV):
+        return
+    name, count = found
+    raise RuntimeError(
+        f"检测到 {name}={count}：本项目只支持单进程部署（进程内锁、启动期自动迁移互斥与"
+        "运行期凭据热切换都假设单进程）。请将 worker 数设为 1；如确需多 worker，"
+        "设置 TEXTGAME_ALLOW_MULTI_WORKER=true 显式接受风险。"
+    )
+
+
+class _BodyTooLargeError(BaseException):
+    """请求体超过上限（R-18，ASGI receive 层抛出）。
+
+    **必须继承 ``BaseException`` 而非 ``Exception``**：FastAPI 0.162 的 JSON body 解析用
+    ``except Exception`` 兜底（``fastapi/routing.py`` 的 ``await request.body()`` 外层），会
+    把 receive 阶段抛出的异常吞成 400 ``There was an error parsing the body``，导致声明
+    Pydantic body 的 JSON 端点拿不到 413 统一信封（Content-Length 预检路径则正常 413）。
+    改用 ``BaseException`` 后异常穿透 FastAPI 的 body 解析与 Starlette 异常中间件，由
+    本文件的 ``_BodyLimitMiddleware`` 立即捕获并改写为 413；它是模块私有标记类、只在此处
+    raise/catch，不会落到日志、不会泄漏 traceback。
+    """
 
 
 _LOOPBACK_HOSTS = frozenset({"", "127.0.0.1", "::1", "localhost", "testclient"})
@@ -101,27 +159,113 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-class _AccessTokenMiddleware:
-    """R-25：非 loopback 访问要求 ``TEXTGAME_API_TOKEN``（Bearer 或 X-API-Token）。"""
+def _header_values(headers: list[tuple[bytes, bytes]], name: bytes) -> list[str]:
+    """按名（大小写不敏感）收集全部原始请求头值（保留重复头/顺序）。"""
+    return [value.decode("latin-1") for key, value in headers if key.lower() == name]
 
-    def __init__(self, app: Any, *, token: str) -> None:
-        """保存下游应用与访问 token（空串 = 未配置）。"""
+
+def _parse_forwarded_ip(raw: str) -> str | None:
+    """把 XFF/Forwarded 里的一段客户端地址解析为合法 IP 文本；非法返回 ``None``。
+
+    只接受**能通过 ``ipaddress`` 校验**的值（fail-closed）：允许 ``for=`` 常见的引号、
+    IPv6 方括号与 ``ip:port`` 形式；``unknown``/域名/空串一律视为非法。
+    """
+    candidate = raw.strip().strip('"').strip()
+    if not candidate:
+        return None
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = candidate[1:-1]
+    elif candidate.count(":") == 1:
+        # 仅 IPv4:port 形式去掉端口（IPv6 裸地址含多个冒号，不做拆分）
+        host, _, port = candidate.partition(":")
+        if port.isdigit():
+            candidate = host
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _forwarded_client_ip(headers: list[tuple[bytes, bytes]]) -> str | None:
+    """从代理头取「首跳」客户端 IP；无代理头返回 ``None``；头非法返回空串表示拒绝。
+
+    取值优先级：``X-Forwarded-For``（多个头按到达顺序拼接后取第一个逗号前的值）>
+    ``Forwarded``（取第一个元素的 ``for=``）。多值只信第一跳，后续跳不参与判定，
+    避免伪造追加值改变判定结果。
+    """
+    xff_values = _header_values(headers, b"x-forwarded-for")
+    if xff_values:
+        first = ",".join(xff_values).split(",")[0].strip()
+        return _parse_forwarded_ip(first) or ""
+    forwarded = _header_values(headers, b"forwarded")
+    if forwarded:
+        first_element = forwarded[0].split(",")[0]
+        for pair in first_element.split(";"):
+            key, separator, value = pair.partition("=")
+            if not separator or key.strip().lower() != "for":
+                continue
+            parsed = _parse_forwarded_ip(value)
+            if parsed is None:
+                return ""
+            return parsed
+        return ""
+    return None
+
+
+class _AccessTokenMiddleware:
+    """R-25：非 loopback 访问要求 ``TEXTGAME_API_TOKEN``（Bearer 或 X-API-Token）。
+
+    ``trust_proxy=False``（默认）时**拒绝一切**带 ``X-Forwarded-For``/``Forwarded`` 的请求：
+    同机反代把外部请求转到 loopback 后，伪造代理头可冒充本机绕过 token 校验；必须显式
+    设置 ``TEXTGAME_TRUST_PROXY=true`` 表示「连接对端可信、代理头由它写入」。
+    启用后按代理头**首跳**判定来源（多值只取第一个；非法 IP fail-closed 403），非 loopback
+    仍照常要求 token。
+    """
+
+    def __init__(self, app: Any, *, token: str, trust_proxy: bool = False) -> None:
+        """保存下游应用、访问 token（空串 = 未配置）与代理信任开关。"""
         self.app = app
         self.token = token
+        self.trust_proxy = trust_proxy
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        """非本机请求缺 token/错 token → 403；本机请求直接放行。"""
+        """代理头未信任/非法 → 403；非本机请求缺 token/错 token → 403；本机请求直接放行。"""
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
-        client = scope.get("client") or ("", 0)
-        if not _is_loopback_host(str(client[0])):
+        headers: list[tuple[bytes, bytes]] = list(scope.get("headers") or [])
+        forwarded_ip = _forwarded_client_ip(headers)
+        if forwarded_ip is not None:
+            if not self.trust_proxy:
+                await self._reject(
+                    scope,
+                    receive,
+                    send,
+                    "请求带有 X-Forwarded-For/Forwarded 代理头，但未启用 TEXTGAME_TRUST_PROXY；"
+                    "为防止同机反代绕过 loopback 免 token 校验，已拒绝该请求。"
+                    "如确认由本机可信反代转发，请设置 TEXTGAME_TRUST_PROXY=true。",
+                )
+                return
+            if not forwarded_ip:
+                await self._reject(
+                    scope,
+                    receive,
+                    send,
+                    "X-Forwarded-For/Forwarded 首跳客户端地址非法，无法判定请求来源。",
+                )
+                return
+            client_host = forwarded_ip
+        else:
+            client = scope.get("client") or ("", 0)
+            client_host = str(client[0])
+        if not _is_loopback_host(client_host):
             if not self.token:
                 await self._reject(scope, receive, send, "非本机访问需要设置 TEXTGAME_API_TOKEN")
                 return
-            headers = dict(scope.get("headers") or [])
-            authorization = headers.get(b"authorization", b"").decode("latin-1")
-            provided = headers.get(b"x-api-token", b"").decode("latin-1")
+            headers_map = dict(headers)
+            authorization = headers_map.get(b"authorization", b"").decode("latin-1")
+            provided = headers_map.get(b"x-api-token", b"").decode("latin-1")
             if authorization != f"Bearer {self.token}" and provided != self.token:
                 await self._reject(scope, receive, send, "访问 token 缺失或无效")
                 return
@@ -349,7 +493,13 @@ def create_app(
     ``static_dir`` 缺省按 :func:`resolve_static_dir` 解析（env → CWD → 仓库根 → 包内）；
     目录存在则挂载静态托管 + SPA fallback，缺失则跳过并打 WARNING（API 与既有测试行为不变；
     D-M6-5①/R2 分发方案 A）。组合根仍只负责装配，本文件不做业务计算。
+
+    R-04/R-05：多 worker 环境（``WEB_CONCURRENCY``/``UVICORN_WORKERS``/``GUNICORN_WORKERS``
+    >1）且未设 ``TEXTGAME_ALLOW_MULTI_WORKER=true`` 时**启动即抛 RuntimeError**（单进程假设）。
+    R-25：代理头信任开关 ``TEXTGAME_TRUST_PROXY``（默认 false）在此读取并注入中间件。
     """
+    # R-04/R-05：单进程假设 fail-fast（必须在任何装配/建库动作之前）。
+    _assert_single_worker()
     app = FastAPI(
         title="textgame",
         version=__version__,
@@ -366,10 +516,12 @@ def create_app(
         max_bytes=_MAX_REQUEST_BYTES,
         max_import_bytes=_MAX_SAVE_IMPORT_REQUEST_BYTES,
     )
-    # R-25：非 loopback 访问要求 TEXTGAME_API_TOKEN（本机/启动器无需 token）。
+    # R-25：非 loopback 访问要求 TEXTGAME_API_TOKEN（本机/启动器无需 token）；
+    # TEXTGAME_TRUST_PROXY=true 时才按代理头首跳判定来源（默认拒绝代理头，防 loopback 绕过）。
     app.add_middleware(
         _AccessTokenMiddleware,
         token=os.environ.get("TEXTGAME_API_TOKEN", "").strip(),
+        trust_proxy=_env_flag(TRUST_PROXY_ENV),
     )
 
     app.include_router(health_router)

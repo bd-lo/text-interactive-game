@@ -28,7 +28,7 @@ from textgame.api.deps import require_idempotency_key
 from textgame.api.errors import ApiError
 from textgame.api.save_schemas import SaveImportResponse
 from textgame.domain.results import ErrorCode
-from textgame.services.save_service import SaveService, SaveServiceError
+from textgame.services.save_service import SavePackage, SaveService, SaveServiceError
 
 router = APIRouter(prefix="/api/v1", tags=["saves"])
 
@@ -61,18 +61,21 @@ def get_save_service(request: Request) -> SaveService:
     return service
 
 
-@router.get("/games/{game_id}/export")
+@router.get("/games/{game_id}/export", response_model=SavePackage)
 def export_save(
     game_id: str,
     save_service: Annotated[SaveService, Depends(get_save_service)],
-) -> dict[str, Any]:
+) -> SavePackage:
     """导出一局游戏为单文件 JSON 存档包（只读：不改库、不写事件、不写快照）。
 
     响应即第 6 章 §6.7 的存档包对象（``export_version="1"`` + ``game``/``events``/
     ``snapshot``/``checksum``）；未知/已删除存档 404 ``NOT_FOUND``。
+
+    QA P2-6：声明 ``response_model=SavePackage``，让 OpenAPI 暴露完整响应结构；
+    字段顺序/取值与模型逐字段一致，响应 JSON 逐字不变（``extra="forbid"`` 只做校验）。
     """
     try:
-        return save_service.export_save(game_id)
+        return SavePackage.model_validate(save_service.export_save(game_id))
     except SaveServiceError as exc:
         raise _api_error(exc) from exc
 

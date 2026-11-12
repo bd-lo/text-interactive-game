@@ -102,7 +102,7 @@ class FreeCraftStatusResponse(BaseModel):
     available: bool = Field(description="当前是否具备开启条件（大模型已启用）")
     llm_configured: bool = Field(description="是否配置了大模型凭据")
     llm_enabled: bool = Field(description="大模型当前是否真正启用")
-    risk_accepted: bool = Field(description="是否已确认 Resolver 内调 LLM 的风险")
+    risk_accepted: bool = Field(description="历史风险确认（R-19 已迁 pre-queue，保留兼容）")
     source: Literal["user", "env", "default"] = Field(
         description="当前状态来源：网页设置 / env 默认 / 内置默认"
     )
@@ -110,13 +110,14 @@ class FreeCraftStatusResponse(BaseModel):
 
 
 class FreeCraftSaveRequestBody(BaseModel):
-    """切换自由制造开关；开启时必须显式确认 Resolver LLM 风险。"""
+    """切换自由制造开关；开启仍需显式确认（历史兼容；R-19 已迁 pre-queue，必填语义不变）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
     accept_resolver_llm_risk: bool = Field(
-        default=False, description="开启时是否确认「裁决链路内调 LLM、可能重复计费」"
+        default=False,
+        description="历史风险确认（R-19 已迁 pre-queue，保留兼容）",
     )
 
 
@@ -158,9 +159,12 @@ def _free_craft_status(
     llm = runtime.status()
     enabled = switch.enabled
     if enabled and llm.enabled:
-        detail = "自由制造已开启：未命中配方时会调用大模型生成草稿，可能产生额外费用。"
+        detail = (
+            "自由制造已开启：未命中配方时会调用大模型生成一次草稿（进入裁决前）；"
+            "生成或校验失败时零写入。"
+        )
     elif enabled:
-        detail = "自由制造已开启，但大模型当前不可用：自由制造会返回 LLM_UNAVAILABLE。"
+        detail = "自由制造已开启，但大模型当前不可用：草稿生成会失败，本回合零写入并提示原因。"
     elif not llm.enabled:
         detail = (
             "自由制造未开启；大模型已配置但被显式关闭，无法调用。"
@@ -239,7 +243,7 @@ def get_free_craft_settings(request: Request) -> FreeCraftStatusResponse:
 def save_free_craft_settings(
     request: Request, body: FreeCraftSaveRequestBody
 ) -> FreeCraftStatusResponse:
-    """切换自由制造：开启需 LLM 已启用 + 显式确认风险；先落盘再改内存开关。"""
+    """切换自由制造：开启需 LLM 已启用 + 显式确认（历史兼容）；先落盘再改内存开关。"""
     runtime = _runtime(request)
     switch, store, _source = _free_craft_state(request)
     llm = runtime.status()
@@ -252,7 +256,8 @@ def save_free_craft_settings(
         if not body.accept_resolver_llm_risk:
             raise ApiError(
                 ErrorCode.CONFLICT,
-                "开启自由制造需要确认：会在裁决/重试链路内调用大模型，可能重复计费",
+                "开启自由制造需要确认：未命中配方时会调用大模型生成一次草稿"
+                "（进入裁决前），失败不会写入对局",
             )
     risk_accepted = switch.risk_accepted or body.accept_resolver_llm_risk
     with _FREE_CRAFT_WRITE_LOCK:

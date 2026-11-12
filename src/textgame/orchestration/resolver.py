@@ -28,6 +28,11 @@
 5. 每条 applied 之后 ``working_state = working_state.apply(events)``：后序提案基于前序结果重新
    校验（资源竞争/目标冲突规则，第 11 章 §11.3 规则 2/3）。
 
+R-19（Resolver 内 LLM 迁移 pre-queue）：自由制造草稿由编排层在进入本模块**之前**生成一次，
+经 ``resolve(..., prepared_crafts=...)`` 以数据形式传入；本模块只把它透传给服务的纯执行
+路径（``services.call(..., prepared_craft=...)``）。因此 ``Resolver`` 调用链内没有任何模型
+调用，CAS 重试复用同一草稿（重试只重裁决、不重生成）。
+
 ``services`` 端口按契约是 ``ServiceRouter.call``；``ToolGate`` 的方法是 ``dispatch``，
 组合根用本模块的 ``ToolGateRouter`` 适配（不改变契约命名）。
 
@@ -37,7 +42,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, Protocol
 
 from textgame.domain.events import Event
@@ -66,6 +71,7 @@ class ServiceRouter(Protocol):
         ctx: ToolContext,
         args: dict[str, Any],
         state: GameState,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result: ...
 
 
@@ -93,7 +99,11 @@ class PreconditionRules(Protocol):
 
 
 class DispatcherLike(Protocol):
-    """``ToolGate`` 的结构化最小端口（只要求 ``dispatch``，不 import ``tools`` 具体类）。"""
+    """``ToolGate`` 的结构化最小端口（只要求 ``dispatch``，不 import ``tools`` 具体类）。
+
+    ``prepared_craft``（R-19）为编排层 pre-queue 生成的自由制造载荷；缺省 ``None`` 时
+    完全保持旧调用形状（旧工具门实现无需感知该参数）。
+    """
 
     def dispatch(
         self,
@@ -102,6 +112,7 @@ class DispatcherLike(Protocol):
         args: dict[str, Any],
         ctx: ToolContext,
         state: GameState,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result: ...
 
 
@@ -123,9 +134,18 @@ class ToolGateRouter:
         ctx: ToolContext,
         args: dict[str, Any],
         state: GameState,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result:
-        """透传到 ``dispatch``；工具门负责白名单/``actor_scope``/Schema 校验与路由。"""
-        return self._dispatcher.dispatch(tool=tool, args=args, ctx=ctx, state=state)
+        """透传到 ``dispatch``；工具门负责白名单/``actor_scope``/Schema 校验与路由。
+
+        R-19：``prepared_craft`` 非空时一并透传（pre-queue 草稿），为 ``None`` 时保持
+        原调用形状，旧 ``dispatch`` 实现（无该参数）完全不受影响。
+        """
+        if prepared_craft is None:
+            return self._dispatcher.dispatch(tool=tool, args=args, ctx=ctx, state=state)
+        return self._dispatcher.dispatch(
+            tool=tool, args=args, ctx=ctx, state=state, prepared_craft=prepared_craft
+        )
 
 
 def _clip_reason(reason: str) -> str:
@@ -210,6 +230,8 @@ class Resolver:
         entries: Sequence[QueueEntry],
         snapshot: GameState,
         judgements: Sequence[JudgeOutput | None] | None = None,
+        *,
+        prepared_crafts: Mapping[str, dict[str, Any]] | None = None,
     ) -> list[Resolution]:
         """按传入顺序逐条裁决并返回与 ``entries`` 等长、同序的 ``Resolution`` 列表。
 
@@ -217,6 +239,9 @@ class Resolver:
           与 ``entries`` **同序等长、槽位可为 None**（第 11 章 §11.2、第 21 章 §21.2.2）；
           **只有** ``needs_judge`` 提案才会读取对应槽位，其余提案零访问（ExplodingJudge
           安全测试口径保持）；``judgements=None`` 等价空列表；
+        - ``prepared_crafts``（R-19）为 ``proposal_id → pre-queue 自由制造载荷`` 映射：命中
+          的提案把载荷透传给服务的纯执行路径（零 LLM）；未命中/``None`` 时调用形状与旧版
+          完全一致（M3 既有路由/测试不受影响）；
         - ``needs_judge`` 分支：``confidence >= JUDGE_CONFIDENCE_FLOOR`` 且 ``reason`` 非空 →
           ``rules.verify_agent_override`` 复核；否则 ``rules.deterministic_fallback`` 保守兜底；
           不通过即 ``rejected``（零事件），裁判不写状态/不调模型（模型调用在编排层）；
@@ -287,12 +312,22 @@ class Resolver:
                         )
                     )
                     continue
-            executed = self._services.call(
-                tool=proposal.tool,
-                ctx=ctx,
-                args=dict(proposal.args),
-                state=working_state,
-            )
+            prepared_craft = None if prepared_crafts is None else prepared_crafts.get(proposal_id)
+            if prepared_craft is None:
+                executed = self._services.call(
+                    tool=proposal.tool,
+                    ctx=ctx,
+                    args=dict(proposal.args),
+                    state=working_state,
+                )
+            else:
+                executed = self._services.call(
+                    tool=proposal.tool,
+                    ctx=ctx,
+                    args=dict(proposal.args),
+                    state=working_state,
+                    prepared_craft=prepared_craft,
+                )
             if not executed.ok:
                 verdict: Literal["conflict", "rejected"] = (
                     "conflict" if executed.error_code is ErrorCode.CONFLICT else "rejected"

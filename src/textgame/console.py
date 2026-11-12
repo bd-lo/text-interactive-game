@@ -153,6 +153,13 @@ _DIRECTION_LABELS: dict[str, str] = {
 #: 首屏引导的固定命令提示（不编造剧情，只列真实可输入的命令）。
 _GUIDE_COMMANDS = "输入 :help 查看全部命令 ｜ :inv 背包 ｜ :status 状态 ｜ :quit 退出"
 
+#: ``--list-scenarios`` 空库提示（QA P2-8）：面向玩家、不含 ``FORBIDDEN_OUTPUT_TERMS``
+#: 里的协议内部字面（如 "JSON"），与终端其余输出口径一致。
+EMPTY_SCENARIO_LIBRARY_TIPS: tuple[str, ...] = (
+    "还没有上传的场景：先在网页版「场景库」导入一份场景。",
+    "也可以直接用内置场景：--scenario m2|m3|m4|story",
+)
+
 _CHECK_SCRIPT: tuple[str, ...] = ("环顾四周", "查看背包", "使用火把", "向北走进地窖")
 
 
@@ -1216,8 +1223,8 @@ def _run_list_scenarios_app(db_target: Path | str | None = None) -> int:
         )
         total = payload.get("total") if isinstance(payload, dict) else None
         if not rows:
-            print("还没有上传的场景：先在网页版「场景库」导入一份场景 JSON。")
-            print("也可以直接用内置场景：--scenario m2|m3|m4|story")
+            for tip in EMPTY_SCENARIO_LIBRARY_TIPS:
+                print(tip)
             return 0
         shown_total = total if isinstance(total, int) and total > 0 else len(rows)
         print(f"已上传场景（共 {shown_total} 个；最多显示 20 个）：")

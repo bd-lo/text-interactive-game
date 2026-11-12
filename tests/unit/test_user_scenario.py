@@ -1325,3 +1325,75 @@ def test_v2_npc_state_v1_predicate_works_in_v2() -> None:
     condition = {"npc_state": {"npc": "keeper", "state": "briefed"}}
     assert _v2_eval(condition, state, definition, ids) is False
     assert _v2_eval(condition, _set_npc_state(state, ids, "keeper", "briefed"), definition, ids)
+
+
+# ---------------------------------------------------------------------------
+# QA P2-7：v2 条件常量/字段严格校验（拒绝 Pydantic lax 强转；v1 兼容）
+# ---------------------------------------------------------------------------
+def _v2_with_ending_when(payload: dict[str, Any]) -> dict[str, Any]:
+    """把 v2 第一个结局的 ``when`` 换成给定条件（解析错误路径断言用）。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = payload
+    return definition
+
+
+@pytest.mark.parametrize(
+    ("payload", "path"),
+    [
+        ({"always": "true"}, "endings[0].when.always"),
+        ({"always": "false"}, "endings[0].when.always"),
+        ({"turn_gte": "3"}, "endings[0].when.turn_gte"),
+        ({"turn_lte": "9"}, "endings[0].when.turn_lte"),
+        ({"world_time_gte": "1"}, "endings[0].when.world_time_gte"),
+        ({"world_time_lte": "2"}, "endings[0].when.world_time_lte"),
+        (
+            {"has_item_tag_count": {"tag": "quest", "at_least": "2"}},
+            "endings[0].when.has_item_tag_count.at_least",
+        ),
+    ],
+    ids=[
+        "always-true-string",
+        "always-false-string",
+        "turn-gte-string",
+        "turn-lte-string",
+        "world-time-gte-string",
+        "world-time-lte-string",
+        "at-least-string",
+    ],
+)
+def test_p2_7_v2_condition_fields_reject_lax_coercion(payload: dict[str, Any], path: str) -> None:
+    """v2 常量/数值字段不接受字符串强转（``"true"``/``"3"`` 等 → 结构化错误带路径）。"""
+    parsed = parse_definition(json.dumps(_v2_with_ending_when(payload), ensure_ascii=False))
+
+    assert parsed.ok is False
+    assert any(error.path == path for error in parsed.errors), [e.path for e in parsed.errors]
+
+
+def test_p2_7_condition_strict_at_model_level_but_v1_lax_unchanged() -> None:
+    """模型层：v2 字段/``always`` 严格；v1 条件（hp_lte 等）lax 语义保持冻结。"""
+    with pytest.raises(ValueError):
+        Condition.model_validate({"always": "true"})
+    with pytest.raises(ValueError):
+        Condition.model_validate({"turn_gte": "3"})
+    # v1 字段读法不变：数字字符串仍按旧行为转换，避免破坏既有 v1 文件。
+    assert Condition.model_validate({"hp_lte": "5"}).hp_lte == 5
+    assert Condition.model_validate({"always": True}).always is True
+
+
+def test_p2_7_valid_v2_int_and_bool_conditions_still_parse() -> None:
+    """真正的整数/布尔字面量不受影响：合法 v2 定义照常导入。"""
+    definition = _v2_with_ending_when({"all": [{"turn_gte": 2}, {"always": True}]})
+
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+
+    assert parsed.ok is True, parsed.errors
+
+
+def test_p2_7_v1_definition_with_bool_constant_still_parses() -> None:
+    """v1 兼容：``{"always": true}`` 是 v1/v2 共用组合子，布尔字面量照常接受。"""
+    definition = _tiny()
+    definition["endings"][0]["when"] = {"always": True}
+
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+
+    assert parsed.ok is True, parsed.errors

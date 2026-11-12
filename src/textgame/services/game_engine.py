@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -37,6 +38,9 @@ logger = logging.getLogger(__name__)
 _INITIAL_SNAPSHOT_VERSION = 1
 _GAME_ID_PREFIX = "game_"
 _SCENARIOS: frozenset[str] = frozenset({"m2", "m3", "m4", "story", "custom"})
+#: R-21：已校验存档缓存上限（有界 LRU）。缓存只是「跳过重复全量校验」的加速，被逐出
+#: 后下次提交重新全量校验，正确性不受影响。
+_DEFAULT_MAX_VERIFIED_GAMES = 4096
 
 
 class GameEngine:
@@ -48,15 +52,24 @@ class GameEngine:
         *,
         snapshot_every_turns: int = 20,
         snapshot_every_events: int = 500,
+        max_verified_games: int = _DEFAULT_MAX_VERIFIED_GAMES,
     ) -> None:
-        """装配仓储与快照阈值（第 14 章 14.4：20 回合 / 500 事件，先到先算）。"""
+        """装配仓储与快照阈值（第 14 章 14.4：20 回合 / 500 事件，先到先算）。
+
+        ``max_verified_games``（R-21）：已校验存档 LRU 上限（默认 4096）；超出按最久未用
+        逐出，被逐出的存档下次提交时重新做一次全量 replay 校验（正确性不受影响）。
+        """
         if snapshot_every_turns < 1 or snapshot_every_events < 1:
             raise ValueError("snapshot thresholds must be positive integers")
+        if max_verified_games < 1:
+            raise ValueError("max_verified_games must be a positive integer")
         self._repo = repo
         self._snapshot_every_turns = snapshot_every_turns
         self._snapshot_every_events = snapshot_every_events
+        self._max_verified_games = max_verified_games
         # R-21：每个存档首次写入时做一次全量 replay 完整性校验；之后按尾部增量续写。
-        self._verified_games: set[str] = set()
+        # 用有序字典实现有界 LRU：命中/写入移到队尾，超出上限丢最旧，避免长期运行无界增长。
+        self._verified_games: OrderedDict[str, None] = OrderedDict()
 
     def create_game(
         self,
@@ -190,7 +203,7 @@ class GameEngine:
                 last_seq=1,
                 version=1,
             )
-        self._verified_games.add(new_game_id)
+        self._remember_verified(new_game_id)
         return Result.success(
             data={
                 "game_id": new_game_id,
@@ -235,7 +248,7 @@ class GameEngine:
                 )
 
         save_seed = record.state.rng_state.save_seed
-        if game_id not in self._verified_games:
+        if not self._is_verified(game_id):
             # 首次写入：全量读取并 replay 一次（R-06/R-21），之后只读尾部增量。
             verifier = EventLog(save_seed)
             try:
@@ -243,7 +256,7 @@ class GameEngine:
                 verifier.replay()
             except ValueError as exc:
                 return Result.fail(ErrorCode.INTERNAL, f"event log is corrupted: {exc}")
-            self._verified_games.add(game_id)
+            self._remember_verified(game_id)
         log = EventLog.resume(save_seed, last_seq=record.last_seq)
         try:
             stamped = log.stamp(drafts)
@@ -271,6 +284,20 @@ class GameEngine:
             data={"version": new_version, "turn_id": new_state.turn},
             events=stamped,
         )
+
+    def _is_verified(self, game_id: str) -> bool:
+        """该存档是否已做过全量完整性校验；命中时刷新 LRU 最近使用位置（R-21）。"""
+        if game_id not in self._verified_games:
+            return False
+        self._verified_games.move_to_end(game_id)
+        return True
+
+    def _remember_verified(self, game_id: str) -> None:
+        """把存档记为已校验（LRU 队尾）；超过上限时逐出最久未使用的存档（R-21）。"""
+        self._verified_games[game_id] = None
+        self._verified_games.move_to_end(game_id)
+        while len(self._verified_games) > self._max_verified_games:
+            self._verified_games.popitem(last=False)
 
     def _maybe_save_snapshot(
         self, game_id: str, state: GameState, *, last_seq: int, version: int

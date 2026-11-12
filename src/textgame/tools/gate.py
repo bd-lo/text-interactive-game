@@ -59,7 +59,22 @@ class ActionServicePort(Protocol):
 
 
 class CraftServicePort(Protocol):
-    """gate 用到的制造服务方法（第 13 章 §13.5）：只产草稿 ``Event``，不提交。"""
+    """gate 用到的制造服务方法（第 13 章 §13.5）：只产草稿 ``Event``，不提交。
+
+    R-19 加法：``prepared_craft`` 为编排层 pre-queue 载荷（进入 Resolver 前生成一次），
+    提供时 FREE 路径纯执行、零 LLM；``prepare_free_craft`` / ``free_craft_ready`` 由
+    pre-queue 端口调用（开关关闭/未注入生成器时 ``ready=False``，编排层保持旧路径）。
+    """
+
+    @property
+    def free_craft_ready(self) -> bool: ...
+
+    def prepare_free_craft(
+        self,
+        ctx: ToolContext,
+        state: GameState,
+        req: CraftRequest,
+    ) -> Result: ...
 
     def craft(
         self,
@@ -68,6 +83,7 @@ class CraftServicePort(Protocol):
         req: CraftRequest,
         *,
         idempotency_key: str,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result: ...
 
 
@@ -88,6 +104,49 @@ class ToolGate:
         self._action = action
         self._craft = craft
 
+    # ------------------------------------------------------------------
+    # R-19 pre-queue 端口（编排层在进入 Resolver 前调用；零事件）
+    # ------------------------------------------------------------------
+    @property
+    def free_craft_ready(self) -> bool:
+        """自由制造预生成是否可用（未装配制造服务/开关关闭/无生成器 → ``False``）。
+
+        ``False`` 时编排层不预生成，保持 R-19 之前的旧路径（Resolver 内服务直接返回
+        NOT_ALLOWED，零 LLM 调用），默认关闭/离线行为逐字不变。
+        """
+        if self._craft is None:
+            return False
+        return self._craft.free_craft_ready
+
+    def prepare_free_craft(
+        self,
+        *,
+        args: dict[str, Any],
+        ctx: ToolContext,
+        state: GameState,
+    ) -> Result:
+        """R-19 pre-queue：在进入 Resolver 前生成一次自由制造草稿（零事件、至多一次 LLM）。
+
+        只由 ``TurnOrchestrator`` 在多角色链路构造玩家提案后调用；成功/失败草稿都收敛在
+        ``Result.success(data={"prepared": 载荷})`` 里（失败零事件），由编排层随提案交给
+        Resolver 纯执行路径。未装配制造服务/参数非法 → 稳定失败码（编排层按失败草稿处理）。
+        """
+        if self._craft is None:
+            return Result.fail(ErrorCode.NOT_ALLOWED, "craft service is not wired")
+        try:
+            request = CraftRequest.model_validate(
+                {
+                    "mode": args.get("mode", "recipe"),
+                    "recipe_id": args.get("recipe_id"),
+                    "free_description": args.get("free_description"),
+                }
+            )
+        except ValidationError:
+            return Result.fail(
+                ErrorCode.INVALID_INPUT, "craft args do not form a valid CraftRequest"
+            )
+        return self._craft.prepare_free_craft(ctx, state, request)
+
     def dispatch(
         self,
         *,
@@ -95,8 +154,13 @@ class ToolGate:
         args: dict[str, Any],
         ctx: ToolContext,
         state: GameState,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result:
-        """校验并路由一次工具调用；任何失败都返回 ``Result.fail`` 且零事件。"""
+        """校验并路由一次工具调用；任何失败都返回 ``Result.fail`` 且零事件。
+
+        ``prepared_craft``（R-19）为编排层 pre-queue 生成的自由制造载荷，仅由 Resolver
+        适配器透传（默认 ``None`` = 旧行为：服务层自行决定是否调用生成器）。
+        """
         try:
             spec = self._registry.get(tool)
         except KeyError:
@@ -110,7 +174,7 @@ class ToolGate:
         params = cast(dict[str, Any], validated.data["args"])
         if spec.side_effect is SideEffect.READ_ONLY:
             return self._dispatch_read(tool, params, ctx, state)
-        return self._dispatch_write(tool, params, ctx, state)
+        return self._dispatch_write(tool, params, ctx, state, prepared_craft)
 
     def _dispatch_read(
         self, tool: str, params: dict[str, Any], ctx: ToolContext, state: GameState
@@ -143,11 +207,12 @@ class ToolGate:
         params: dict[str, Any],
         ctx: ToolContext,
         state: GameState,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result:
         """写路由：调 ``ActionService``/``CraftService`` 拿草稿事件；提交由编排层负责。"""
         try:
             if tool == "craft_item":
-                return self._dispatch_craft(params, ctx, state)
+                return self._dispatch_craft(params, ctx, state, prepared_craft)
             if tool == "move_to":
                 return self._action.move_to(
                     ctx, state, direction=cast(Direction, params["direction"])
@@ -172,6 +237,7 @@ class ToolGate:
         params: dict[str, Any],
         ctx: ToolContext,
         state: GameState,
+        prepared_craft: dict[str, Any] | None = None,
     ) -> Result:
         """craft_item 路由：组装 ``CraftRequest``（校验失败→INVALID_INPUT）后调 CraftService。"""
         if self._craft is None:
@@ -188,4 +254,10 @@ class ToolGate:
             return Result.fail(
                 ErrorCode.INVALID_INPUT, "craft args do not form a valid CraftRequest"
             )
-        return self._craft.craft(ctx, state, request, idempotency_key=ctx.idempotency_key)
+        return self._craft.craft(
+            ctx,
+            state,
+            request,
+            idempotency_key=ctx.idempotency_key,
+            prepared_craft=prepared_craft,
+        )

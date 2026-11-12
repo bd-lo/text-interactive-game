@@ -65,3 +65,46 @@ def test_llm_api_key_env_is_secret(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert secret not in repr(settings)
     assert secret not in str(settings)
     assert secret not in str(settings.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# 配置收口：空串路径环境变量视为「未设置」（而不是静默变成 CWD ``Path(".")``）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("env_name", "field_name"),
+    [
+        ("TEXTGAME_FREE_CRAFT_SETTINGS_FILE", "free_craft_settings_file"),
+        ("TEXTGAME_LLM_CREDENTIALS_FILE", "llm_credentials_file"),
+        ("TEXTGAME_LLM_CONFIG", "llm_config_path"),
+    ],
+)
+def test_blank_path_env_is_none(
+    monkeypatch: pytest.MonkeyPatch, env_name: str, field_name: str
+) -> None:
+    """``TEXTGAME_*_FILE=""`` → 字段为 None（走默认路径逻辑，不把 CWD 当文件）。"""
+    from textgame.config.settings import Settings
+
+    monkeypatch.setenv(env_name, "")
+    settings = Settings(_env_file=None)
+    assert getattr(settings, field_name) is None
+
+
+def test_whitespace_path_env_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """纯空白（``"   "``）同样视为未设置。"""
+    from textgame.config.settings import Settings
+
+    monkeypatch.setenv("TEXTGAME_FREE_CRAFT_SETTINGS_FILE", "   ")
+    settings = Settings(_env_file=None)
+    assert settings.free_craft_settings_file is None
+
+
+def test_non_blank_path_env_still_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """非空路径仍正常覆盖（回归保护：validator 不能吞掉合法值）。"""
+    from textgame.config.settings import Settings
+
+    target = tmp_path / "custom-free-craft.json"
+    monkeypatch.setenv("TEXTGAME_FREE_CRAFT_SETTINGS_FILE", str(target))
+    settings = Settings(_env_file=None)
+    assert settings.free_craft_settings_file == target

@@ -26,6 +26,10 @@ _MISSING_KEY_HINT = (
 )
 _PROMPT = "只回复两个字：可用"
 
+#: ``max_tokens`` 放宽到 128（原 32 在部分模型/思考模式下会因为 budget 太小返回空 content；
+#: 自检目标是「凭据 + 网络 + 模型名可用」，不追求最小响应长度）。
+_MAX_TOKENS = 128
+
 
 def _mask(text: str) -> str:
     """脱敏输出，确保错误信息里不会出现完整密钥。"""
@@ -49,13 +53,14 @@ def main() -> int:
             api_base=settings.llm_base_url,
             messages=[{"role": "user", "content": _PROMPT}],
             timeout_s=20.0,
-            max_tokens=32,
+            max_tokens=_MAX_TOKENS,
         )
     except Exception as exc:  # 自检工具：所有失败都转成退出码，不向上抛裸异常
         print(f"[FAIL] {type(exc).__name__}: {_mask(str(exc))}")
         return 1
 
     latency_s = time.perf_counter() - started
+    content = _mask(result["content"])
     print("[OK] LLM API 配置可用")
     print(
         f"  provider={settings.llm_provider} model={settings.llm_model} "
@@ -63,9 +68,17 @@ def main() -> int:
     )
     print(
         f"  latency={latency_s:.2f}s prompt_tokens={result['prompt_tokens']} "
-        f"completion_tokens={result['completion_tokens']}"
+        f"completion_tokens={result['completion_tokens']} max_tokens={_MAX_TOKENS}"
     )
-    print(f"  content={_mask(result['content'])[:60]!r}")
+    print(f"  content_len={len(content)} content={content[:60]!r}")
+    if not content.strip():
+        # 调用成功但 content 为空 ≠ 配置不可用（思考模式/安全过滤/供应商空 chunk 都可能）：
+        # 明确打印诊断提示，避免把「空串」误判成失败（退出码仍为 0）。
+        print(
+            "  [WARN] API 调用成功但 content 为空：可能是 max_tokens 过小、模型思考模式"
+            "只返回 reasoning_content、或供应商返回空串。凭据/网络/模型名仍视为可用；"
+            "如持续为空可换 TEXTGAME_LLM_MODEL 或加大 max_tokens 复测。"
+        )
     return 0
 
 

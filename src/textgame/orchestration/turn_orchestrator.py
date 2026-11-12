@@ -9,7 +9,9 @@ CAS 提交 → 审计」的多角色链路（第 11 章 §11.1–§11.3、契约
 - **M3 多角色路径**：玩家破坏性动作与确定性角色 Agent 的提案一起进入 ``ProposalQueue``，
   由纯函数 ``Resolver`` 统一裁决；只有 ``applied`` 裁决的草稿事件才交给唯一写入者
   ``GameEngine.submit``（CAS，最多 3 次尝试；重试只重裁决、不重解析/不重叙事）。
-- 本类只负责串流程、幂等、错误码映射与审计落库，不做规则计算、不写状态、不调模型。
+- 本类只负责串流程、幂等、错误码映射与审计落库，不做规则计算、不写状态。自由制造
+  草稿的模型调用经注入的工具门 pre-queue 端口委托一次（R-19：在进入 Resolver/CAS 重试
+  循环前生成，Resolver 及其服务执行路径零 LLM；默认关闭/离线时零调用）。
 - N2-038（D-N2-5）加法：``run(request, on_delta=...)`` 可选注入流式增量回调；叙事器实现
   可选 ``render_with_meta_stream`` 时把**显示层增量**交给回调，最终写入/提交仍用校验后的
   完整文本且时机不变（``on_delta=None`` 时行为与旧版逐字一致）。回调异常不得影响提交。
@@ -54,6 +56,7 @@ from textgame.domain.world_book import (
 )
 from textgame.orchestration.direct_gate import ToolGateLike
 from textgame.orchestration.dto import TurnRequest
+from textgame.orchestration.pre_queue import prepare_free_craft_draft
 from textgame.orchestration.proposal_queue import (
     ProposalQueue,
     ProposalSource,
@@ -157,6 +160,8 @@ class ResolverLike(Protocol):
         entries: Sequence[QueueEntry],
         snapshot: GameState,
         judgements: Sequence[Any] | None = None,
+        *,
+        prepared_crafts: Mapping[str, dict[str, Any]] | None = None,
     ) -> list[Resolution]: ...
 
 
@@ -1218,7 +1223,13 @@ class TurnOrchestrator:
         lore_entries: Sequence[str] = (),
         on_delta: Callable[[str], None] | None = None,
     ) -> TurnResult:
-        """M3 多角色主流程：玩家提案 + 角色 Agent 提案 → 队列 → 裁决 → CAS 提交 → 审计。"""
+        """M3 多角色主流程：玩家提案 + 角色 Agent 提案 → 队列 → 裁决 → CAS 提交 → 审计。
+
+        R-19：玩家自由制造意图在**入队/裁决之前**经工具门 pre-queue 端口生成一次草稿
+        （``prepare_free_craft_draft``），载荷随玩家提案交给 Resolver 纯执行；CAS 重试
+        复用同一草稿，Resolver 执行链路内零模型调用。非自由制造/开关关闭时不预生成，
+        行为与旧版逐字一致。
+        """
         assert self._registry is not None  # multi_actor_enabled 已保证
         assert self._resolver is not None
         assert self._actors is not None
@@ -1252,6 +1263,8 @@ class TurnOrchestrator:
 
         player_proposal: Proposal | None = None
         read_only_data: dict[str, Any] = {}
+        # R-19：自由制造草稿的 pre-queue 载荷（成功/失败二选一；None = 不适用/旧路径）。
+        prepared_free_craft: dict[str, Any] | None = None
         try:
             spec = self._registry.get(outcome.tool)
         except KeyError:
@@ -1291,11 +1304,22 @@ class TurnOrchestrator:
                     turn_id=state.turn,
                     text=validated.message or _ACTION_REJECTED_TEXT,
                 )
+            player_args = dict(validated.data["args"])
+            # R-19 pre-queue：自由制造草稿在进入 Resolver/CAS 重试循环之前生成一次
+            # （开关关闭/未注入生成器 → None：保持旧路径，Resolver 内服务直接 NOT_ALLOWED，
+            # 零 LLM；生成失败也收敛为失败载荷，执行路径零事件拒绝、不重试模型）。
+            prepared_free_craft = prepare_free_craft_draft(
+                gate=self._gate,
+                ctx=player_ctx,
+                state=state,
+                tool=outcome.tool,
+                args=player_args,
+            )
             player_proposal = Proposal(
                 turn_id=turn_id,
                 actor_id=PLAYER_ID,
                 tool=outcome.tool,
-                args=dict(validated.data["args"]),
+                args=player_args,
                 reason="玩家明确动作",
                 priority=100,
             )
@@ -1361,12 +1385,22 @@ class TurnOrchestrator:
             save_seed=save_seed,
             events=events_history,
         )
+        # R-19：pre-queue 载荷只随玩家提案进入裁决（proposal_id 在入队后才确定）；
+        # CAS 重试循环复用同一映射 → 重试只重裁决，不重调模型。
+        prepared_crafts: dict[str, dict[str, Any]] | None = None
+        if player_entry is not None and prepared_free_craft is not None:
+            prepared_crafts = {player_entry.proposal_id: prepared_free_craft}
 
         current = record
         text = ""
         attempt = 0
         for attempt in range(1, _MAX_SUBMIT_ATTEMPTS + 1):
-            resolutions = self._resolver.resolve(drained, current.state, judgements)
+            if prepared_crafts is None:
+                resolutions = self._resolver.resolve(drained, current.state, judgements)
+            else:
+                resolutions = self._resolver.resolve(
+                    drained, current.state, judgements, prepared_crafts=prepared_crafts
+                )
             by_proposal = {resolution.proposal_id: resolution for resolution in resolutions}
             player_resolution = (
                 by_proposal.get(player_entry.proposal_id) if player_entry is not None else None

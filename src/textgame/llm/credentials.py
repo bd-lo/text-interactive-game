@@ -6,7 +6,8 @@
   可用 ``TEXTGAME_LLM_CREDENTIALS_FILE`` 覆盖路径。绝不写入数据库、不写日志、不进 git。
 - **优先级由 ``llm/runtime.py`` 决定**：环境变量/``.env`` 的开发 key 永远优先（本地开发免输入），
   没有开发 key 时才用本文件里玩家自己填的 key（干净克隆场景）。
-- **原子写**：写临时文件 → ``os.replace``；POSIX 下尽力设 ``0o600``（Windows 无等效权限位）。
+- **原子写**：写临时文件 → ``os.replace``；POSIX 下尽力设 ``0o600``；Windows 下尽力用
+  ``icacls`` 去掉继承并只授予当前用户完全控制（失败仅 WARNING，**不影响保存**）。
 - **损坏降级**：文件缺失/JSON 损坏 → 返回 ``None``（视为未配置），不阻塞启动；只在读取失败时
   记一条 WARNING（不含任何密钥内容）。
 """
@@ -14,10 +15,12 @@
 from __future__ import annotations
 
 import contextlib
+import getpass
 import ipaddress
 import json
 import logging
 import os
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -86,6 +89,50 @@ def mask_api_key(api_key: str | None) -> str | None:
 def _now_iso() -> str:
     """当前 UTC 时间（秒精度 ISO8601，便于展示/排错；不参与业务逻辑）。"""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+#: 当前平台是否 Windows（测试可 monkeypatch，避免改 ``os.name`` 影响 pathlib 平台判定）。
+_IS_WINDOWS = os.name == "nt"
+
+#: ``icacls`` 命令超时（秒；正常 <1s，超时只 WARNING，不影响已完成的保存）。
+_ICACLS_TIMEOUT_S = 10.0
+
+
+def _credential_acl_command(path: Path, user: str) -> list[str]:
+    """构造 Windows ACL 收紧命令：去掉继承 + 只授予当前用户完全控制。"""
+    return ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"]
+
+
+def _harden_windows_acl(path: Path) -> None:
+    """Windows：尽力用 ``icacls`` 收紧凭据文件 ACL（失败仅 WARNING，不抛异常）。"""
+    user = os.environ.get("USERNAME", "").strip() or getpass.getuser().strip()
+    if not user:
+        _LOGGER.warning("无法确定当前 Windows 用户名，跳过凭据文件 ACL 收紧（不影响保存）")
+        return
+    try:
+        subprocess.run(
+            _credential_acl_command(path, user),
+            check=True,
+            capture_output=True,
+            timeout=_ICACLS_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # 单机本地场景下文件仍可用：权限收紧是尽力而为，绝不因此破坏凭据保存。
+        _LOGGER.warning("Windows 凭据文件 ACL 收紧失败（不影响保存）：%s", type(exc).__name__)
+
+
+def _restrict_credentials_permissions(path: Path) -> None:
+    """收紧凭据文件权限：POSIX 尽力 ``0o600``；Windows 尽力 ``icacls``。
+
+    该函数**绝不抛异常**：权限收紧失败只记 WARNING，保存动作之前已原子完成。
+    """
+    try:
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
+        if _IS_WINDOWS:
+            _harden_windows_acl(path)
+    except Exception:
+        _LOGGER.warning("凭据文件权限收紧失败（不影响保存）")
 
 
 def _validate_fields(*, provider: str, model: str, api_base: str, api_key: str) -> None:
@@ -190,7 +237,7 @@ class LocalLLMCredentialStore:
         api_base: str,
         api_key: str,
     ) -> StoredLLMCredentials:
-        """校验并原子写入凭据文件（``0o600`` 尽力而为）；返回保存后的快照。"""
+        """校验并原子写入凭据文件（POSIX ``0o600`` / Windows ``icacls`` 尽力而为）；返回保存后的快照。"""
         _validate_fields(provider=provider, model=model, api_base=api_base, api_key=api_key)
         credentials = StoredLLMCredentials(
             provider=provider,
@@ -224,9 +271,8 @@ class LocalLLMCredentialStore:
                 os.fsync(handle.fileno())
             os.replace(temp_path, self._path)
             temp_path = None
-            # Windows 等平台没有等效权限位：尝试设置，失败也不影响保存（单机本地场景可接受）。
-            with contextlib.suppress(OSError):
-                os.chmod(self._path, 0o600)
+            # 权限收紧尽力而为（POSIX chmod 0o600 / Windows icacls）：失败不影响保存。
+            _restrict_credentials_permissions(self._path)
             return credentials
         except OSError as exc:
             raise CredentialStoreError(

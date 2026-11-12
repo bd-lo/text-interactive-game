@@ -658,3 +658,103 @@ def test_ensure_schema_is_noop_for_head_database(tmp_path: Path) -> None:
         assert _backups(db_path) == set()
     finally:
         engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# R-05：启动期自动迁移的跨进程互斥（迁移锁）
+# ---------------------------------------------------------------------------
+def _assert_migration_lock_is_held(db_url: str) -> None:
+    """断言迁移锁确实被当前进程持有：同进程第二个句柄也拿不到锁（超时 RuntimeError）。"""
+    from textgame.persistence.database import migration_lock
+
+    with pytest.raises(RuntimeError, match="自动迁移锁超时"), migration_lock(db_url, timeout_s=0.1):
+        pass
+
+
+def test_migration_lock_path_derived_from_db_file(tmp_path: Path) -> None:
+    """锁文件路径由 DB 文件派生（``<db>.migrate.lock``）；内存库/非 SQLite 无锁。"""
+    from textgame.persistence.database import migration_lock_path
+
+    db_path = tmp_path / "data" / "textgame.db"
+    assert migration_lock_path(_db_url(db_path)) == Path(f"{db_path}.migrate.lock")
+    assert migration_lock_path("sqlite:///:memory:") is None
+    assert migration_lock_path("sqlite://") is None
+    assert migration_lock_path("postgresql://u:p@localhost/db") is None
+
+
+def test_migration_lock_is_exclusive_and_released(tmp_path: Path) -> None:
+    """同一进程内重复获取超时 → RuntimeError（提示手动升级）；释放后可再次获取。"""
+    from textgame.persistence.database import migration_lock
+
+    db_url = _db_url(tmp_path / "exclusive.db")
+    with migration_lock(db_url, timeout_s=5.0):
+        _assert_migration_lock_is_held(db_url)
+    with migration_lock(db_url, timeout_s=1.0):
+        pass  # 释放后可重新获取（不会永久占锁）
+
+
+def test_ensure_schema_upgrade_runs_under_migration_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-05：自动升级在迁移锁内执行（升级期间锁被持有），升级结束后锁已释放。"""
+    from textgame.persistence.database import migration_lock, migration_lock_path
+
+    db_path = tmp_path / "locked-upgrade.db"
+    _write_m2_legacy_database(db_path)
+    db_url = _db_url(db_path)
+    engine, _factory = prepare_db(db_url)
+    lock_path = migration_lock_path(db_url)
+    assert lock_path is not None
+    calls: list[str] = []
+    real_upgrade = legacy_upgrade_module.upgrade_legacy_database
+
+    def _recording_upgrade(url: str) -> Any:
+        calls.append(url)
+        assert lock_path.exists()  # 升级期间锁文件存在
+        _assert_migration_lock_is_held(url)  # …且锁确实被持有（第二个句柄拿不到）
+        return real_upgrade(url)
+
+    monkeypatch.setattr(legacy_upgrade_module, "upgrade_legacy_database", _recording_upgrade)
+    try:
+        ensure_schema(engine, db_url=db_url)
+        assert calls == [db_url]
+        assert _alembic_revision(engine) == "0006"
+    finally:
+        engine.dispose()
+    # 升级结束后锁已释放：后续启动实例可立即获取。
+    with migration_lock(db_url, timeout_s=1.0):
+        pass
+
+
+def test_ensure_schema_fails_fast_when_migration_lock_times_out(tmp_path: Path) -> None:
+    """另一个实例持有迁移锁时 ensure_schema 超时 fail-fast（RuntimeError 含手动升级提示）。"""
+    from textgame.persistence.database import migration_lock
+
+    db_path = tmp_path / "locked-out.db"
+    _write_m2_legacy_database(db_path)
+    db_url = _db_url(db_path)
+    engine, _factory = prepare_db(db_url)
+    try:
+        with (
+            migration_lock(db_url, timeout_s=5.0),
+            pytest.raises(RuntimeError, match="自动迁移锁超时"),
+        ):
+            ensure_schema(engine, db_url=db_url, lock_timeout_s=0.2)
+    finally:
+        engine.dispose()
+
+
+def test_ensure_schema_healthy_db_creates_no_migration_lock(tmp_path: Path) -> None:
+    """健康库/新库不走自动迁移 → 不创建迁移锁文件（只在需要升级时才加锁）。"""
+    from textgame.persistence.database import migration_lock_path
+
+    db_path = tmp_path / "no-lock.db"
+    db_url = _db_url(db_path)
+    engine, _factory = prepare_db(db_url)
+    try:
+        ensure_schema(engine, db_url=db_url)  # 空库 → init_schema 路径
+        lock_path = migration_lock_path(db_url)
+        assert lock_path is not None
+        assert not lock_path.exists()
+    finally:
+        engine.dispose()

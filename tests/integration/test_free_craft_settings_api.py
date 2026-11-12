@@ -101,7 +101,7 @@ def test_enable_without_llm_is_conflict_and_keeps_switch_off(tmp_path: Path) -> 
 
 
 def test_enable_requires_explicit_risk_confirmation(tmp_path: Path) -> None:
-    """LLM 已启用但未确认风险：409，不开启。"""
+    """LLM 已启用但未确认风险：409，不开启；文案说明草稿生成一次且失败零写入。"""
     client, switch, _store = _app(with_key=True, tmp_path=tmp_path)
     with client:
         response = client.put(
@@ -110,7 +110,10 @@ def test_enable_requires_explicit_risk_confirmation(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 409
-    assert response.json()["error_code"] == "CONFLICT"
+    body = response.json()
+    assert body["error_code"] == "CONFLICT"
+    assert "生成一次草稿" in body["message"]
+    assert "失败不会写入对局" in body["message"]
     assert switch.enabled is False
 
 
@@ -131,6 +134,7 @@ def test_enable_persists_and_updates_shared_switch(tmp_path: Path) -> None:
     assert body["available"] is True
     assert body["risk_accepted"] is True
     assert body["source"] == "user"
+    assert "生成一次草稿" in body["detail"]
     assert switch.enabled is True and switch.risk_accepted is True
     saved = FreeCraftSettingsStore(tmp_path / "free_craft.json").load()
     assert saved is not None and saved.enabled is True and saved.risk_accepted is True

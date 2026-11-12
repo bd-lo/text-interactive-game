@@ -4,6 +4,10 @@ CraftAgent 只消费服务层投影的只读 CraftView（背包/工位/已知配
 CraftDraft 草案；所有数值由框架重算，草案 Schema 不提供任何数值字段（extra=forbid）。
 输出走 complete_json_with_repair：Schema 不合格时携带错误修复一次，仍失败返回
 SCHEMA_VIOLATION 零事件。M4 不接真实 LLM（由 FakeLLM 覆盖），生产默认关闭自由制造。
+
+R-19：本 Agent 由**编排层 pre-queue** 在进入 Resolver/CAS 重试循环之前调用一次
+（``CraftService.prepare_free_craft``），生成的草稿随后交给 Resolver 纯执行路径；
+Resolver 及其裁决重试内不再调用本 Agent（消除重复计费）。
 """
 
 from __future__ import annotations

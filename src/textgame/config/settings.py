@@ -7,7 +7,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     free_craft_enabled: bool = False
     # 网页设置页持久化的自由制造偏好（enabled + risk_accepted）；缺省 data/free_craft.json。
     free_craft_settings_file: Path | None = None
-    # R-19：自由制造在 Resolver 内调 LLM；无头/生产开启必须显式承认该架构风险（M5 前迁移）。
+    # R-19（2026-11-12 已迁 pre-queue）：自由制造草稿在进入 Resolver 前生成一次，裁决/CAS
+    # 重试纯执行不重调模型；本开关保留为无头/生产显式开启的历史兼容二次确认（M5 后评估简化）。
     # 网页设置页的二次确认是运行期等价 opt-in，会写入 free_craft_settings_file.risk_accepted。
     allow_resolver_llm: bool = False
     # R-25：允许的 Host 头（逗号分隔）；默认只允许本机/测试客户端，防止 DNS rebinding。
@@ -67,6 +68,24 @@ class Settings(BaseSettings):
     # 端点返回 404 统一失败信封（前端自动降级普通 ``/turns``），用于出问题时一键回滚。
     # 默认离线路径（模板叙事/旧 ``/turns``/golden）不受该开关影响。
     stream_enabled: bool = True
+
+    @field_validator(
+        "free_craft_settings_file",
+        "llm_credentials_file",
+        "llm_config_path",
+        mode="before",
+    )
+    @classmethod
+    def _blank_path_is_none(cls, value: object) -> object:
+        """空串/纯空白环境变量视为「未设置」（``TEXTGAME_FREE_CRAFT_SETTINGS_FILE=`` 等）。
+
+        pydantic-settings 会把空串原样交给字段校验，而 ``Path("")`` 会静默变成当前目录
+        ``.``（既不是 None 也不是可写文件），导致偏好/凭据被错误地读写到 CWD。对这类
+        「可选路径」字段统一把空串归一为 ``None``，回到默认路径逻辑。
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 @lru_cache

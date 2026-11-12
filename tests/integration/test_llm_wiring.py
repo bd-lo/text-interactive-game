@@ -202,7 +202,8 @@ def _main_app(
     monkeypatch.setenv("TEXTGAME_LLM_ENABLED", "false")
     monkeypatch.setenv("TEXTGAME_FREE_CRAFT_ENABLED", "true" if free_enabled else "false")
     if free_enabled:
-        # R-19：生产开启自由制造必须显式承认 Resolver 内调 LLM 的风险。
+        # R-19：草稿已迁到进入 Resolver 前的 pre-queue；无头显式开启仍保留历史兼容的
+        # 二次确认 TEXTGAME_ALLOW_RESOLVER_LLM（技术风险已消除，开关语义不变）。
         monkeypatch.setenv("TEXTGAME_ALLOW_RESOLVER_LLM", "true")
     if llm_client is not None:
         # 运行期 LLM 改为 RuntimeLLMClient（可热切换）；测试注入替身时直接替换构造结果。

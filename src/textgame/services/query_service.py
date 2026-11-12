@@ -40,7 +40,8 @@ from textgame.services.ports import GameRepository
 #: 感知切片实体种类（与 ``EntityRef.kind`` 的 Literal 对齐）。
 EntityKind = Literal["character", "room", "item", "npc", "quest"]
 
-#: 列表页找最近叙事的尾部事件扫描上限（R-21；长局只读尾部，避免 O(n) 放大）。
+#: 列表页找最近叙事的尾部事件扫描回退窗口（R-21：生产仓储走单条有界 SQL；旧/测试
+#: 仓储无有界实现时，窗口按需倍增直到覆盖全量，保证结果正确）。
 _LAST_TEXT_SCAN_EVENTS = 200
 
 
@@ -440,15 +441,9 @@ class QueryService:
         records = self._repo.list_games(limit=limit, offset=offset)
         games: list[dict[str, Any]] = []
         for record in records:
-            last_text: str | None = None
-            # R-21：列表页只读尾部事件（不再每存档全量读取）；200 条足以覆盖最近叙事。
-            for event in reversed(
-                self._repo.read_recent_events(record.game_id, limit=_LAST_TEXT_SCAN_EVENTS)
-            ):
-                narrative = event.result.get("narrative")
-                if isinstance(narrative, str) and narrative:
-                    last_text = narrative
-                    break
+            # R-21：列表页按「最后一条 narrative 事件」取文本（生产仓储单条有界 SQL，
+            # 不再依赖尾部 200 条窗口，最后一条叙事在窗口之外时也不会显示错）。
+            last_text = self._last_narrative_text(record.game_id)
             snapshot = self._repo.latest_snapshot(record.game_id)
             ending = self._ending_of(record.state)
             games.append(
@@ -464,6 +459,35 @@ class QueryService:
                 }
             )
         return {"games": games, "total": self._repo.count_games()}
+
+    def _last_narrative_text(self, game_id: str) -> str | None:
+        """最近一条带非空 ``narrative`` 的事件文本（R-21）。
+
+        生产仓储（``SqliteRepository``）提供按 game 的单行有界查询
+        ``read_last_narrative_event``；未提供该方法的旧/测试仓储回退为「尾部扫描 +
+        窗口按需倍增」，最坏退化为一次全量只读扫描，结果口径与全量逆序扫描一致。
+        """
+        getter = getattr(self._repo, "read_last_narrative_event", None)
+        if callable(getter):
+            return self._narrative_of(cast(Event | None, getter(game_id)))
+        limit = _LAST_TEXT_SCAN_EVENTS
+        while True:
+            events = self._repo.read_recent_events(game_id, limit=limit)
+            for event in reversed(events):
+                narrative = self._narrative_of(event)
+                if narrative is not None:
+                    return narrative
+            if len(events) < limit:
+                return None
+            limit *= 2
+
+    @staticmethod
+    def _narrative_of(event: Event | None) -> str | None:
+        """事件 ``result["narrative"]`` 的非空字符串值；缺失/非法返回 ``None``。"""
+        if event is None:
+            return None
+        narrative = event.result.get("narrative")
+        return narrative if isinstance(narrative, str) and narrative else None
 
     def read_events(self, game_id: str) -> list[Event]:
         """按 ``seq`` 升序返回存档全部已盖章事件（只读、零写入；M6 回放端点用）。

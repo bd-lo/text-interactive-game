@@ -363,3 +363,34 @@ def test_free_craft_preference_is_restored_and_wired(
         assert body["available"] is False  # 本用例未配置 LLM key
     finally:
         _dispose_app_engine(app)
+
+
+# ---------------------------------------------------------------------------
+# R-04/R-05：单进程假设——多 worker 启动期 fail-fast（组合根 ``_build_app`` 路径）
+# ---------------------------------------------------------------------------
+def test_build_app_rejects_multi_worker_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_build_app`` 在多 worker env（>1）且未显式放行时抛 RuntimeError（单进程假设）。"""
+    # 先用内存库完成 ``textgame.main`` 的模块级装配（import 时会建一次 app），
+    # 再注入多 worker env 验证启动期 fail-fast；避免 import 时直接抛错污染用例。
+    monkeypatch.setenv("TEXTGAME_DB_URL", "sqlite:///:memory:")
+    monkeypatch.delenv("TEXTGAME_ALLOW_MULTI_WORKER", raising=False)
+    get_settings.cache_clear()
+    import textgame.main as main_module
+
+    assert main_module.app is not None
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="单进程"):
+        main_module._build_app()
+
+
+def test_build_app_allows_multi_worker_with_explicit_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TEXTGAME_ALLOW_MULTI_WORKER=true`` 显式 opt-in 后组合根照常装配。"""
+    monkeypatch.setenv("TEXTGAME_ALLOW_MULTI_WORKER", "true")
+    app, _db_url = _build_app_with_db(monkeypatch, tmp_path / "multi-worker-opt-in.db")
+    try:
+        assert app is not None
+    finally:
+        _dispose_app_engine(app)
