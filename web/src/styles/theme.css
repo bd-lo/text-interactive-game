@@ -2723,17 +2723,22 @@ html[data-visual='off'] .reveal {
     display: flex;
     align-items: center;
     min-height: 44px;
+    /* 窄屏 CSS 最小宽度：中文在部分 Linux/CI 字体下比 Windows 窄（实测 40px），
+       纯靠内容宽度会低于 44×44 触控目标；min-width 保证跨平台一致。 */
+    min-width: 44px;
   }
 
   .visual-option,
   .tone-option {
     min-height: 44px;
+    min-width: 44px;
     align-items: center;
   }
 
   .editor-checkbox,
   .tone-field label {
     min-height: 44px;
+    min-width: 44px;
   }
 
   /* 开关类控件放大到可单手点击（宽度/位移同步缩放） */

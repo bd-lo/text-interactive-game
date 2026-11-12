@@ -745,6 +745,15 @@ async function touchTargetViolations() {
       if (rect.width <= 0 || rect.height <= 0) continue;
       const style = getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
+      // 只审计「可见」控件：关闭的 <details> 内容在新版 Chromium 里仍是
+      // content-visibility:hidden 布局盒（rect 非 0），不能只靠 display/visibility 判断。
+      if (el.closest('details:not([open])')) continue;
+      if (
+        typeof el.checkVisibility === 'function' &&
+        !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+      ) {
+        continue;
+      }
       checked += 1;
       if (rect.width >= 43.5 && rect.height >= 43.5) continue;
       small.push({
