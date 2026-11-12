@@ -2450,6 +2450,67 @@ async function runFlow() {
     return `375px 页面=${pages.length}（截图 6 张）；触控/长文本/输入区/弹层全部通过`
   })
 
+  // ---- P5 遗留：窄屏「视觉设置」菜单不溢出（R5 修复：≤760 改为顶栏下方全宽下拉） ----
+  await step(
+    'mobile.visual-menu',
+    '375/320px：打开「视觉设置」菜单不溢出、无横向滚动、触控 ≥44',
+    async () => {
+      const results = []
+      for (const vp of [
+        { name: '375', width: 375, height: 812 },
+        { name: '320', width: 320, height: 720 },
+      ]) {
+        await setViewport(vp.width, vp.height, true)
+        await navigate('/', `首页（视觉设置 ${vp.name}px）`, '.home-form')
+        await evaluate(`document.querySelector('.visual-menu summary')?.click()`)
+        await waitFor(
+          `document.querySelector('.visual-menu')?.open === true`,
+          `视觉设置菜单展开（${vp.name}px）`,
+        )
+        await sleep(250)
+        const rect = await popupRect('.visual-menu')
+        const metrics = await evaluate(`(() => {
+          const summary = document.querySelector('.visual-menu summary');
+          const options = [...document.querySelectorAll('.visual-option')];
+          return {
+            scrollWidth: document.documentElement.scrollWidth,
+            bodyScrollWidth: document.body.scrollWidth,
+            summaryHeight: summary === null ? 0 : Math.round(summary.getBoundingClientRect().height),
+            optionHeights: options.map((el) => Math.round(el.getBoundingClientRect().height)),
+          };
+        })()`)
+        check(
+          `${vp.name}px 视觉设置菜单完全在视口内（0 ≤ left，right ≤ ${vp.width}）`,
+          rect !== null && rect.left >= 0 && rect.right <= vp.width,
+          JSON.stringify(rect),
+        )
+        check(
+          `${vp.name}px 打开视觉设置菜单无横向滚动`,
+          metrics.scrollWidth <= vp.width && metrics.bodyScrollWidth <= vp.width,
+          `doc=${metrics.scrollWidth} body=${metrics.bodyScrollWidth}`,
+        )
+        check(
+          `${vp.name}px 菜单入口/选项触控高度 ≥44`,
+          metrics.summaryHeight >= 44 &&
+            metrics.optionHeights.length > 0 &&
+            metrics.optionHeights.every((height) => height >= 44),
+          `summary=${metrics.summaryHeight} options=${metrics.optionHeights.join('/')}`,
+        )
+        results.push(
+          `${vp.name}px:${rect === null ? '?' : `${rect.left}..${rect.right}`}/scroll=${metrics.scrollWidth}`,
+        )
+        await screenshot(`37-mobile-visual-menu-${vp.name}.png`)
+        await dispatchKey('Escape')
+        await waitFor(
+          `document.querySelector('.visual-menu')?.open === false`,
+          `视觉设置菜单可关闭（${vp.name}px）`,
+        )
+      }
+      await clearViewport()
+      return `菜单位置/滚动=${results.join('；')}`
+    },
+  )
+
   await step('console.no-errors', '全程无 console 错误 / 未捕获异常', async () => {
     const bad = consoleEvents.filter((entry) => !isBenignConsoleError(entry))
     check(

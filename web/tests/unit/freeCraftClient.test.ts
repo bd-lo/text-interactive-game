@@ -20,7 +20,7 @@ const FREE_CRAFT_ON = {
   ...FREE_CRAFT_OFF,
   enabled: true,
   risk_accepted: true,
-  detail: '自由制造已开启：未命中配方时会调用大模型生成草稿，可能产生额外费用。',
+  detail: '自由制造已开启：未命中配方时会在进入裁决前调用大模型生成一次草稿，可能产生费用。',
 }
 
 function jsonResponse(status: number, body: unknown): Response {

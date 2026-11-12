@@ -9,6 +9,10 @@
      输入框/按钮边界（--border-strong）3.38、焦点环 4.76–5.12；
      夜间 fg/bg 17.71、dim/bg 9.30、accent/bg 9.87、按钮 5.67、
      输入框/按钮边界 3.23、焦点环 5.64–8.12。
+   - R5 遗留修复（夜间极光叠层下的真实最差场景，CDP 截图像素实测）：暗色
+     --fg-dim → #c6cce2、--accent → #c8d3ff，--ambient-1..4 不透明度下调
+     （0.34/0.28/0.22/0.20）；修复后 375/1280 最差 fg-dim 5.34、accent 4.89、
+     渐变标题 7.41（修复前 2.93 / 2.66 / 5.82）。日间 token 未改。
    ========================================================================== */
 
 :root {
@@ -93,8 +97,8 @@
   --bg: #070814;
   --bg-deep: #04050d;
   --fg: #eef1ff;
-  --fg-dim: #a9b0cf;
-  --accent: #9db4ff;
+  --fg-dim: #c6cce2;
+  --accent: #c8d3ff;
   --accent-2: #c4b5fd;
   --accent-3: #7dd3fc;
   --danger: #ff8a9b;
@@ -127,10 +131,10 @@
   --ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(157, 180, 255, 0.9);
   --glow-card: 0 20px 60px -26px rgba(157, 180, 255, 0.45);
 
-  --ambient-1: rgba(99, 102, 241, 0.55);
-  --ambient-2: rgba(168, 85, 247, 0.45);
-  --ambient-3: rgba(34, 211, 238, 0.34);
-  --ambient-4: rgba(244, 114, 182, 0.32);
+  --ambient-1: rgba(99, 102, 241, 0.34);
+  --ambient-2: rgba(168, 85, 247, 0.28);
+  --ambient-3: rgba(34, 211, 238, 0.22);
+  --ambient-4: rgba(244, 114, 182, 0.20);
   --grain-opacity: 0.035;
   --spotlight: rgba(157, 180, 255, 0.1);
   --mote-opacity: 0.85;
@@ -2649,11 +2653,6 @@ html[data-visual='off'] .reveal {
     font-size: 1.08rem;
   }
 
-  .visual-menu[open] {
-    right: auto;
-    left: 0;
-  }
-
   .visual-note {
     max-width: 100%;
   }
@@ -2813,6 +2812,25 @@ html[data-visual='off'] .reveal {
   .visual-menu[open] {
     max-width: calc(100vw - 28px);
     overflow-y: auto;
+  }
+
+  /* R5 遗留修复：窄屏「视觉设置」改为顶栏下方全宽下拉。
+     - `.app-header` 成为定位上下文（≤760 原本是 static）；`.visual-settings` 退为 static，
+       菜单不再以右侧按钮为锚点 → 375/320 打开菜单不会右溢出；
+     - left/right 12px + min-width:0 + max-width:none：宽度跟随顶栏，短屏也不越界。 */
+  .app-header {
+    position: relative;
+  }
+
+  .visual-settings {
+    position: static;
+  }
+
+  .visual-menu[open] {
+    left: 12px;
+    right: 12px;
+    min-width: 0;
+    max-width: none;
   }
 
   .quit-info-panel,

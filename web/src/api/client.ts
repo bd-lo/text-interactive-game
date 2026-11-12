@@ -1636,8 +1636,9 @@ export async function getFreeCraftSettings(
 /**
  * `PUT /api/v1/settings/free-craft`：开启/关闭自由制造。
  *
- * 开启必须由前端二次确认后传 `accept_resolver_llm_risk=true`；写端点按值幂等、
- * 不带 Idempotency-Key（不产生领域副作用）。
+ * 开启必须由前端二次确认后传 `accept_resolver_llm_risk=true`（该字段名为既有契约，语义为
+ * 确认「调用大模型可能产生费用」；R-19 已把草稿生成迁到进入裁决前的 pre-queue，重试不重调模型）；
+ * 写端点按值幂等、不带 Idempotency-Key（不产生领域副作用）。
  */
 export async function saveFreeCraftSettings(
   body: FreeCraftSettingsSaveRequest,

@@ -219,7 +219,7 @@ onMounted(() => {
       <p class="llm-status-detail">{{ status.detail }}</p>
     </section>
 
-    <!-- 自由制造开关：默认关闭；开启前必须确认 Resolver 内调 LLM 的风险 -->
+    <!-- 自由制造开关：默认关闭；开启前必须确认大模型费用风险（R-19 pre-queue：草稿在进入裁决前生成一次，失败零写入、不因 CAS 重试重复调用） -->
     <section v-reveal class="panel free-craft-card" aria-label="自由制造">
       <div class="llm-status-head">
         <h3 class="panel-title">自由制造</h3>
@@ -231,7 +231,7 @@ onMounted(() => {
         </span>
       </div>
       <p class="field-hint muted">
-        不命中固定配方时，允许大模型临时生成制造草稿。开启后会在裁决链路内调用大模型，可能因重试产生额外费用；建议只在单人本地使用。
+        开启后，未命中固定配方时会调用大模型生成一次制造草稿（进入裁决前）；失败零写入。开启需已配置的大模型可用。
       </p>
 
       <ErrorBanner
@@ -274,7 +274,7 @@ onMounted(() => {
       >
         <p id="free-craft-risk-text">
           <strong>开启前确认：</strong>
-          自由制造会在裁决/重试链路内调用大模型，可能重复计费；它不属于纯确定性裁决。
+          我了解：自由制造会调用大模型，可能产生费用。
         </p>
         <div class="game-tools">
           <button

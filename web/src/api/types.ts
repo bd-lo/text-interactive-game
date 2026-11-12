@@ -44,7 +44,7 @@ export const API_PATHS = {
   saveLlmSettings: '/api/v1/settings/llm',
   testLlmConnection: '/api/v1/settings/llm/test',
   clearLlmSettings: '/api/v1/settings/llm',
-  // 自由制造开关（前端二次确认 + 本机持久化；R-19 运行期 opt-in）
+  // 自由制造开关（前端二次确认 + 本机持久化；R-19 pre-queue：草稿在进入裁决前生成一次，失败零写入）
   getFreeCraftSettings: '/api/v1/settings/free-craft',
   saveFreeCraftSettings: '/api/v1/settings/free-craft',
   // 启动器控制面（网页「退出游戏」/ 心跳 / 状态；Task A 冻结契约）
@@ -666,7 +666,7 @@ export interface LlmSettingsClearResponse {
 
 // ---------------------------------------------------------------------------
 // 自由制造开关（GET/PUT /api/v1/settings/free-craft）
-// 语义：开启需 LLM 已启用 + 前端二次确认 Resolver LLM 风险；后端持久化到本机 JSON。
+// 语义：开启需 LLM 已启用 + 前端二次确认大模型费用风险；R-19 pre-queue 下草稿在进入裁决前生成一次、失败零写入；后端持久化到本机 JSON。
 // ---------------------------------------------------------------------------
 
 /** 自由制造状态来源：网页设置 / env 默认 / 内置默认。 */
@@ -684,6 +684,8 @@ export interface FreeCraftSettingsStatus {
 }
 
 /** `PUT /api/v1/settings/free-craft` 请求体。 */
+// 请求体字段 `accept_resolver_llm_risk` 为既有后端契约字段名（保留不变）；
+// 语义 = 确认「自由制造会调用大模型，可能产生费用」。
 export interface FreeCraftSettingsSaveRequest {
   enabled: boolean
   accept_resolver_llm_risk?: boolean

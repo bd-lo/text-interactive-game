@@ -59,7 +59,7 @@ const FREE_CRAFT_ON = {
   ...FREE_CRAFT_OFF,
   enabled: true,
   risk_accepted: true,
-  detail: '自由制造已开启：未命中配方时会调用大模型生成草稿，可能产生额外费用。',
+  detail: '自由制造已开启：未命中配方时会在进入裁决前调用大模型生成一次草稿，可能产生费用。',
 }
 
 const TEST_OK = {
@@ -337,6 +337,7 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
     await wrapper.find('[role="switch"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('开启前确认')
+    expect(wrapper.text()).toContain('我了解：自由制造会调用大模型，可能产生费用')
     expect(bodies).toEqual([])
 
     const confirm = wrapper.findAll('button').find((button) => button.text() === '确认开启')
@@ -346,7 +347,8 @@ describe('设置页（/settings：LLM API Key 状态/表单/测试/清除）', (
     expect(bodies).toEqual([{ enabled: true, accept_resolver_llm_risk: true }])
     expect(wrapper.find('[role="switch"]').attributes('aria-checked')).toBe('true')
     expect(wrapper.text()).toContain('自由制造已开启')
-    expect(wrapper.text()).toContain('可能产生额外费用')
+    expect(wrapper.text()).toContain('生成一次草稿（进入裁决前）')
+    expect(wrapper.text()).toContain('可能产生费用')
   })
 
   it('自由制造：已开启时直接关闭，不再弹确认', async () => {

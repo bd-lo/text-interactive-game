@@ -17,7 +17,7 @@ const ON = {
   ...OFF,
   enabled: true,
   risk_accepted: true,
-  detail: '自由制造已开启：未命中配方时会调用大模型生成草稿，可能产生额外费用。',
+  detail: '自由制造已开启：未命中配方时会在进入裁决前调用大模型生成一次草稿，可能产生费用。',
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -75,6 +75,8 @@ describe('自由制造设置 store', () => {
     expect(store.confirmArmed).toBe(false)
     expect(store.status).toEqual(ON)
     expect(store.saveNotice).toContain('自由制造已开启')
+    expect(store.saveNotice).toContain('生成一次草稿（进入裁决前）')
+    expect(store.saveNotice).toContain('可能产生费用')
     const [, init] = mock.mock.calls.at(-1) ?? []
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       enabled: true,

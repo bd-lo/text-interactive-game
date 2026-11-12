@@ -2,7 +2,7 @@
  * 自由制造设置 store（GET/PUT /api/v1/settings/free-craft）。
  *
  * 口径（后端 `routes/settings.py`）：
- * - 默认关闭；开启要求大模型已启用 + 前端二次确认 Resolver LLM 风险；
+ * - 默认关闭；开启要求大模型已启用 + 前端二次确认大模型费用风险（R-19 pre-queue：草稿在进入裁决前生成一次，生成失败零写入、不因 CAS 重试重复调用）；
  * - 后端持久化到本机 `data/free_craft.json`，重启保留；
  * - 写端点按值幂等、无需 Idempotency-Key；失败不自动重试，由玩家手动重试；
  * - 状态以服务端返回为准，前端不自行推断 enabled/available。
@@ -71,7 +71,7 @@ export const useFreeCraftStore = defineStore('freeCraft', {
     disarmEnable(): void {
       this.confirmArmed = false
     },
-    /** 确认风险后真正开启（accept_resolver_llm_risk=true）。 */
+    /** 确认风险后真正开启（accept_resolver_llm_risk=true 为既有 API 字段名，语义=确认「调用大模型可能产生费用」）。 */
     async enable(): Promise<boolean> {
       return this._save({ enabled: true, accept_resolver_llm_risk: true })
     },
@@ -92,7 +92,7 @@ export const useFreeCraftStore = defineStore('freeCraft', {
         this.status = status
         this.confirmArmed = false
         this.saveNotice = status.enabled
-          ? '自由制造已开启：未命中配方时会调用大模型，可能产生额外费用。'
+          ? '自由制造已开启：未命中配方时会调用大模型生成一次草稿（进入裁决前），可能产生费用。'
           : '自由制造已关闭：未命中配方时会返回不支持。'
         return true
       } catch (error) {
