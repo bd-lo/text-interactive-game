@@ -72,6 +72,9 @@
 | 2026-11-12 | **m3 叙事受控重基线（D-N4-1）**：受控重基线定义/审批/双跑对比/证据格式/回滚；本轮只交付工具与流程（`scripts/rebaseline_golden.py` dry-run 0-diff + 临时副本受控 apply 演练），不改变任何 golden/叙事文本；真实触发点=m3 建模重构批次 | 已定案（流程就绪） | N4 054 | [2026-11-12-m3-narrative-rebaseline.md](2026-11-12-m3-narrative-rebaseline.md) |
 | 2026-11-12 | **Playwright/a11y 工具口径复评（D-N4-2；D-M6-11 复审）**：结论继续以零依赖 CDP（`scripts/e2e-web.mjs`）为唯一 e2e 工具与 CI 口径，不引入 Playwright、不建长期 CI 浏览器矩阵；含三选项成本/回滚/复评触发条件 | 已定案 | N4 055 | [2026-11-12-playwright-a11y-eval.md](2026-11-12-playwright-a11y-eval.md) |
 | 2026-11-12 | **便携包 / PyInstaller / 安装包评估（D-N5-1）**：本轮不实现、不新增构建依赖/CI 打包 job/exe；维持「仓库/zip + uv + 启动器 + wheel」分发；保留方案对比与复评触发条件 | 已定案（评估：不实现） | N5 058 | [2026-11-12-portable-package-eval.md](2026-11-12-portable-package-eval.md) |
+| 2026-11-12 | **反代信任与访问控制（D-R6-1）**：`TEXTGAME_TRUST_PROXY` 默认 false（带 XFF/Forwarded 头→403 fail-closed）；启用后 XFF 首跳判定、Forwarded 基础支持、非 loopback 仍要求 token；单进程默认只绑 127.0.0.1 | 已定案 | R6 遗留项收口（R-25） | [2026-11-12-proxy-trust-and-access.md](2026-11-12-proxy-trust-and-access.md) |
+| 2026-11-12 | **单进程 / 多 worker 与启动迁移策略（D-R6-2）**：多 worker 默认启动拒绝（`TEXTGAME_ALLOW_MULTI_WORKER` opt-in）、`ensure_schema` 升级加跨进程文件锁（10s 超时、锁内重判）、手动迁移优先；SQLite 仍建议单 worker | 已定案 | R6 遗留项收口（R-04/R-05） | [2026-11-12-single-process-and-migration-lock.md](2026-11-12-single-process-and-migration-lock.md) |
+| 2026-11-12 | **R-19 pre-queue 迁移决策（D-R6-3）**：自由制造草案移出 Resolver（pre-queue 预生成 + `prepared_crafts` 透传 + 纯校验重算，Resolver 零 LLM 调用）；CAS 重试复用载荷；兼容开关保留为历史兼容（M5 后评估简化）；NPC free craft 零 LLM 拒绝、失败错误码保 golden | 已定案 | R6 遗留项收口（R-19） | [2026-11-12-r19-pre-queue-migration.md](2026-11-12-r19-pre-queue-migration.md) |
 
 ## 7. 记录模板
 

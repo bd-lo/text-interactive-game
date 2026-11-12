@@ -85,6 +85,16 @@
 > **未纳入本草案（待后续批次）**：N1 **033–034 跑团世界模组 P0**（需用户拍板新增 EventType，D-N6）、N3 **046 世界书条目编辑**（可选）——交付后另立条目；网页场景包/存档多文件 UI 亦待后续 web 批次（后端端点已就绪）。
 > **发布状态**：本段仅草案；`0.4.0` 发布（版本 bump / tag / GitHub Release / PyPI）由维护者按 [RELEASE.md](RELEASE.md) 拍板执行。
 
+### R6 遗留项收口（2026-11-12）
+
+- **R-19 pre-queue 迁移（ADR [D-R6-3](docs/decisions/2026-11-12-r19-pre-queue-migration.md)）**：自由制造草案移出 Resolver——新增 `orchestration/pre_queue.py`，提案入队/裁决前预生成一次 `CraftDraft` 并经 `prepared_crafts` 按 `proposal_id` 透传，`CraftService._execute_prepared_free_craft` 纯校验/框架重算；**Resolver 内零 LLM**（`caller=resolver` 无载荷→`INVALID_INPUT`，永不回落生成器），CAS 重试复用同一载荷；`TEXTGAME_ALLOW_RESOLVER_LLM`/网页 risk 二次确认保留为历史兼容（文案更新）。新增 16 例。
+- **R-25 反代信任（ADR [D-R6-1](docs/decisions/2026-11-12-proxy-trust-and-access.md)）**：`TEXTGAME_TRUST_PROXY` 默认 **false**——未启用时带 `X-Forwarded-For`/`Forwarded` → 403（防同机反代绕过）；启用后取 XFF 首跳（Forwarded 基础 `for=`、非法 fail-closed、XFF 优先），非 loopback 仍要求 `TEXTGAME_API_TOKEN`。6 组测试。
+- **R-04/R-05 单进程策略（ADR [D-R6-2](docs/decisions/2026-11-12-single-process-and-migration-lock.md)）**：检测到多 worker（`WEB_CONCURRENCY`/`UVICORN_WORKERS`/`GUNICORN_WORKERS`>1）且未 `TEXTGAME_ALLOW_MULTI_WORKER=true` → 启动 `RuntimeError`；`ensure_schema` 升级加 `*.migrate.lock` 跨进程文件锁（Windows msvcrt / POSIX flock、10s 超时、锁内重判；健康/新库不建锁）。
+- **健壮性与 QA P2**：`list_games` 尾部叙事改单条有界 SQL（`read_last_narrative_event`，>200 事件边界测试）+ `_verified_games` 有界 LRU(4096)；R-16 `/view.lore` 与下回合注入 turn 一致性测试；chunked 超限 JSON 端点由 400 修复为 **413**（+2 测试）；v2 条件 `StrictBool`/`StrictInt`（v1 lax 冻结）；终端空库提示去字面 "JSON"；`GET /games/{id}/export` 声明 `response_model=SavePackage`（OpenAPI 断言、响应逐字不变）。
+- **配置/凭据/smoke**：`TEXTGAME_FREE_CRAFT_SETTINGS_FILE` 等 3 个 Path 字段空串归一 `None`（validator）；Windows 凭据文件尽力 `icacls` 收紧（失败仅 WARNING，POSIX 0o600）；smoke `max_tokens=128` + `content_len` 输出、空 content 仅 WARN。
+- **前端**：夜间暗色 token 提亮（`--fg-dim`→`#c6cce2`、`--accent`→`#c8d3ff`、`--ambient-1..4` 不透明度下调；CDP 字形像素实测最差 accent **2.66→4.89**、fg-dim **2.93→5.34**、渐变标题 **5.82→7.48**，夜间全部 ≥4.5；新 token 纯底 dim/bg **12.47**、accent/bg **13.49**；日间 token 未改）；375/320px「视觉设置」菜单改全宽下拉；e2e 新增 `mobile.visual-menu`。
+- **文档**：新增 ADR D-R6-1/2/3 并登记 `docs/decisions/README.md` 索引；第 12 章 §12.11、第 13 章 §13.4、第 16 章、第 18 章、第 23 章回写；R5 §4 20 条最终状态、N 系列 QA P2 状态与文档漂移（e2e 接入 CI、第 18 章 Playwright/axe 结论、RELEASE 031/058、流式 `start.turn_id`、分享导出重序列化、8MB 精确匹配）见 [R6 进度文档](docs/progress/R6-2026-11-12-leftovers.md)。
+- **验证**：后端 **2521 passed**（replay **69**、mypy 119 files、ruff format 281 files/ruff check 全过、lint-imports 2 kept）；web **69 files / 481 tests**（typecheck/build、dist 38 文件连续两次 build SHA256 一致）；e2e **33/33 步、211/211 断言**；demo/console `--check` exit 0；`check_docs` PASS；新增测试 **+65**。本批**不 bump 版本**（`0.4.0` 待发布、RELEASE.md checklist 未执行）。
 ## [0.3.0] - 2026-11-11（玩家启动器与退出体验，N5 057）
 
 ### 新增

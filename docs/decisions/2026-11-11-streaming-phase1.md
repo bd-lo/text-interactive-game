@@ -42,7 +42,7 @@
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
-| `start` | `{type, turn_id, expected_version}` | 回合开始（服务端已通过 CAS/幂等前置） |
+| `start` | `{type, turn_id, expected_version}` | 回合开始；`turn_id` 是**拟提交回合号**（`expected_version+1` 预告值），只读零事件回合不推进——权威值以 `done.result.turn_id` 为准 |
 | `delta` | `{type, text}` | 叙事增量（UTF-8 文本，客户端追加） |
 | `replace` | `{type, text, reason}` | 丢弃已显示增量并替换（校验失败/LLM 中途失败回退模板；`reason` 机器可读） |
 | `done` | `{type, result}` | `result` = 与 `/turns` **完全相同的 `TurnResult`**（权威文本） |
@@ -50,6 +50,7 @@
 
 - 理由：最小协议覆盖「开始/增量/替换/成功/失败」；`done.result` 直接复用既有 DTO，前端无需第二套解析；
   `replace` 让「未校验文本只显示、最终以权威文本为准」有显式通道。
+- 注（2026-11-12 QA P2-1 明示）：`start.turn_id` = **拟提交回合号**（`expected_version + 1` 的预告值），`done.result.turn_id` = 实际提交回合；只读零事件回合两者可不同，客户端不得用 `start.turn_id` 作为权威回合号。
 - 被否：只发 `delta`+`done`（无法表达中途回退）；`error` 放 `done`（与 `TurnResult(ok=false)` 重复，
   但流开始前的失败无法给 `TurnResult`，故保留 `error`）。
 - 回写落点：第 23 章 §23.3、前端 client 类型、契约测试路径。
