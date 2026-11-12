@@ -21,12 +21,16 @@ H4 世界书（narrate@v3）：编排层把本回合激活的世界书条目经
 - ``prompt_version`` 常量随 ``LLMRequest`` 可追溯（第 12 章 §12.5）；不读时钟/随机。
 - 默认离线装配不会构造本类（``main.py`` 仅 ``TEXTGAME_LLM_ENABLED=true`` 时接线），
   因此本文件的事实供给/世界设定改动不影响默认离线路径与 m2/m3/m4 golden。
+- N2-038（D-N2-3/D-N2-4）：追加 :meth:`LLMNarratorAgent.render_with_meta_stream`——客户端
+  实现可选 ``complete_json_stream`` 时用 ``llm.streaming.NarrativeDeltaExtractor`` 从 JSON
+  片段增量提取 ``narrative`` 前缀交给 ``on_delta``；完整 JSON 到达后仍走原一次修复链，失败
+  回退模板（``replace`` 由上层按权威 ``done.result.text`` 决定）。
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,7 +42,12 @@ from textgame.domain.models import GameState, Room
 from textgame.domain.scenario import DIRECTION_NAMES, PLAYER_ID
 from textgame.domain.scenario_story import is_story_state, story_goal
 from textgame.llm.client import ChatMessage, LLMClient, LLMRequest, ModelTier
-from textgame.llm.validation import complete_json_with_repair
+from textgame.llm.streaming import NarrativeDeltaExtractor
+from textgame.llm.validation import (
+    build_repair_request,
+    complete_json_with_repair,
+    parse_and_validate,
+)
 
 __all__ = ["PROMPT_VERSION", "LLMNarratorAgent", "NarrativeOutput"]
 
@@ -138,6 +147,71 @@ class LLMNarratorAgent:
                 action=action, events=events, state=state, result_data=result_data
             ), "template"
 
+    def render_with_meta_stream(
+        self,
+        *,
+        action: ParseOutcome,
+        events: list[Event],
+        state: GameState,
+        result_data: dict[str, Any],
+        on_delta: Callable[[str], None],
+    ) -> tuple[str, str]:
+        """流式叙事（N2-038 / D-N2-3、D-N2-4）：返回 ``(最终文本, "llm"|"template")``。
+
+        - 客户端实现可选 ``complete_json_stream`` 时：chunk 先喂增量提取器，只把**已解转义的
+          ``narrative`` 前缀**通过 ``on_delta`` 下发（原始 JSON 永不外泄）；完整 JSON 到达后
+          仍走与 :meth:`render_with_meta` 相同的一次修复链（修复请求走非流式）；
+        - 客户端不支持流式：退回普通修复链（调用方会在回合结束时补单段 ``delta``）；
+        - LLM 失败/两次 JSON 都不合格/任何异常 → 模板文本 + ``template``；已显示过的增量由
+          编排/接入层用 ``replace`` 覆盖为权威文本（D-N2-2/D-N2-5）。
+        """
+        try:
+            streamer = getattr(self._client, "complete_json_stream", None)
+            if not callable(streamer):
+                return self.render_with_meta(
+                    action=action, events=events, state=state, result_data=result_data
+                )
+            request = self._build_request(
+                action=action, events=events, state=state, result_data=result_data
+            )
+            extractor = NarrativeDeltaExtractor()
+
+            def forward(chunk: str) -> None:
+                delta = extractor.feed(chunk)
+                if delta:
+                    on_delta(delta)
+
+            streamed = streamer(request, forward)
+            content = _result_content(streamed)
+            if content is None:
+                return self._fallback_text(
+                    action=action, events=events, state=state, result_data=result_data
+                ), "template"
+            parsed, error_detail = parse_and_validate(content, NarrativeOutput)
+            if parsed is not None:
+                return str(parsed["narrative"]), "llm"
+            if request.max_repair < 1:
+                return self._fallback_text(
+                    action=action, events=events, state=state, result_data=result_data
+                ), "template"
+            repaired = self._client.complete_json(build_repair_request(request, error_detail))
+            repaired_content = _result_content(repaired)
+            if repaired_content is None:
+                return self._fallback_text(
+                    action=action, events=events, state=state, result_data=result_data
+                ), "template"
+            repaired_parsed, _ = parse_and_validate(repaired_content, NarrativeOutput)
+            if repaired_parsed is None:
+                return self._fallback_text(
+                    action=action, events=events, state=state, result_data=result_data
+                ), "template"
+            return str(repaired_parsed["narrative"]), "llm"
+        except Exception:
+            # 叙事绝不影响回合提交：任何异常都回退确定性模板（零状态副作用）。
+            return self._fallback_text(
+                action=action, events=events, state=state, result_data=result_data
+            ), "template"
+
     # ------------------------------------------------------------------
     # 内部：请求构造与兜底
     # ------------------------------------------------------------------
@@ -226,6 +300,14 @@ class LLMNarratorAgent:
 # ----------------------------------------------------------------------
 # 事实/环境投影：只暴露玩家可见展示名（物品名/NPC 名/房间名/中文方位）
 # ----------------------------------------------------------------------
+def _result_content(result: Any) -> str | None:
+    """取客户端 ``Result`` 里的原始文本（失败/缺字段 → ``None``）。"""
+    if not result.ok or not result.data:
+        return None
+    content = result.data.get("content")
+    return content if isinstance(content, str) else None
+
+
 def _event_fact(event: Event, state: GameState) -> dict[str, Any]:
     """单条事件的公共事实投影（类型/行动者名/展示名参数/结果，不含私有记忆/内部 ID）。"""
     event_type = event.event_type.value if event.event_type is not None else None

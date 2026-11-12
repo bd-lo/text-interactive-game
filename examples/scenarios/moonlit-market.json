@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "slug": "moonlit-market",
+  "meta": {
+    "title": "月市奇遇（分享示例）",
+    "author": "分享示例作者",
+    "description": "可分享的 v2 场景：导出为单文件 JSON 后，任何人导入（POST /api/v1/scenarios）即可开局。",
+    "tags": ["示例", "分享"]
+  },
+  "player": {
+    "name": "夜市客",
+    "hp": 8,
+    "max_hp": 8,
+    "location": "gate",
+    "inventory": []
+  },
+  "rooms": [
+    {
+      "key": "gate",
+      "name": "市集入口",
+      "description": "灯笼从檐下一路挂到街尾，人声把夜色烘得很暖。",
+      "exits": {"east": "stalls"}
+    },
+    {
+      "key": "stalls",
+      "name": "月市摊位",
+      "description": "摊主正在收拾最后一盏灯，案上还剩一小截灯芯。",
+      "exits": {"west": "gate"},
+      "npcs": ["vendor"],
+      "items": ["wick"],
+      "on_enter": {"hp_delta": -1, "hint": "夜风从袖口钻进来。"}
+    }
+  ],
+  "items": [
+    {"key": "wick", "name": "灯芯", "description": "一小截干燥的灯芯。", "tags": ["quest"]}
+  ],
+  "npcs": [
+    {
+      "key": "vendor",
+      "name": "摊主",
+      "room": "stalls",
+      "description": "他抬眼看了看你手里的灯。",
+      "dialogue": {
+        "default": "摊主笑了笑：要灯芯吗？",
+        "topics": [
+          {
+            "keywords": ["灯芯", "买", "问"],
+            "reply": "拿去吧，替我把它点亮。",
+            "dialogue_state": "offered"
+          }
+        ]
+      }
+    }
+  ],
+  "flags": [
+    {"key": "vendor_offered", "when": {"npc_state": {"npc": "vendor", "state": "offered"}}},
+    {"key": "at_stalls", "when": {"in_room": "stalls"}},
+    {"key": "has_wick", "when": {"has_item": "wick"}}
+  ],
+  "goal": {
+    "title": "点亮最后一盏灯",
+    "description": "和摊主说上话，拿到灯芯。",
+    "objectives": [
+      {"key": "talk", "text": "和摊主搭话", "when": {"flag": "vendor_offered"}},
+      {"key": "take", "text": "拿走灯芯", "when": {"flag": "has_wick"}}
+    ]
+  },
+  "endings": [
+    {
+      "key": "light",
+      "kind": "win",
+      "title": "月光与灯光",
+      "text": "灯芯亮起来的一瞬，整条街的灯笼都跟着晃了晃。",
+      "priority": 10,
+      "when": {"all": [{"objective_done": "talk"}, {"objective_done": "take"}]}
+    },
+    {
+      "key": "too_late",
+      "kind": "lose",
+      "title": "收摊了",
+      "text": "你磨蹭太久，摊主收起了灯，街市暗了下去。",
+      "priority": 5,
+      "when": {"all": [{"turn_gte": 6}, {"not": {"flag": "has_wick"}}]}
+    }
+  ],
+  "suggestions": [
+    {"when": {"all": [{"flag": "at_stalls"}, {"not": {"flag": "vendor_offered"}}]}, "text": "和摊主说话"},
+    {"when": {"flag": "at_stalls"}, "text": "拿走灯芯"}
+  ]
+}

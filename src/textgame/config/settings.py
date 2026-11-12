@@ -62,6 +62,12 @@ class Settings(BaseSettings):
         description="020：模型分级/缓存 JSON 配置路径覆盖（缺省用包内默认）",
     )
 
+    # N2-038 流式叙事后端（ADR D-N2-8）：``True``（默认）= ``POST /api/v1/turns/stream``
+    # 常开（旧客户端不调用 → 死代码无副作用；前端 039 只在 LLM 已配置时使用）；``False`` =
+    # 端点返回 404 统一失败信封（前端自动降级普通 ``/turns``），用于出问题时一键回滚。
+    # 默认离线路径（模板叙事/旧 ``/turns``/golden）不受该开关影响。
+    stream_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

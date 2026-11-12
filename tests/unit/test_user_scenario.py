@@ -606,3 +606,722 @@ def test_generic_reply_when_dialogue_absent() -> None:
     reply = hooks.npc_reply(ids.npcs["npc1"], "你好")
     assert reply is not None
     assert reply["reply"]
+
+
+# ---------------------------------------------------------------------------
+# v2（schema_version=2）：flag / 目标进度 / 物品 / NPC / 时间 / 多结局（设计：scenario-dsl-v2.md）
+# ---------------------------------------------------------------------------
+
+_V2_SCENARIO_ID = "scn_01J9Z3K4Q7X8Y9Z0ABCDEFGHJ0"
+
+
+def _v2() -> dict[str, Any]:
+    """v2 完整定义（flags + 目标进度链 + 多结局；与 examples/scenarios/lantern-vigil.json 同构）。"""
+    return {
+        "schema_version": 2,
+        "slug": "lantern-vigil",
+        "meta": {"title": "灯守之夜", "author": "示例", "description": "v2 条件矩阵"},
+        "player": {"name": "旅人", "hp": 12, "max_hp": 12, "location": "gate"},
+        "rooms": [
+            {
+                "key": "gate",
+                "name": "塔门",
+                "description": "门缝里透出风。",
+                "exits": {"east": "hall"},
+            },
+            {
+                "key": "hall",
+                "name": "厅堂",
+                "description": "灯座空着。",
+                "exits": {"west": "gate", "east": "shrine"},
+                "npcs": ["keeper"],
+                "items": ["candle"],
+            },
+            {
+                "key": "shrine",
+                "name": "灯室",
+                "description": "石台上摆着灯油。",
+                "exits": {"west": "hall"},
+                "items": ["oil", "flint"],
+            },
+        ],
+        "items": [
+            {"key": "candle", "name": "蜡烛", "tags": ["quest"]},
+            {"key": "oil", "name": "灯油", "tags": ["quest"]},
+            {"key": "flint", "name": "火石", "tags": ["tool"]},
+        ],
+        "npcs": [
+            {
+                "key": "keeper",
+                "name": "灯守",
+                "room": "hall",
+                "dialogue": {
+                    "default": "灯要亮，得先有油。",
+                    "topics": [
+                        {
+                            "keywords": ["任务", "灯"],
+                            "reply": "去灯室取灯油。",
+                            "dialogue_state": "briefed",
+                        }
+                    ],
+                },
+            }
+        ],
+        "flags": [
+            {"key": "keeper_briefed", "when": {"npc_state": {"npc": "keeper", "state": "briefed"}}},
+            {"key": "oil_waiting", "when": {"item_in_room": {"item": "oil", "room": "shrine"}}},
+            {"key": "in_shrine", "when": {"in_room": "shrine"}},
+            {"key": "keeper_at_hall", "when": {"npc_in_room": {"npc": "keeper", "room": "hall"}}},
+            {
+                "key": "supplies_ready",
+                "when": {"has_item_tag_count": {"tag": "quest", "at_least": 2}},
+            },
+        ],
+        "goal": {
+            "title": "点亮长明灯",
+            "objectives": [
+                {"key": "listen", "text": "打听方法", "when": {"flag": "keeper_briefed"}},
+                {"key": "gather", "text": "集齐材料", "when": {"flag": "supplies_ready"}},
+                {
+                    "key": "light",
+                    "text": "带材料进入灯室",
+                    "when": {"all": [{"objective_done": "gather"}, {"flag": "in_shrine"}]},
+                },
+            ],
+        },
+        "endings": [
+            {
+                "key": "lit",
+                "kind": "win",
+                "title": "灯亮",
+                "text": "灯芯跳了一下。",
+                "priority": 10,
+                "when": {"all": [{"objective_done": "light"}, {"flag": "keeper_briefed"}]},
+            },
+            {
+                "key": "empty_handed",
+                "kind": "lose",
+                "title": "空手",
+                "text": "灯守摇了摇头。",
+                "priority": 6,
+                "when": {
+                    "all": [
+                        {"turn_gte": 8},
+                        {"not": {"flag": "supplies_ready"}},
+                        {"npc_in_room": {"npc": "keeper", "room": "hall"}},
+                    ]
+                },
+            },
+            {
+                "key": "fallen",
+                "kind": "lose",
+                "title": "倒下",
+                "text": "你倒在石台边。",
+                "priority": 1,
+                "when": {"hp_lte": 0},
+            },
+        ],
+        "suggestions": [
+            {"when": {"flag": "oil_waiting"}, "text": "把灯油拿起来"},
+            {"when": {"flag": "keeper_at_hall"}, "text": "和灯守聊聊"},
+        ],
+    }
+
+
+def _v2_parsed(definition: dict[str, Any] | None = None):
+    """解析 v2 定义并断言成功（测试辅助）。"""
+    parsed = parse_definition(
+        json.dumps(definition if definition is not None else _v2(), ensure_ascii=False)
+    )
+    assert parsed.ok, parsed.errors
+    assert parsed.definition is not None
+    return parsed.definition
+
+
+def _v2_bundle(
+    definition: dict[str, Any] | None = None,
+) -> tuple[Any, ScenarioIds, Any, UserScenarioHooks]:
+    """v2 定义 → (definition, ids, 初始状态, 钩子)。"""
+    parsed_definition = _v2_parsed(definition)
+    ids = derive_ids(_V2_SCENARIO_ID, parsed_definition)
+    state = build_initial_state(parsed_definition, ids, save_seed="save-v2")
+    return parsed_definition, ids, state, UserScenarioHooks(parsed_definition, ids)
+
+
+def _v2_eval(payload: dict[str, Any], state: Any, definition: Any, ids: ScenarioIds) -> bool:
+    """在 v2 定义上下文里求值一个条件（测试辅助）。"""
+    return evaluate_condition(_condition(payload), state, ids, definition=definition)
+
+
+def _move_player(state: Any, ids: ScenarioIds, room_key: str):
+    """移动玩家到指定房间（测试辅助；等价于 CHARACTER_MOVED 的后置状态）。"""
+    player = state.characters[PLAYER_ID].model_copy(update={"location": ids.rooms[room_key]})
+    return state.model_copy(update={"characters": {PLAYER_ID: player}})
+
+
+def _take_item(state: Any, ids: ScenarioIds, item_key: str, room_key: str):
+    """模拟 ITEM_TAKEN 后置状态：物品从房间移到玩家行囊（测试辅助）。"""
+    room = state.rooms[ids.rooms[room_key]]
+    updated_room = room.model_copy(
+        update={
+            "item_ids": [existing for existing in room.item_ids if existing != ids.items[item_key]]
+        }
+    )
+    player = state.characters[PLAYER_ID].model_copy(
+        update={"inventory": [*state.characters[PLAYER_ID].inventory, ids.items[item_key]]}
+    )
+    return state.model_copy(
+        update={
+            "characters": {PLAYER_ID: player},
+            "rooms": {**state.rooms, ids.rooms[room_key]: updated_room},
+        }
+    )
+
+
+def _set_npc_state(state: Any, ids: ScenarioIds, npc_key: str, dialogue_state: str):
+    """模拟 DIALOGUE_EXCHANGED 后置状态（测试辅助）。"""
+    npc = state.npcs[ids.npcs[npc_key]].model_copy(update={"dialogue_state": dialogue_state})
+    return state.model_copy(update={"npcs": {**state.npcs, ids.npcs[npc_key]: npc}})
+
+
+def test_v2_parse_ok_and_contract_unchanged() -> None:
+    """v2 解析成功；summary 仍是冻结的 6 键；flags 进入定义模型。"""
+    parsed_definition, _ids, _state, _ = _v2_bundle()
+    assert parsed_definition.schema_version == 2
+    assert [flag.key for flag in parsed_definition.flags] == [
+        "keeper_briefed",
+        "oil_waiting",
+        "in_shrine",
+        "keeper_at_hall",
+        "supplies_ready",
+    ]
+    parsed = parse_definition(json.dumps(_v2(), ensure_ascii=False))
+    assert set(parsed.summary) == {
+        "rooms",
+        "items",
+        "npcs",
+        "objectives",
+        "endings",
+        "suggestions",
+    }
+    assert parsed.warnings == ()
+
+
+def test_v2_flag_evaluates_declared_condition() -> None:
+    """flag 是读时派生命题：npc dialogue_state 变化前后取值翻转。"""
+    definition, ids, state, _ = _v2_bundle()
+    assert _v2_eval({"flag": "keeper_briefed"}, state, definition, ids) is False
+    briefed = _set_npc_state(state, ids, "keeper", "briefed")
+    assert _v2_eval({"flag": "keeper_briefed"}, briefed, definition, ids) is True
+
+
+def test_v2_flag_can_reference_flag() -> None:
+    """flag 可引用 flag（声明顺序无关；求值按依赖递归）。"""
+    definition = _v2()
+    definition["flags"].append(
+        {"key": "all_ready", "when": {"all": [{"flag": "keeper_briefed"}, {"flag": "in_shrine"}]}}
+    )
+    definition["suggestions"].append({"when": {"flag": "all_ready"}, "text": "可以点灯了"})
+    parsed_definition, ids, state, _ = _v2_bundle(definition)
+    assert _v2_eval({"flag": "all_ready"}, state, parsed_definition, ids) is False
+    progressed = _set_npc_state(_move_player(state, ids, "shrine"), ids, "keeper", "briefed")
+    assert _v2_eval({"flag": "all_ready"}, progressed, parsed_definition, ids) is True
+
+
+def test_v2_unknown_flag_reference_rejected() -> None:
+    """引用未声明 flag → 结构化错误，路径定位到 when.flag。"""
+    definition = _v2()
+    definition["goal"]["objectives"][0]["when"] = {"flag": "ghost_flag"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(
+        error.path == "goal.objectives[0].when.flag" and "ghost_flag" in error.message
+        for error in parsed.errors
+    )
+
+
+def test_v2_unknown_objective_reference_rejected() -> None:
+    """objective_done 引用不存在目标 → 结构化错误。"""
+    definition = _v2()
+    definition["goal"]["objectives"][2]["when"] = {"objective_done": "ghost"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "goal.objectives[2].when.objective_done" for error in parsed.errors)
+    assert any("ghost" in error.message for error in parsed.errors)
+
+
+def test_v2_flag_cycle_rejected() -> None:
+    """flag 互相引用成环 → 校验期拒绝（不能运行期死循环）。"""
+    definition = _v2()
+    definition["flags"] = [
+        {"key": "a", "when": {"flag": "b"}},
+        {"key": "b", "when": {"flag": "a"}},
+    ]
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("循环引用" in error.message for error in parsed.errors)
+    assert any(error.path.startswith("flags[") for error in parsed.errors)
+
+
+def test_v2_flag_objective_cycle_rejected() -> None:
+    """flag 与目标进度跨类型成环 → 统一依赖图检出。"""
+    definition = _v2()
+    definition["flags"] = [{"key": "loop", "when": {"objective_done": "listen"}}]
+    definition["goal"]["objectives"][0]["when"] = {"flag": "loop"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("循环引用" in error.message for error in parsed.errors)
+
+
+def test_v2_duplicate_flag_key_rejected() -> None:
+    """flag key 重复 → 阻断错误。"""
+    definition = _v2()
+    definition["flags"].append({"key": "keeper_briefed", "when": {"always": True}})
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "flags.key" for error in parsed.errors)
+
+
+def test_v2_objective_done_evaluates_target_progress() -> None:
+    """objective_done = 被引用目标的 when 求值（目标链）；未完成目标返回 False。"""
+    definition, ids, state, _ = _v2_bundle()
+    condition = {"objective_done": "listen"}
+    assert _v2_eval(condition, state, definition, ids) is False
+    briefed = _set_npc_state(state, ids, "keeper", "briefed")
+    assert _v2_eval(condition, briefed, definition, ids) is True
+    assert _v2_eval({"objective_done": "gather"}, briefed, definition, ids) is False
+
+
+def test_v2_goal_panel_uses_objective_chain() -> None:
+    """目标面板：gather 完成且进入灯室后 light 才完成（objective_done 链）。"""
+    _definition, ids, state, hooks = _v2_bundle()
+    assert hooks.goal(state) is not None
+    assert [item["done"] for item in hooks.goal(state)["objectives"]] == [False, False, False]
+
+    progressed = _set_npc_state(state, ids, "keeper", "briefed")
+    assert [item["done"] for item in hooks.goal(progressed)["objectives"]] == [True, False, False]
+
+    gathered = _take_item(_take_item(progressed, ids, "candle", "hall"), ids, "oil", "shrine")
+    assert [item["done"] for item in hooks.goal(gathered)["objectives"]] == [True, True, False]
+
+    in_shrine = _move_player(gathered, ids, "shrine")
+    assert [item["done"] for item in hooks.goal(in_shrine)["objectives"]] == [True, True, True]
+
+
+def test_v2_has_item_tag_count_threshold() -> None:
+    """收集类条件：持有 tag=quest 的物品数量达到阈值（含边界）。"""
+    definition, ids, state, _ = _v2_bundle()
+    condition = {"has_item_tag_count": {"tag": "quest", "at_least": 2}}
+    assert _v2_eval(condition, state, definition, ids) is False
+    one = _take_item(state, ids, "candle", "hall")
+    assert _v2_eval(condition, one, definition, ids) is False
+    two = _take_item(one, ids, "oil", "shrine")
+    assert _v2_eval(condition, two, definition, ids) is True
+    exact = {"has_item_tag_count": {"tag": "quest", "at_least": 1}}
+    assert _v2_eval(exact, one, definition, ids) is True
+    tool = {"has_item_tag_count": {"tag": "tool", "at_least": 1}}
+    flint = _take_item(one, ids, "flint", "shrine")
+    assert _v2_eval(tool, flint, definition, ids) is True
+
+
+def test_v2_item_in_room_tracks_item_location() -> None:
+    """item_in_room：物品在房间时为真，被拿走后为假。"""
+    definition, ids, state, _ = _v2_bundle()
+    condition = {"item_in_room": {"item": "oil", "room": "shrine"}}
+    assert _v2_eval(condition, state, definition, ids) is True
+    taken = _take_item(state, ids, "oil", "shrine")
+    assert _v2_eval(condition, taken, definition, ids) is False
+
+
+def test_v2_item_in_room_unknown_reference_rejected() -> None:
+    """item_in_room 的 item/room 引用不存在 → 两条结构化错误带子路径。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = {"item_in_room": {"item": "ghost", "room": "nowhere"}}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    paths = {error.path for error in parsed.errors}
+    assert "endings[0].when.item_in_room.item" in paths
+    assert "endings[0].when.item_in_room.room" in paths
+
+
+def test_v2_npc_in_room_atom() -> None:
+    """npc_in_room：按派生 ID 比较 NPC 当前房间。"""
+    definition, ids, state, _ = _v2_bundle()
+    assert _v2_eval({"npc_in_room": {"npc": "keeper", "room": "hall"}}, state, definition, ids)
+    assert not _v2_eval(
+        {"npc_in_room": {"npc": "keeper", "room": "shrine"}}, state, definition, ids
+    )
+
+
+def test_v2_npc_in_room_unknown_reference_rejected() -> None:
+    """npc_in_room 的 npc/room 引用不存在 → 结构化错误。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = {"npc_in_room": {"npc": "ghost", "room": "nowhere"}}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    paths = {error.path for error in parsed.errors}
+    assert "endings[0].when.npc_in_room.npc" in paths
+    assert "endings[0].when.npc_in_room.room" in paths
+
+
+def test_v2_time_conditions_boundaries() -> None:
+    """时间条件：turn / world_time 的 gte/lte 都是含边界比较。"""
+    definition, ids, state, _ = _v2_bundle()
+    timed = state.model_copy(update={"turn": 5, "world_time": 4})
+    assert _v2_eval({"turn_gte": 5}, timed, definition, ids) is True
+    assert _v2_eval({"turn_gte": 6}, timed, definition, ids) is False
+    assert _v2_eval({"turn_lte": 5}, timed, definition, ids) is True
+    assert _v2_eval({"turn_lte": 4}, timed, definition, ids) is False
+    assert _v2_eval({"world_time_gte": 4}, timed, definition, ids) is True
+    assert _v2_eval({"world_time_lte": 4}, timed, definition, ids) is True
+    assert _v2_eval({"world_time_lte": 3}, timed, definition, ids) is False
+    # 初始状态：turn=1、world_time=0
+    assert _v2_eval({"turn_gte": 1}, state, definition, ids) is True
+    assert _v2_eval({"world_time_gte": 0}, state, definition, ids) is True
+
+
+def test_v2_time_condition_bounds_rejected() -> None:
+    """时间条件字段有下界（turn≥1、world_time≥0）与上限，越界 → 字段错误。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = {"turn_gte": 0}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("endings[0].when.turn_gte" in error.path for error in parsed.errors)
+
+    definition = _v2()
+    definition["endings"][0]["when"] = {"world_time_gte": -1}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("endings[0].when.world_time_gte" in error.path for error in parsed.errors)
+
+
+def test_v2_combined_conditions_mix_new_atoms() -> None:
+    """组合子可与 v2 原子混用（all/any/not + flag/计数/NPC/时间）。"""
+    definition, ids, state, _ = _v2_bundle()
+    progressed = _set_npc_state(
+        _take_item(_move_player(state, ids, "hall"), ids, "candle", "hall"),
+        ids,
+        "keeper",
+        "briefed",
+    )
+    condition = {
+        "all": [
+            {"flag": "keeper_briefed"},
+            {"not": {"item_in_room": {"item": "candle", "room": "hall"}}},
+            {
+                "any": [
+                    {"turn_gte": 99},
+                    {"has_item_tag_count": {"tag": "quest", "at_least": 1}},
+                ]
+            },
+        ]
+    }
+    assert _v2_eval(condition, progressed, definition, ids) is True
+    assert _v2_eval(condition, state, definition, ids) is False
+
+
+def test_v2_version_gate_rejects_flags_for_v1() -> None:
+    """schema_version=1 + flags → 版本门禁错误（不静默升级）。"""
+    definition = _v2()
+    definition["schema_version"] = 1
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "flags" for error in parsed.errors)
+    assert any("schema_version=2" in error.message for error in parsed.errors)
+
+
+@pytest.mark.parametrize(
+    ("condition", "predicate"),
+    [
+        ({"flag": "keeper_briefed"}, "flag"),
+        ({"objective_done": "listen"}, "objective_done"),
+        ({"has_item_tag_count": {"tag": "quest", "at_least": 1}}, "has_item_tag_count"),
+        ({"item_in_room": {"item": "oil", "room": "shrine"}}, "item_in_room"),
+        ({"npc_in_room": {"npc": "keeper", "room": "hall"}}, "npc_in_room"),
+        ({"turn_gte": 2}, "turn_gte"),
+        ({"turn_lte": 9}, "turn_lte"),
+        ({"world_time_gte": 1}, "world_time_gte"),
+        ({"world_time_lte": 9}, "world_time_lte"),
+    ],
+)
+def test_v2_version_gate_rejects_each_v2_predicate_for_v1(
+    condition: dict[str, Any], predicate: str
+) -> None:
+    """v1 声明使用任一 v2 谓词 → 精确路径 + 「需要 schema_version=2」提示。"""
+    definition = _v2()
+    definition["schema_version"] = 1
+    definition["suggestions"][0]["when"] = condition
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    expected_path = f"suggestions[0].when.{predicate}"
+    assert any(error.path == expected_path for error in parsed.errors), parsed.errors
+    assert any("需要 schema_version=2" in error.message for error in parsed.errors)
+
+
+def test_v2_unknown_predicate_structured_error() -> None:
+    """未知谓词（v2 包内）→ 结构化错误带路径，消息提示白名单。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = {"teleport": "shrine"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "endings[0].when.teleport" for error in parsed.errors)
+    assert any("未知谓词" in error.message for error in parsed.errors)
+
+
+def test_v2_unknown_condition_field_extra_forbid() -> None:
+    """条件节点多余字段 → extra=forbid 结构化错误（路径带字段名）。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = {"flag": "keeper_briefed", "typo": 1}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "endings[0].when.typo" for error in parsed.errors)
+    assert any("未知谓词" in error.message for error in parsed.errors)
+
+
+def test_v2_condition_single_key_with_new_atoms() -> None:
+    """v2 原子同样遵守「一个条件恰好一个键」。"""
+    with pytest.raises(ValueError, match="只能包含一个键"):
+        Condition.model_validate({"flag": "keeper_briefed", "turn_gte": 1})
+    with pytest.raises(ValueError, match="只能包含一个键"):
+        Condition.model_validate({"not": {"flag": "keeper_briefed"}, "always": True})
+
+
+def test_v2_unsupported_schema_version_structured_error() -> None:
+    """schema_version 只接受整数 1/2；3 与字符串都给出 path=schema_version 的错误。"""
+    for value in (3, "2", True, None):
+        definition = _v2()
+        definition["schema_version"] = value
+        parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+        assert not parsed.ok
+        assert any(error.path == "schema_version" for error in parsed.errors)
+        assert any("schema_version" in error.message for error in parsed.errors)
+
+
+def test_v2_multiple_endings_priority_order() -> None:
+    """多个结局同时满足：priority 高者胜（与 v1 语义一致，v2 谓词参与判断）。"""
+    definition = _v2()
+    definition["endings"] = [
+        {
+            "key": "low",
+            "kind": "lose",
+            "title": "低",
+            "text": "低。",
+            "priority": 1,
+            "when": {"always": True},
+        },
+        {
+            "key": "high",
+            "kind": "win",
+            "title": "高",
+            "text": "高。",
+            "priority": 20,
+            "when": {"flag": "keeper_briefed"},
+        },
+    ]
+    _parsed_definition, ids, state, hooks = _v2_bundle(definition)
+    briefed = _set_npc_state(state, ids, "keeper", "briefed")
+    ending = hooks.ending(briefed)
+    assert ending is not None
+    assert ending["ending_id"] == "ending_lantern-vigil_high"
+    # 未满足时回退到 always 的结局
+    fallback = hooks.ending(state)
+    assert fallback is not None
+    assert fallback["ending_id"] == "ending_lantern-vigil_low"
+
+
+def test_v2_multiple_endings_tie_declaration_order() -> None:
+    """同 priority 多结局：按声明顺序取第一个满足项（顺序稳定、可回放）。"""
+    definition = _v2()
+    definition["endings"] = [
+        {
+            "key": "first",
+            "kind": "win",
+            "title": "一",
+            "text": "一。",
+            "priority": 5,
+            "when": {"always": True},
+        },
+        {
+            "key": "second",
+            "kind": "win",
+            "title": "二",
+            "text": "二。",
+            "priority": 5,
+            "when": {"always": True},
+        },
+    ]
+    _, _, state, hooks = _v2_bundle(definition)
+    ending = hooks.ending(state)
+    assert ending is not None
+    assert ending["ending_id"] == "ending_lantern-vigil_first"
+
+
+def test_v2_ending_choice_driven_by_player_state() -> None:
+    """「选择」由玩家动作造成的状态差异表达：留蜡烛=蜡烛结局，留灯油=灯油结局。"""
+    definition = _v2()
+    definition["endings"] = [
+        {
+            "key": "candle_path",
+            "kind": "win",
+            "title": "烛",
+            "text": "烛。",
+            "priority": 10,
+            "when": {"has_item": "candle"},
+        },
+        {
+            "key": "oil_path",
+            "kind": "win",
+            "title": "油",
+            "text": "油。",
+            "priority": 10,
+            "when": {"has_item": "oil"},
+        },
+    ]
+    _parsed_definition, ids, state, hooks = _v2_bundle(definition)
+    with_candle = _take_item(state, ids, "candle", "hall")
+    assert hooks.ending(with_candle) is not None
+    assert hooks.ending(with_candle)["ending_id"] == "ending_lantern-vigil_candle_path"
+    with_oil = _take_item(state, ids, "oil", "shrine")
+    assert hooks.ending(with_oil)["ending_id"] == "ending_lantern-vigil_oil_path"
+
+
+def test_v2_ending_uses_flag_and_objective_chain() -> None:
+    """显式结局可用 flag/目标进度链：只有 light 完成才触发胜利。"""
+    _definition, ids, state, hooks = _v2_bundle()
+    assert hooks.ending(state) is None
+    progressed = _set_npc_state(state, ids, "keeper", "briefed")
+    assert hooks.ending(progressed) is None  # flag 成立但 light 未完成
+    gathered = _take_item(_take_item(progressed, ids, "candle", "hall"), ids, "oil", "shrine")
+    in_shrine = _move_player(gathered, ids, "shrine")
+    ending = hooks.ending(in_shrine)
+    assert ending is not None
+    assert ending["ending_id"] == "ending_lantern-vigil_lit"
+    assert ending["kind"] == "win"
+
+
+def test_v2_fallback_endings_unchanged() -> None:
+    """v2 未写 endings 时沿用 v1 兜底：目标全完成=胜利；HP≤0=倒下；完成优先于倒下。"""
+    definition = _v2()
+    definition["endings"] = []
+    _parsed_definition, ids, state, hooks = _v2_bundle(definition)
+    completed = _move_player(
+        _take_item(
+            _take_item(_set_npc_state(state, ids, "keeper", "briefed"), ids, "candle", "hall"),
+            ids,
+            "oil",
+            "shrine",
+        ),
+        ids,
+        "shrine",
+    )
+    ending = hooks.ending(completed)
+    assert ending is not None
+    assert ending["ending_id"] == "ending_lantern-vigil_complete"
+    assert ending["kind"] == "win"
+
+    player = state.characters[PLAYER_ID].model_copy(update={"hp": 0})
+    fallen_state = state.model_copy(update={"characters": {PLAYER_ID: player}})
+    fallen = hooks.ending(fallen_state)
+    assert fallen is not None
+    assert fallen["ending_id"] == "ending_lantern-vigil_fallen"
+    assert fallen["kind"] == "lose"
+
+    # 同状态既完成目标又 HP=0：v1 口径「完成」优先（v2 不改兜底顺序）。
+    both = completed.model_copy(
+        update={
+            "characters": {PLAYER_ID: completed.characters[PLAYER_ID].model_copy(update={"hp": 0})}
+        }
+    )
+    both_ending = hooks.ending(both)
+    assert both_ending is not None
+    assert both_ending["ending_id"] == "ending_lantern-vigil_complete"
+
+
+def test_v2_suggestions_conditions_validated() -> None:
+    """suggestions[].when 与目标/结局同口径做静态校验（引用不存在的 flag）。"""
+    definition = _v2()
+    definition["suggestions"][0]["when"] = {"flag": "ghost"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "suggestions[0].when.flag" for error in parsed.errors)
+
+
+def test_v2_unused_flag_warning() -> None:
+    """声明但未被任何条件引用的 flag → warning（不阻断）。"""
+    definition = _v2()
+    definition["flags"].append({"key": "spare", "when": {"always": True}})
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert parsed.ok, parsed.errors
+    assert any(
+        warning.path == "flags[5]" and "spare" in warning.message for warning in parsed.warnings
+    )
+
+
+def test_v2_evaluation_deterministic_and_state_immutable() -> None:
+    """求值纯函数：同状态重复求值结果一致，且不修改入参状态（回放/state_hash 安全）。"""
+    definition, ids, state, hooks = _v2_bundle()
+    progressed = _set_npc_state(
+        _take_item(_take_item(state, ids, "candle", "hall"), ids, "oil", "shrine"),
+        ids,
+        "keeper",
+        "briefed",
+    )
+    before = progressed.model_dump()
+    condition = _condition({"all": [{"flag": "keeper_briefed"}, {"flag": "supplies_ready"}]})
+    first = evaluate_condition(condition, progressed, ids, definition=definition)
+    second = evaluate_condition(condition, progressed, ids, definition=definition)
+    assert first is True and second is True
+    assert progressed.model_dump() == before
+    assert hooks.ending(progressed) == hooks.ending(progressed)
+    assert progressed.model_dump() == before
+
+
+def test_v2_reader_keeps_v1_definition_unchanged() -> None:
+    """v2 读取器读 v1 文件：schema_version 保留 1、flags 为空、行为与 v1 逐字一致。"""
+    parsed = _parsed(_tiny())
+    assert parsed.definition is not None
+    assert parsed.definition.schema_version == 1
+    assert parsed.definition.flags == []
+    ids = derive_ids(_V2_SCENARIO_ID, parsed.definition)
+    state = build_initial_state(parsed.definition, ids, save_seed="save-v2")
+    # v1 条件无需 definition 上下文也照常求值（旧调用签名兼容）。
+    assert evaluate_condition(_condition({"in_room": "gate"}), state, ids) is True
+    assert evaluate_condition(_condition({"in_room": "hall"}), state, ids) is False
+
+
+def test_v2_flags_max_length_enforced() -> None:
+    """flags 上限 16（超过 → 字段错误，避免条件图膨胀）。"""
+    definition = _v2()
+    definition["flags"] = [
+        {"key": f"flag_{index}", "when": {"always": True}} for index in range(17)
+    ]
+    definition["suggestions"] = [{"when": {"flag": "flag_0"}, "text": "x"}]
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any(error.path == "flags" for error in parsed.errors)
+
+
+def test_v2_has_item_tag_count_at_least_boundary_rejected() -> None:
+    """has_item_tag_count.at_least 必须 ≥1（0 无意义，负值/0 → 字段错误）。"""
+    definition = _v2()
+    definition["endings"][0]["when"] = {"has_item_tag_count": {"tag": "quest", "at_least": 0}}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("at_least" in error.path for error in parsed.errors)
+
+
+def test_v2_objective_self_cycle_rejected() -> None:
+    """目标进度自引用（objective 引用自身）→ 循环引用错误。"""
+    definition = _v2()
+    definition["goal"]["objectives"][0]["when"] = {"objective_done": "listen"}
+    parsed = parse_definition(json.dumps(definition, ensure_ascii=False))
+    assert not parsed.ok
+    assert any("循环引用" in error.message for error in parsed.errors)
+
+
+def test_v2_npc_state_v1_predicate_works_in_v2() -> None:
+    """v1 npc_state 谓词在 v2 定义中语义不变（v2 是加法扩展）。"""
+    definition, ids, state, _ = _v2_bundle()
+    condition = {"npc_state": {"npc": "keeper", "state": "briefed"}}
+    assert _v2_eval(condition, state, definition, ids) is False
+    assert _v2_eval(condition, _set_npc_state(state, ids, "keeper", "briefed"), definition, ids)

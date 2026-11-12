@@ -1,4 +1,5 @@
-"""用户自上传场景服务：导入 / 校验 / 列表 / 详情 / 软删 / 建局载荷（设计契约 §3.3/§3.4）。
+"""用户自上传场景服务：导入 / 校验 / 列表 / 详情 / 导出 / 软删 / 建局载荷（设计契约 §3.3/§3.4；
+分享=单文件交换见 `docs/design/user-scenario-modules.md` §6）。
 
 职责边界：
 
@@ -7,13 +8,15 @@
   ``build_initial_state`` 与 ``UserScenarioHooks``，不重复实现条件 DSL/ID 派生；
 - **存储只经注入的 ``ScenarioRepository`` 端口**（实现见
   ``persistence.scenario_repository.SqliteScenarioRepository``），服务层不 import 具体实现；
-- **不参与事件溯源**：场景是独立资料库，导入/删除不产生 ``Event``、不改 ``GameState``；
+- **不参与事件溯源**：场景是独立资料库，导入/删除/导出不产生 ``Event``、不改 ``GameState``；
   只有建局时由 :meth:`ScenarioService.build_game_payload` 把定义物化成初始状态
   （``GameState`` 不新增字段，``game_created.params`` 的加法由编排层负责）；
 - **幂等**：``import_scenario`` 必带 ``Idempotency-Key``：同键同参回放首次响应、同键异参
   409 ``CONFLICT``；复用既有 ``idempotency`` 表/端口（同 ``CardService``/``WorldBookService``
   口径），不新增第二套幂等语义；
-- **软删除**：``delete_scenario`` 只置 ``deleted_at``，列表/详情/新建局不可见；重复删除
+- **导出（分享）**：:meth:`ScenarioService.export_scenario` 只读地把入库定义重新序列化为
+  **可直接再导入**的单文件 JSON（字段/体积/白名单与导入同口径；零写入、无幂等键）。
+- **软删除**：``delete_scenario`` 只置 ``deleted_at``，列表/详情/导出/新建局不可见；重复删除
   ``NOT_FOUND``。已开局存档的 runtime 索引必须保留，因此 :meth:`reload` 读
   ``list_for_runtime``（含已软删记录）重建索引。
 
@@ -155,6 +158,15 @@ class StoredScenario:
     warnings: tuple[dict[str, str], ...]
     created_at: datetime
     deleted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ExportedScenario:
+    """一份可分享的场景单文件（JSON 原文 + 下载文件名）；内容可直接再导入。"""
+
+    scenario_id: str
+    filename: str
+    payload: bytes
 
 
 class ScenarioRepository(Protocol):
@@ -336,6 +348,36 @@ class ScenarioService:
         payload = self._summary_payload(stored)
         payload["definition"] = stored.definition
         return payload
+
+    def export_scenario(self, scenario_id: str) -> ExportedScenario:
+        """导出场景为**可直接再导入**的单文件 JSON（分享 = 文件交换；只读、零写入）。
+
+        - 内容 = 入库时校验通过的原始定义对象重新序列化：``schema_version``/标题/作者/房间/
+          flags 等字段逐字段保留（键序取入库规范化顺序，确定性、多次导出字节一致）；
+        - 不含服务器路径/凭据/summary/时间戳等库内字段；``scenario_id`` 不写进文件（只用于
+          路由定位与响应头文件名），文件名 = ``<slug>.json``（slug 受 ``^[a-z0-9-]{2,32}$``
+          约束，天然 ASCII 安全、无路径分隔符）；
+        - 未知/已软删/库内定义损坏 → 404 ``NOT_FOUND``；体积与导入同口径（≤256KB，超限给
+          422 结构化错误）。
+        """
+        stored = self._require_stored(scenario_id)
+        if not parse_definition(canonical_json(stored.definition)).ok:  # pragma: no cover
+            # 库内定义损坏（绕过导入校验的脏数据）：不导出不可再导入的文件。
+            raise ScenarioNotFoundError(f"场景定义不可用: {scenario_id}")
+        payload = (
+            json.dumps(stored.definition, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        )
+        if len(payload) > MAX_DEFINITION_BYTES:
+            # 理论边界：原始 JSON 用超紧凑写法时 pretty 版可能超限，退回规范化紧凑版。
+            payload = canonical_json(stored.definition).encode("utf-8") + b"\n"
+        if len(payload) > MAX_DEFINITION_BYTES:
+            message = f"场景规范化后超过 {MAX_DEFINITION_BYTES // 1024}KB 分享上限，无法导出"
+            raise ScenarioValidationError(message, errors=[{"path": "$", "message": message}])
+        return ExportedScenario(
+            scenario_id=stored.scenario_id,
+            filename=f"{stored.slug}.json",
+            payload=payload,
+        )
 
     # ------------------------------------------------------------------
     # 写入：导入（幂等）/ 软删
@@ -542,6 +584,7 @@ __all__ = [
     "LIST_MAX_LIMIT",
     "MAX_QUERY_LENGTH",
     "SUMMARY_KEYS",
+    "ExportedScenario",
     "ScenarioConflictError",
     "ScenarioNotFoundError",
     "ScenarioRepository",

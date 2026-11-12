@@ -1,9 +1,10 @@
-"""玩家自上传场景库 API 集成测试（契约：docs/design/user-scenario-modules.md §3.4）。
+"""玩家自上传场景库 API 集成测试（契约：docs/design/user-scenario-modules.md §3.4/§6）。
 
 覆盖：validate（200 精确形状/结构化 path/无副作用）、import（JSON 原文 + multipart 兼容、
 201 精确形状、必带 Idempotency-Key、同键幂等/异参 409、非法 422、超 256KB 413）、列表
 （分页/q 搜索/非法分页 422）、详情（未知/已删 404）、软删（204 空 body、重复删除 404、
-列表隐藏、runtime 索引保留）、OpenAPI 5 端点、未装配 scenario_service 时 500 信封。
+列表隐藏、runtime 索引保留）、**导出（v1/v2 roundtrip：导出→再导入逐字段一致/确定性/
+零写入/404/不泄漏库内字段）**、OpenAPI 端点、未装配 scenario_service 时 500 信封。
 全部使用内存 SQLite + 真实 ``ScenarioService``/``SqliteScenarioRepository``，不联网。
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,6 +32,9 @@ pytestmark = [pytest.mark.integration]
 _IMPORT_PATH = "/api/v1/scenarios"
 _VALIDATE_PATH = "/api/v1/scenarios/validate"
 _SAVE_SEED = "save-scenario-api-0001"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_LANTERN_VIGIL = _REPO_ROOT / "examples" / "scenarios" / "lantern-vigil.json"
+_MOONLIT_MARKET = _REPO_ROOT / "examples" / "scenarios" / "moonlit-market.json"
 
 
 @dataclass
@@ -443,14 +448,170 @@ def test_delete_does_not_require_idempotency_key(scenario_harness: ScenarioHarne
 
 
 # ---------------------------------------------------------------------------
+# 导出（分享 = 单文件交换；只读、零写入、可直接再导入）
+# ---------------------------------------------------------------------------
+def _export_path(scenario_id: str) -> str:
+    """导出端点路径（测试辅助）。"""
+    return f"{_IMPORT_PATH}/{scenario_id}/export"
+
+
+def test_export_v1_returns_reimportable_single_file(
+    scenario_harness: ScenarioHarness,
+) -> None:
+    """v1 导出：200 JSON 附件、字段逐字保留、可作为 import body 再导入（逐字段一致）。"""
+    client = scenario_harness.client
+    original_id = _imported_id(client, _raw(), key="scn-share-v1-import")
+    original_detail = client.get(f"{_IMPORT_PATH}/{original_id}").json()
+
+    resp = client.get(_export_path(original_id))
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.headers["content-disposition"] == 'attachment; filename="tiny-tower.json"'
+    exported = resp.json()
+    assert exported == _tiny()  # schema_version/全部字段逐字保留
+    assert set(exported) == {
+        "schema_version",
+        "slug",
+        "meta",
+        "player",
+        "rooms",
+        "items",
+        "npcs",
+        "goal",
+        "endings",
+    }
+
+    # 导出内容本身仍是合法定义，可直接再导入（同/另一进程，分享=文件交换）。
+    validated = client.post(_VALIDATE_PATH, content=resp.content)
+    assert validated.status_code == 200
+    assert validated.json()["ok"] is True
+
+    reimported = _import(client, resp.content, key="scn-share-v1-reimport")
+    assert reimported.status_code == 201, reimported.text
+    second_id = str(reimported.json()["scenario_id"])
+    assert second_id != original_id  # 每次导入生成新的内部 ID（slug 可重复）
+    second_detail = client.get(f"{_IMPORT_PATH}/{second_id}").json()
+    assert second_detail["definition"] == exported
+    assert second_detail["schema_version"] == 1
+    assert second_detail["summary"] == original_detail["summary"]
+    assert second_detail["title"] == original_detail["title"]
+    assert second_detail["author"] == original_detail["author"]
+
+
+@pytest.mark.parametrize(
+    ("path", "slug", "objective_count"),
+    [
+        (_LANTERN_VIGIL, "lantern-vigil", 3),
+        (_MOONLIT_MARKET, "moonlit-market", 2),
+    ],
+)
+def test_export_v2_roundtrip_preserves_schema_version_and_flags(
+    scenario_harness: ScenarioHarness,
+    path: Path,
+    slug: str,
+    objective_count: int,
+) -> None:
+    """v2 导出→再导入：schema_version=2、flags/全部字段与 summary 逐字段一致，且仍可开局。"""
+    client = scenario_harness.client
+    raw = path.read_bytes()
+    original = _import(client, raw, key=f"scn-share-v2-import-{slug}")
+    assert original.status_code == 201, original.text
+    original_id = str(original.json()["scenario_id"])
+
+    resp = client.get(_export_path(original_id))
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-disposition"] == f'attachment; filename="{slug}.json"'
+    exported = resp.json()
+    assert exported == json.loads(raw.decode("utf-8"))
+    assert exported["schema_version"] == 2
+    assert len(exported["flags"]) == (5 if slug == "lantern-vigil" else 3)
+    assert client.post(_VALIDATE_PATH, content=resp.content).json()["ok"] is True
+
+    reimported = _import(client, resp.content, key=f"scn-share-v2-reimport-{slug}")
+    assert reimported.status_code == 201, reimported.text
+    second_id = str(reimported.json()["scenario_id"])
+    second_detail = client.get(f"{_IMPORT_PATH}/{second_id}").json()
+    assert second_detail["definition"] == exported
+    assert second_detail["schema_version"] == 2
+    assert second_detail["summary"] == client.get(f"{_IMPORT_PATH}/{original_id}").json()["summary"]
+    assert second_detail["summary"]["objectives"] == objective_count
+    assert second_detail["title"] == exported["meta"]["title"]
+    assert second_detail["author"] == exported["meta"]["author"]
+    # 分享文件导入后仍可建局（玩家槽位/房间派生 ID 与 v2 语义不变）。
+    payload = scenario_harness.service.build_game_payload(second_id, _SAVE_SEED)
+    assert payload["scenario_title"] == exported["meta"]["title"]
+    assert payload["initial_state"]["characters"]
+
+
+def test_export_is_read_only_deterministic_and_does_not_write_events(
+    scenario_harness: ScenarioHarness,
+) -> None:
+    """导出只读：两次字节一致、列表/详情零变化、不产生任何事件行。"""
+    client = scenario_harness.client
+    scenario_id = _imported_id(client, _raw(), key="scn-share-readonly-import")
+    list_before = client.get(_IMPORT_PATH).json()
+    detail_before = client.get(f"{_IMPORT_PATH}/{scenario_id}").json()
+
+    first = client.get(_export_path(scenario_id))
+    second = client.get(_export_path(scenario_id))
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.content == second.content  # 确定性：同一场景导出字节一致
+
+    assert client.get(_IMPORT_PATH).json() == list_before
+    assert client.get(f"{_IMPORT_PATH}/{scenario_id}").json() == detail_before
+    with scenario_harness.engine.connect() as connection:
+        events = connection.execute(text("SELECT COUNT(*) FROM events")).scalar()
+    assert events == 0
+
+
+def test_export_does_not_leak_internal_fields_or_server_paths(
+    scenario_harness: ScenarioHarness,
+) -> None:
+    """导出体只有场景定义：不含 scenario_id/summary/时间戳/服务器路径等库内信息。"""
+    client = scenario_harness.client
+    scenario_id = _imported_id(client, _raw(), key="scn-share-leak-import")
+    body = client.get(_export_path(scenario_id)).content
+    text_body = body.decode("utf-8")
+    assert scenario_id not in text_body
+    assert "scn_" not in text_body
+    for forbidden in ("created_at", "deleted_at", "definition_json", "warnings", "summary"):
+        assert forbidden not in text_body
+    assert str(_REPO_ROOT) not in text_body
+    assert set(json.loads(text_body)) == set(_tiny())
+
+
+def test_export_unknown_or_soft_deleted_scenario_404(
+    scenario_harness: ScenarioHarness,
+) -> None:
+    """未知 ID / 格式非法 ID / 已软删场景 → 404 NOT_FOUND 统一信封。"""
+    client = scenario_harness.client
+    _assert_error(client.get(_export_path("scn_00000000000000000000000000")), 404, "NOT_FOUND")
+    _assert_error(client.get(_export_path("not-a-scenario")), 404, "NOT_FOUND")
+
+    scenario_id = _imported_id(client, _raw(), key="scn-share-delete-import")
+    assert client.delete(f"{_IMPORT_PATH}/{scenario_id}").status_code == 204
+    _assert_error(client.get(_export_path(scenario_id)), 404, "NOT_FOUND")
+
+
+def test_export_does_not_require_idempotency_key(scenario_harness: ScenarioHarness) -> None:
+    """导出是只读 GET：不带 ``Idempotency-Key`` 也 200（契约上无需幂等键）。"""
+    client = scenario_harness.client
+    scenario_id = _imported_id(client, _raw(), key="scn-share-nokey-import")
+    response = client.get(_export_path(scenario_id))
+    assert response.status_code == 200
+    assert response.request.headers.get("Idempotency-Key") is None
+
+
+# ---------------------------------------------------------------------------
 # OpenAPI / 未装配服务
 # ---------------------------------------------------------------------------
 def test_scenarios_endpoints_are_documented(scenario_harness: ScenarioHarness) -> None:
-    """live OpenAPI 含 5 个端点；import 声明 requestBody（JSON + multipart）。"""
+    """live OpenAPI 含场景库端点（含 032 新增导出）；import 声明 requestBody（JSON + multipart）。"""
     paths = scenario_harness.client.app.openapi()["paths"]
     assert set(paths[_IMPORT_PATH]) >= {"get", "post"}
     assert set(paths[_VALIDATE_PATH]) >= {"post"}
     assert set(paths[f"{_IMPORT_PATH}/{{scenario_id}}"]) >= {"get", "delete"}
+    assert set(paths[f"{_IMPORT_PATH}/{{scenario_id}}/export"]) >= {"get"}
     import_operation = paths[_IMPORT_PATH]["post"]
     content = import_operation["requestBody"]["content"]
     assert "application/json" in content

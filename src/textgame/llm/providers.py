@@ -3,6 +3,8 @@
 职责（第 12 章 12.3）：只做**协议适配 + 异常分类**，不做重试（``num_retries=0``，重试
 唯一计数者是 ``litellm_client`` 内的 tenacity）、不做 Schema 校验、不写状态。供应商异常
 统一翻译为 :class:`textgame.llm.errors.ProviderCallError`，上层只按 ``retryable`` 决策。
+N2-038 追加 :func:`chat_completion_stream`（``stream=True`` + 末 chunk usage）：仍是纯适配，
+流式重试/超时/计量/记录全部由 ``litellm_client`` 治理（D-N2-4）。
 
 ``sanitize_no_proxy_env()`` 必须在 LiteLLM 构造 httpx 客户端前执行（本机 NO_PROXY 含
 httpx 0.28 无法解析的方括号 IPv6 条目，会抛 ``InvalidURL``）。
@@ -17,6 +19,7 @@ httpx 0.28 无法解析的方括号 IPv6 条目，会抛 ``InvalidURL``）。
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from typing import Any, TypedDict
 
 from textgame.llm.errors import ProviderCallError, classify_status_code
@@ -25,8 +28,10 @@ from textgame.llm.errors import ProviderCallError, classify_status_code
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 __all__ = [
+    "ChatCompletionChunk",
     "ChatCompletionResult",
     "chat_completion",
+    "chat_completion_stream",
     "classify_exception",
     "litellm_model_id",
     "sanitize_no_proxy_env",
@@ -61,6 +66,20 @@ class ChatCompletionResult(TypedDict):
     """一次 chat completion 中业务关心的结果字段（不向上暴露供应商原始对象）。"""
 
     content: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+
+
+class ChatCompletionChunk(TypedDict):
+    """流式 chat completion 的单个 chunk（只保留业务字段，不暴露供应商原始对象）。
+
+    ``text`` 是模型增量文本（可能为空串，如仅角色/usage 的 chunk）；``model`` 是供应商
+    回报的模型名；``prompt_tokens``/``completion_tokens`` 只在带 usage 的末 chunk 非 0
+    （``stream_options={"include_usage": True}``，D-N2-4）。
+    """
+
+    text: str
     model: str
     prompt_tokens: int
     completion_tokens: int
@@ -158,3 +177,72 @@ def chat_completion(
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
     )
+
+
+def _chunk_text(chunk: Any) -> str:
+    """取一个流式 chunk 的增量文本（兼容 ``choices[0].delta.content`` 的 None/空）。"""
+    choices = getattr(chunk, "choices", None)
+    if not choices:
+        return ""
+    try:
+        first = choices[0]
+    except (IndexError, TypeError):
+        return ""
+    delta = getattr(first, "delta", None)
+    if delta is None:
+        return ""
+    content = getattr(delta, "content", None)
+    return content if isinstance(content, str) else ""
+
+
+def chat_completion_stream(
+    *,
+    provider: str,
+    model: str,
+    api_key: str,
+    api_base: str,
+    messages: list[dict[str, str]],
+    timeout_s: float = 20.0,
+    max_tokens: int | None = None,
+) -> Iterator[ChatCompletionChunk]:
+    """发一次**流式** chat completion，逐个 chunk 产出业务字段；失败抛 ``ProviderCallError``。
+
+    与 :func:`chat_completion` 同一边界：``num_retries=0``（重试唯一计数者是
+    ``litellm_client`` 的 tenacity）、``stream_options={"include_usage": True}`` 让供应商在
+    末 chunk 返回 usage（D-N2-4）、异常统一翻译为 ``ProviderCallError``（不向上抛裸 SDK
+    异常、不泄漏密钥/响应体）。生成器函数：调用本身不发起网络请求，首次迭代才执行。
+    """
+    sanitize_no_proxy_env()
+    # 延迟导入：先修复 NO_PROXY 再让 LiteLLM 构造 httpx 客户端；同时保持全仓唯一
+    # import 点（第 16 章 16.2、第 12 章 12.1）。
+    from litellm import completion
+
+    try:
+        stream: Any = completion(
+            model=litellm_model_id(provider, model),
+            messages=messages,
+            api_key=api_key,
+            api_base=api_base,
+            timeout=timeout_s,
+            num_retries=0,
+            max_tokens=max_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+    except ProviderCallError:
+        raise
+    except Exception as exc:
+        raise classify_exception(exc) from exc
+    try:
+        for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            yield ChatCompletionChunk(
+                text=_chunk_text(chunk),
+                model=str(getattr(chunk, "model", "") or ""),
+                prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            )
+    except ProviderCallError:
+        raise
+    except Exception as exc:
+        raise classify_exception(exc) from exc

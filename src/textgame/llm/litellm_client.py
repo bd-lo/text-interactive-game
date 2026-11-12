@@ -12,6 +12,12 @@
 本客户端只返回**原始文本**（``complete_json``/``complete_text`` 契约保持向后兼容的
 ``{"content","repaired","usage"}`` 键，019 增补 ``call``）。
 
+N2-038（D-N2-4）：追加 ``complete_json_stream(req, on_delta)``——同一套治理下用
+``stream=True`` 调用供应商，把**原始文本片段**交给 ``on_delta``；RPM 只按次前置、首 chunk
+前可重试/回退、首 chunk 后不重试且不换供应商、整链 deadline + chunk 间空闲超时、末 chunk
+取 usage、``LLMCallRecord.streamed=True``。流式传输端口 ``stream_transport`` 可注入（测试
+``FakeStreamTransport`` 零网络）。
+
 SDK 边界：本模块不 import litellm/openai；默认 transport 是 ``providers.chat_completion``，
 供应商异常已在 ``providers`` 内翻译为 ``ProviderCallError``（第 12 章 12.1、第 16 章 16.2）。
 """
@@ -24,17 +30,22 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Protocol, cast
 
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 from textgame.domain.results import ErrorCode, Result
 from textgame.llm.cache import ResponseCache, cache_key
-from textgame.llm.client import LLMRequest, ModelTier, compose_idempotency_key
+from textgame.llm.client import DeltaCallback, LLMRequest, ModelTier, compose_idempotency_key
 from textgame.llm.config import CircuitSpec, LLMClientConfig, LLMConfig
 from textgame.llm.errors import ProviderCallError
-from textgame.llm.providers import ChatCompletionResult, chat_completion
+from textgame.llm.providers import (
+    ChatCompletionChunk,
+    ChatCompletionResult,
+    chat_completion,
+    chat_completion_stream,
+)
 from textgame.llm.ratelimit import TokenBucket
 from textgame.llm.records import (
     InMemoryLLMCallLog,
@@ -43,7 +54,13 @@ from textgame.llm.records import (
     LLMCallRecord,
 )
 
-__all__ = ["LLMTransport", "LiteLLMClient", "default_transport"]
+__all__ = [
+    "LLMStreamTransport",
+    "LLMTransport",
+    "LiteLLMClient",
+    "default_stream_transport",
+    "default_transport",
+]
 
 _LOGGER = logging.getLogger("textgame.llm")
 _MIN_REMAINING_S = 0.05
@@ -67,6 +84,25 @@ class LLMTransport(Protocol):
     ) -> ChatCompletionResult: ...
 
 
+class LLMStreamTransport(Protocol):
+    """一次**流式**供应商调用的可注入端口（生产= ``providers.chat_completion_stream``）。
+
+    返回 chunk 迭代器；异常在首次迭代/迭代过程中抛 ``ProviderCallError``，由客户端按
+    「首 chunk 之前可重试、之后不重试」分类（D-N2-4）。
+    """
+
+    def __call__(
+        self,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+        api_base: str,
+        messages: list[dict[str, str]],
+        timeout_s: float,
+    ) -> Iterator[ChatCompletionChunk]: ...
+
+
 def default_transport(
     *,
     provider: str,
@@ -87,12 +123,36 @@ def default_transport(
     )
 
 
+def default_stream_transport(
+    *,
+    provider: str,
+    model: str,
+    api_key: str,
+    api_base: str,
+    messages: list[dict[str, str]],
+    timeout_s: float,
+) -> Iterator[ChatCompletionChunk]:
+    """生产默认流式 transport：委托 ``providers.chat_completion_stream``（唯一 SDK 边界）。"""
+    return chat_completion_stream(
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        api_base=api_base,
+        messages=messages,
+        timeout_s=timeout_s,
+    )
+
+
 class _DeadlineExceededError(Exception):
     """整链 deadline 已耗尽（不可重试，立即返回 LLM_UNAVAILABLE）。"""
 
 
 class _RateLimitedError(Exception):
     """进程内 RPM 令牌桶额度不足（不可重试，立即返回 LLM_UNAVAILABLE）。"""
+
+
+class _StreamMidFailureError(Exception):
+    """流式调用在**首 chunk 之后**失败（不可重试、不换供应商，D-N2-4）。"""
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -202,6 +262,7 @@ class LiteLLMClient:
         config: LLMClientConfig,
         *,
         transport: LLMTransport | None = None,
+        stream_transport: LLMStreamTransport | None = None,
         calls: LLMCallLog | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -212,10 +273,13 @@ class LiteLLMClient:
 
         ``llm_config=None`` 时完全保持 019 行为（所有分级使用 ``config`` 的单模型、无回退）；
         传入时按 ``LLMRequest.model_tier`` 选择 JSON 配置的尝试链，并按 ``circuit`` 熔断。
+        ``stream_transport`` 是可注入流式端口（默认 ``providers.chat_completion_stream``），
+        单测/Fake 用它零网络验证流式治理（D-N2-4/D-N2-7）。
         """
         self._config = config
         self._llm_config = llm_config
         self._transport: LLMTransport = transport or default_transport
+        self._stream_transport: LLMStreamTransport = stream_transport or default_stream_transport
         self._calls: LLMCallLog = calls or InMemoryLLMCallLog()
         self._clock = clock
         self._sleep = sleep
@@ -289,6 +353,28 @@ class LiteLLMClient:
                 "complete_text does not accept output_schema（第 12 章 12.2）",
             )
         return self._execute(req)
+
+    def complete_json_stream(self, req: LLMRequest, on_delta: DeltaCallback) -> Result:
+        """流式结构化补全（N2-038 / ADR D-N2-4）。
+
+        与 :meth:`complete_json` 同契约（返回完整原始文本供上层走校验/修复链），区别只是在
+        生成过程中把**供应商原始文本片段**逐步交给 ``on_delta``。治理口径：
+
+        1. 缓存/幂等复用命中 → 把完整内容**一次** ``on_delta`` 下发后按普通成功返回；
+        2. RPM 每次尝试前置一次（不按 chunk 计费限流）；
+        3. 首 chunk 之前失败（超时/429/5xx/连接）按 tenacity 重试上限重试，耗尽后按回退链
+           换供应商；**首 chunk 之后**任何失败 → 不重试、不换供应商，返回 ``LLM_UNAVAILABLE``；
+        4. 整链 deadline + chunk 间空闲超时（空闲 > ``config.timeout_s``）；
+        5. usage 取末 chunk（``stream_options.include_usage``），记录 ``streamed=True``。
+
+        ``on_delta`` 抛出的异常被吞掉并记 WARNING：显示层故障不得影响回合提交/计费。
+        """
+        if req.output_schema is None:
+            return Result.fail(
+                ErrorCode.INVALID_INPUT,
+                "complete_json_stream requires output_schema（第 12 章 12.2）",
+            )
+        return self._execute_stream(req, on_delta)
 
     # ------------------------------------------------------------------
     # 内部：缓存/幂等 → 尝试链（重试/回退/熔断）→ 记录/日志
@@ -446,6 +532,341 @@ class LiteLLMClient:
         finally:
             self._calls.end(key)
 
+    # ------------------------------------------------------------------
+    # 内部：流式调用链（D-N2-4；治理顺序与非流式一致）
+    # ------------------------------------------------------------------
+    def _execute_stream(self, req: LLMRequest, on_delta: DeltaCallback) -> Result:
+        """流式完整调用链：缓存/幂等复用 → 尝试链（首 chunk 前重试/回退）→ 记录/日志。"""
+        key = compose_idempotency_key(req)
+        primary_provider, primary_model, _ = self._resolve_backend(req.model_tier)
+        cached = self._lookup_cache(req)
+        if cached is not None:
+            self._stream_emit(on_delta, cached.content)
+            return self._finish_cache_hit(
+                req,
+                cached,
+                provider=primary_provider,
+                default_model=primary_model,
+                streamed=True,
+            )
+        reuse = self._calls.find_success(key)
+        if reuse is not None:
+            self._stream_emit(on_delta, reuse.content)
+            self._log(
+                req,
+                record=reuse.record,
+                attempts=reuse.record.attempt,
+                latency_ms=0,
+                cache_hit=True,
+                error_code=None,
+            )
+            return Result.success(
+                data={
+                    "content": reuse.content,
+                    "repaired": False,
+                    "usage": dict(reuse.usage),
+                    "call": reuse.record,
+                }
+            )
+        if not self._calls.try_begin(key):
+            return Result.fail(
+                ErrorCode.LLM_UNAVAILABLE,
+                "同幂等键的 LLM 调用正在执行中（不重复扣费，第 12 章 12.7）",
+            )
+
+        started = self._clock()
+        deadline = started + req.timeout_s
+        attempts = [0]
+        last_provider, last_model = primary_provider, primary_model
+        attempted_any = False
+        try:
+            for provider, model, api_base in self._resolve_backends(req.model_tier):
+                last_provider, last_model = provider, model
+                breaker = self._breaker_for(provider)
+                if not breaker.allow(self._clock()):
+                    # 熔断 open（或 half-open 探测名额用尽）：跳过该供应商，直接尝试下一家
+                    continue
+                attempted_any = True
+                try:
+                    outcome = self._call_backend_stream(
+                        req=req,
+                        provider=provider,
+                        model=model,
+                        api_base=api_base,
+                        deadline=deadline,
+                        attempts=attempts,
+                        on_delta=on_delta,
+                    )
+                except _DeadlineExceededError:
+                    return self._finish_failure(
+                        req,
+                        key,
+                        started,
+                        attempts[0],
+                        ErrorCode.LLM_UNAVAILABLE,
+                        "LLM 调用整体 deadline 耗尽（不再发起剩余尝试）",
+                        provider=provider,
+                        default_model=model,
+                        streamed=True,
+                    )
+                except _RateLimitedError:
+                    return self._finish_failure(
+                        req,
+                        key,
+                        started,
+                        attempts[0],
+                        ErrorCode.LLM_UNAVAILABLE,
+                        "进程内 RPM 限流拒绝（第 12 章 12.2；TPM/跨进程限流归 020/022）",
+                        provider=provider,
+                        default_model=model,
+                        streamed=True,
+                    )
+                except _StreamMidFailureError as exc:
+                    # 首 chunk 之后失败：不重试、不静默换供应商（D-N2-4）
+                    breaker.record_failure(self._clock())
+                    return self._finish_failure(
+                        req,
+                        key,
+                        started,
+                        attempts[0],
+                        ErrorCode.LLM_UNAVAILABLE,
+                        str(exc),
+                        provider=provider,
+                        default_model=model,
+                        streamed=True,
+                    )
+                except ProviderCallError as exc:
+                    if exc.status_code in _INVALID_INPUT_STATUS_CODES:
+                        return self._finish_failure(
+                            req,
+                            key,
+                            started,
+                            attempts[0],
+                            ErrorCode.INVALID_INPUT,
+                            str(exc),
+                            provider=provider,
+                            default_model=model,
+                            streamed=True,
+                        )
+                    if not exc.retryable:
+                        return self._finish_failure(
+                            req,
+                            key,
+                            started,
+                            attempts[0],
+                            ErrorCode.LLM_UNAVAILABLE,
+                            str(exc),
+                            provider=provider,
+                            default_model=model,
+                            streamed=True,
+                        )
+                    # 可重试失败且本供应商重试已耗尽（首 chunk 之前）→ 记熔断失败并回退下一家
+                    breaker.record_failure(self._clock())
+                    continue
+                except Exception as exc:
+                    return self._finish_failure(
+                        req,
+                        key,
+                        started,
+                        attempts[0],
+                        ErrorCode.INTERNAL,
+                        f"internal llm error: {type(exc).__name__}",
+                        provider=provider,
+                        default_model=model,
+                        streamed=True,
+                    )
+                breaker.record_success(self._clock())
+                if not isinstance(outcome, dict) or "content" not in outcome:
+                    return self._finish_failure(
+                        req,
+                        key,
+                        started,
+                        attempts[0],
+                        ErrorCode.INTERNAL,
+                        "malformed stream outcome: missing content",
+                        provider=provider,
+                        default_model=model,
+                        streamed=True,
+                    )
+                return self._finish_success(
+                    req,
+                    key,
+                    started,
+                    attempts[0],
+                    cast(ChatCompletionResult, outcome),
+                    provider=provider,
+                    default_model=model,
+                    streamed=True,
+                )
+            message = (
+                "所有供应商均不可用（尝试链全部失败，第 12 章 12.9）"
+                if attempted_any
+                else "所有供应商熔断打开或探测名额用尽（第 12 章 12.8）"
+            )
+            return self._finish_failure(
+                req,
+                key,
+                started,
+                attempts[0],
+                ErrorCode.LLM_UNAVAILABLE,
+                message,
+                provider=last_provider,
+                default_model=last_model,
+                streamed=True,
+            )
+        finally:
+            self._calls.end(key)
+
+    def _call_backend_stream(
+        self,
+        *,
+        req: LLMRequest,
+        provider: str,
+        model: str,
+        api_base: str,
+        deadline: float,
+        attempts: list[int],
+        on_delta: DeltaCallback,
+    ) -> object:
+        """对单个供应商执行流式调用：tenacity 只重试「首 chunk 之前」的启动失败。
+
+        首 chunk 之后由 :class:`_StreamMidFailureError` 直接穿透（重试谓词只认可重试的
+        ``ProviderCallError``，因此不会重试/不会换供应商）。
+        """
+        messages = [message.model_dump() for message in req.messages]
+        base_wait = wait_exponential_jitter(initial=1.0, max=8.0)
+
+        def _wait_within_deadline(retry_state: Any) -> float:
+            """重试等待也受整链 deadline 约束（R-13）。"""
+            remaining = deadline - self._clock()
+            if remaining <= _MIN_REMAINING_S:
+                raise _DeadlineExceededError
+            return max(
+                0.0,
+                min(base_wait(retry_state), remaining - _MIN_REMAINING_S),
+            )
+
+        def attempt() -> ChatCompletionResult:
+            remaining = deadline - self._clock()
+            if remaining <= _MIN_REMAINING_S:
+                raise _DeadlineExceededError
+            if not self._bucket.try_acquire():
+                raise _RateLimitedError
+            attempts[0] += 1
+            attempt_timeout = min(self._config.timeout_s, remaining)
+            return self._consume_stream(
+                messages=messages,
+                provider=provider,
+                model=model,
+                api_base=api_base,
+                timeout_s=attempt_timeout,
+                deadline=deadline,
+                on_delta=on_delta,
+            )
+
+        retrying = Retrying(
+            retry=retry_if_exception(_is_retryable),
+            stop=stop_after_attempt(self._config.max_attempts),
+            wait=_wait_within_deadline,
+            sleep=self._sleep,
+            reraise=True,
+        )
+        return retrying(attempt)
+
+    def _consume_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        provider: str,
+        model: str,
+        api_base: str,
+        timeout_s: float,
+        deadline: float,
+        on_delta: DeltaCallback,
+    ) -> ChatCompletionResult:
+        """消费一次流式尝试：聚合完整文本/usage，并把增量交给 ``on_delta``。
+
+        失败分类（D-N2-4）：首 chunk 之前 → ``ProviderCallError``（可重试者由 tenacity 重试）；
+        首 chunk 之后 → :class:`_StreamMidFailureError`（不重试、不换供应商）。
+        """
+        pieces: list[str] = []
+        reported_model = ""
+        prompt_tokens = 0
+        completion_tokens = 0
+        first_chunk_seen = False
+        last_seen = self._clock()
+        idle_limit = self._config.timeout_s
+        stream = self._stream_transport(
+            provider=provider,
+            model=model,
+            api_key=self._config.api_key.get_secret_value(),
+            api_base=api_base,
+            messages=list(messages),
+            timeout_s=timeout_s,
+        )
+        iterator = iter(stream)
+        while True:
+            try:
+                chunk = next(iterator)
+            except StopIteration:
+                break
+            except ProviderCallError as exc:
+                if first_chunk_seen:
+                    raise _StreamMidFailureError(
+                        f"流式调用在首个 chunk 之后失败（不重试、不换供应商）: {exc}"
+                    ) from exc
+                raise
+            except Exception as exc:
+                if first_chunk_seen:
+                    raise _StreamMidFailureError(
+                        f"流式调用在首个 chunk 之后失败（不重试、不换供应商）: {type(exc).__name__}"
+                    ) from exc
+                raise ProviderCallError(
+                    f"stream transport error: {type(exc).__name__}", retryable=False
+                ) from exc
+            now = self._clock()
+            if first_chunk_seen:
+                if now > deadline:
+                    raise _StreamMidFailureError("流式调用超过整链 deadline（中途终止）")
+                if now - last_seen > idle_limit:
+                    raise _StreamMidFailureError(
+                        f"流式 chunk 间空闲超时（>{idle_limit:.0f}s；D-N2-4）"
+                    )
+            else:
+                if now > deadline:
+                    raise ProviderCallError("流式首 chunk 前整链 deadline 耗尽", retryable=True)
+                if now - last_seen > idle_limit:
+                    raise ProviderCallError("流式首 chunk 超时（可重试）", retryable=True)
+            last_seen = now
+            first_chunk_seen = True
+            text = chunk.get("text")
+            if text:
+                pieces.append(text)
+                self._stream_emit(on_delta, text)
+            reported_model = str(chunk.get("model") or reported_model)
+            raw_prompt_tokens = int(chunk.get("prompt_tokens") or 0)
+            raw_completion_tokens = int(chunk.get("completion_tokens") or 0)
+            prompt_tokens = raw_prompt_tokens or prompt_tokens
+            completion_tokens = raw_completion_tokens or completion_tokens
+        return ChatCompletionResult(
+            content="".join(pieces),
+            model=reported_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+    def _stream_emit(self, on_delta: DeltaCallback, text: str) -> None:
+        """下发一段原始文本增量；回调异常只记 WARNING（显示层故障不影响计量/提交）。"""
+        if not text or on_delta is None:
+            return
+        try:
+            on_delta(text)
+        except Exception:
+            self._logger.warning("llm_stream_delta_callback_failed")
+
+    # ------------------------------------------------------------------
+    # 内部：非流式调用链（M5-019/020/024）
+    # ------------------------------------------------------------------
     def _call_backend(
         self,
         *,
@@ -511,6 +932,7 @@ class LiteLLMClient:
         *,
         provider: str,
         default_model: str,
+        streamed: bool = False,
     ) -> Result:
         """缓存命中路径：不调 transport，按本次请求重建 ``cache_hit=true`` 的记录并记日志。"""
         prompt_tokens = int(entry.usage.get("prompt_tokens", 0) or 0)
@@ -526,6 +948,7 @@ class LiteLLMClient:
             completion_tokens=completion_tokens,
             error_code=None,
             cache_hit=True,
+            streamed=streamed,
         )
         self._log(
             req,
@@ -554,6 +977,7 @@ class LiteLLMClient:
         *,
         provider: str,
         default_model: str,
+        streamed: bool = False,
     ) -> Result:
         """成功路径：构造 record/entry、保存幂等缓存、结构化日志、返回 `Result`。"""
         prompt_tokens = int(outcome.get("prompt_tokens", 0) or 0)
@@ -568,6 +992,7 @@ class LiteLLMClient:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             error_code=None,
+            streamed=streamed,
         )
         entry = LLMCallEntry(
             idempotency_key=key,
@@ -611,6 +1036,7 @@ class LiteLLMClient:
         *,
         provider: str,
         default_model: str,
+        streamed: bool = False,
     ) -> Result:
         """失败路径：写失败记录（best-effort，含失败也落库口径）、日志、返回四类错误码。"""
         record = self._record(
@@ -623,6 +1049,7 @@ class LiteLLMClient:
             prompt_tokens=0,
             completion_tokens=0,
             error_code=code,
+            streamed=streamed,
         )
         try:
             self._calls.append_failure(record)
@@ -651,11 +1078,13 @@ class LiteLLMClient:
         completion_tokens: int,
         error_code: ErrorCode | None,
         cache_hit: bool = False,
+        streamed: bool = False,
     ) -> LLMCallRecord:
         """组装一次调用的 ``LLMCallRecord``（``provider``/``model`` 记录实际使用的后端）。
 
         ``cost_usd`` 按用户 2026-11-10 决定不实现成本记录，恒 0；``model`` 传供应商响应
         回报的模型名（空串时回退到本次尝试的后端配置模型，保持记录与配置可比）。
+        ``streamed`` 为 N2-038 只增字段：流式调用 True，旧非流式记录默认 False。
         """
         key = compose_idempotency_key(req)
         resolved_model = reported_model or default_model
@@ -670,6 +1099,7 @@ class LiteLLMClient:
             prompt_version=req.prompt_version,
             attempt=max(attempts, 1),
             cache_hit=cache_hit,
+            streamed=streamed,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=0.0,

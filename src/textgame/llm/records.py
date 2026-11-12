@@ -32,7 +32,8 @@ class LLMCallRecord(BaseModel):
 
     ``request_id`` 由 ``客户端 + 幂等键`` 派生，只用于关联日志，不含私密内容；
     ``cost_usd`` 恒为 0（价格表/成本归集按 D-M5-10 出范围，字段保留仅为不破坏记录契约）；
-    ``latency_ms`` 是整次调用（含重试与修复请求）的墙钟耗时。
+    ``latency_ms`` 是整次调用（含重试与修复请求）的墙钟耗时；``streamed`` 为 N2-038
+    只增字段（流式调用 True，旧非流式记录默认 False，口径不变）。
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -46,6 +47,8 @@ class LLMCallRecord(BaseModel):
     prompt_version: str = Field(default="unversioned", max_length=64)
     attempt: int = Field(ge=1)
     cache_hit: bool = False
+    #: N2-038（D-N2-4）只增字段：本次调用是否走流式传输（默认 False → 旧记录/断言不变）。
+    streamed: bool = False
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0)

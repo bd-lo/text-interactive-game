@@ -14,6 +14,8 @@ import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,6 +37,7 @@ from textgame.services.scenario_service import (
     ScenarioNotFoundError,
     ScenarioService,
     ScenarioValidationError,
+    StoredScenario,
 )
 
 _SCENARIO_ID_RE = re.compile(r"^scn_[0-9A-HJKMNP-TV-Z]{26}$")
@@ -519,21 +522,137 @@ class _BlockingScenarioRepository(SqliteScenarioRepository):
         super().insert(stored)
 
 
-def test_concurrent_same_key_import_creates_one_scenario(engine: Engine) -> None:
-    """R-04：两个线程同键同参导入 → 只插入一次，返回同一 scenario_id。"""
-    repo = _BlockingScenarioRepository(engine)
+def test_concurrent_same_key_import_creates_one_scenario(tmp_path: Path) -> None:
+    """R-04：两个线程同键同参导入 → 只插入一次，返回同一 scenario_id。
+
+    用**文件型 SQLite**（每线程独立连接）而不是共享内存连接：并发用例验证的是服务层
+    幂等锁语义，不应被 ``sqlite3`` 单连接跨线程使用的 ``InterfaceError`` 干扰
+    （内存库在并行负载下会随机失败）。
+    """
+    engine, _factory = prepare_db(f"sqlite:///{(tmp_path / 'concurrent.db').as_posix()}")
+    init_schema(engine)
+    try:
+        repo = _BlockingScenarioRepository(engine)
+        service = ScenarioService(repo)
+        raw = _raw()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(service.import_scenario, raw, idempotency_key="scn-conc-key-0001")
+            assert repo.entered.wait(timeout=5.0), "首请求未进入插入"
+            second = pool.submit(service.import_scenario, raw, idempotency_key="scn-conc-key-0001")
+            time.sleep(0.1)
+            assert repo.inserts == 1, "同键后到者绕过了锁（重复插入）"
+            repo.release.set()
+            results = [first.result(timeout=5.0), second.result(timeout=5.0)]
+
+        assert results[0] == results[1]
+        assert repo.inserts == 1
+        assert service.list_scenarios(query=None, limit=10, offset=0)["total"] == 1
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 导出（分享 = 单文件交换；只读、零写入、可直接再导入）
+# ---------------------------------------------------------------------------
+def test_export_scenario_returns_reimportable_payload(service: ScenarioService) -> None:
+    """导出：文件名取自 slug、payload 可直接再导入且字段/统计逐字一致。"""
+    result = _import(service, key="scn-share-export-0001")
+    scenario_id = str(result["scenario_id"])
+    exported = service.export_scenario(scenario_id)
+
+    assert exported.scenario_id == scenario_id
+    assert exported.filename == "tiny-tower.json"
+    assert exported.payload.endswith(b"\n")
+    assert json.loads(exported.payload) == _tiny()
+    parsed = parse_definition(exported.payload)
+    assert parsed.ok and parsed.errors == ()
+    assert parsed.summary == result["summary"]
+    assert exported.payload.decode("utf-8").startswith("{\n")  # 人类可读的 pretty JSON
+
+    reimported = service.import_scenario(exported.payload, idempotency_key="scn-share-reimport-1")
+    assert str(reimported["scenario_id"]) != scenario_id
+    detail = service.get_scenario(str(reimported["scenario_id"]))
+    assert detail["definition"] == _tiny()
+    assert detail["summary"] == result["summary"]
+    assert detail["schema_version"] == 1
+
+
+def test_export_scenario_preserves_v2_flags(service: ScenarioService) -> None:
+    """v2 定义导出保留 schema_version=2 与 flags；再导入逐字段一致。"""
+    definition = _tiny()
+    definition["schema_version"] = 2
+    definition["flags"] = [{"key": "at_hall", "when": {"in_room": "hall"}}]
+    definition["suggestions"] = [{"when": {"flag": "at_hall"}, "text": "去塔厅"}]
+    result = _import(service, definition=definition, key="scn-share-v2-0001")
+
+    exported = service.export_scenario(str(result["scenario_id"]))
+    body = json.loads(exported.payload)
+    assert body == definition
+    assert body["schema_version"] == 2 and body["flags"] == definition["flags"]
+    assert parse_definition(exported.payload).ok
+
+    reimported = service.import_scenario(exported.payload, idempotency_key="scn-share-v2-re-1")
+    assert str(reimported["scenario_id"]) != str(result["scenario_id"])
+    assert service.get_scenario(str(reimported["scenario_id"]))["definition"] == definition
+
+
+def test_export_scenario_unknown_and_soft_deleted_not_found(service: ScenarioService) -> None:
+    """未知/格式非法/已软删场景 → ``ScenarioNotFoundError``（与详情同 404 口径）。"""
+    with pytest.raises(ScenarioNotFoundError):
+        service.export_scenario("scn_00000000000000000000000000")
+    with pytest.raises(ScenarioNotFoundError):
+        service.export_scenario("not-a-scenario")
+
+    result = _import(service, key="scn-share-delete-0001")
+    scenario_id = str(result["scenario_id"])
+    service.delete_scenario(scenario_id)
+    with pytest.raises(ScenarioNotFoundError):
+        service.export_scenario(scenario_id)
+
+
+def test_export_scenario_is_zero_write_and_deterministic(
+    service: ScenarioService, engine: Engine
+) -> None:
+    """导出只读：两次结果一致、列表/详情零变化、不写 events 行。"""
+    _import(service, key="scn-share-det-0001")
+    second = _import(
+        service,
+        key="scn-share-det-0002",
+        definition=_variant(title="雪原", author="甲", slug="snow-field"),
+    )
+    scenario_id = str(second["scenario_id"])
+    list_before = service.list_scenarios()
+    detail_before = service.get_scenario(scenario_id)
+
+    first_export = service.export_scenario(scenario_id)
+    second_export = service.export_scenario(scenario_id)
+    assert first_export == second_export  # frozen dataclass：payload/filename 确定性一致
+    assert service.list_scenarios() == list_before
+    assert service.get_scenario(scenario_id) == detail_before
+    with engine.connect() as connection:
+        events = connection.execute(text("SELECT COUNT(*) FROM events")).scalar()
+    assert events == 0
+
+
+def test_export_scenario_corrupted_definition_not_found(engine: Engine) -> None:
+    """库内定义损坏（绕过导入校验的脏数据）→ 404，而不是导出不可再导入的坏文件。"""
+    repo = SqliteScenarioRepository(engine)
+    corrupted_id = "scn_00000000000000000000000001"
+    repo.insert(
+        StoredScenario(
+            scenario_id=corrupted_id,
+            slug="corrupted",
+            title="坏场景",
+            author="",
+            description="",
+            schema_version=2,
+            definition={},
+            summary={},
+            warnings=(),
+            created_at=datetime.now(timezone.utc),
+        )
+    )
     service = ScenarioService(repo)
-    raw = _raw()
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(service.import_scenario, raw, idempotency_key="scn-conc-key-0001")
-        assert repo.entered.wait(timeout=5.0), "首请求未进入插入"
-        second = pool.submit(service.import_scenario, raw, idempotency_key="scn-conc-key-0001")
-        time.sleep(0.1)
-        assert repo.inserts == 1, "同键后到者绕过了锁（重复插入）"
-        repo.release.set()
-        results = [first.result(timeout=5.0), second.result(timeout=5.0)]
-
-    assert results[0] == results[1]
-    assert repo.inserts == 1
-    assert service.list_scenarios(query=None, limit=10, offset=0)["total"] == 1
+    with pytest.raises(ScenarioNotFoundError):
+        service.export_scenario(corrupted_id)

@@ -38,6 +38,8 @@ from textgame.api.routes.app_control import router as app_control_router
 from textgame.api.routes.cards import router as cards_router
 from textgame.api.routes.games import router as games_router
 from textgame.api.routes.health import router as health_router
+from textgame.api.routes.saves import SAVE_IMPORT_PATH
+from textgame.api.routes.saves import router as saves_router
 from textgame.api.routes.scenarios import router as scenarios_router
 from textgame.api.routes.settings import router as settings_router
 from textgame.api.routes.turns import router as turns_router
@@ -48,6 +50,7 @@ from textgame.orchestration.turn_orchestrator import TurnOrchestrator
 from textgame.services.audit_service import AuditService
 from textgame.services.card_service import CardService
 from textgame.services.query_service import QueryService
+from textgame.services.save_service import MAX_SAVE_PACKAGE_BYTES, SaveService
 from textgame.services.scenario_service import ScenarioService
 from textgame.services.world_book_service import WorldBookService
 
@@ -65,6 +68,10 @@ _PACKAGE_STATIC_DIR = Path(__file__).resolve().parents[1] / "web_dist"
 
 #: 全局请求体上限（R-18）：导入端点自身另有 256KB/64KB 细粒度上限。
 _MAX_REQUEST_BYTES = 1024 * 1024
+
+#: 存档导入端点的请求体上限（R-18 例外）：后端契约上限 8MB + multipart/JSON 头预算；
+#: 只对 ``SAVE_IMPORT_PATH`` 单独放行，其余端点仍保持 1MB（旧 413 行为不变）。
+_MAX_SAVE_IMPORT_REQUEST_BYTES = MAX_SAVE_PACKAGE_BYTES + 64 * 1024
 
 #: R-25：默认 Host 白名单（可用 ``TEXTGAME_ALLOWED_HOSTS`` 覆盖；逗号分隔）。
 _DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost", "[::1]", "testserver")
@@ -133,22 +140,32 @@ class _BodyLimitMiddleware:
     """R-18：Content-Length 预检 + 实际字节计数（覆盖 chunked 请求）。
 
     超出上限时在路由/解析前返回 413 统一信封；若响应已开始则不再二次写。
+    ``max_import_bytes``（N3-048）：仅 ``SAVE_IMPORT_PATH`` 使用更宽的存档包上限
+    （8MB+报文头预算），其余路径保持全局 1MB，旧 413 行为不变。
     """
 
-    def __init__(self, app: Any, *, max_bytes: int) -> None:
-        """保存下游应用与上限（字节）。"""
+    def __init__(self, app: Any, *, max_bytes: int, max_import_bytes: int | None = None) -> None:
+        """保存下游应用与上限（字节）；导入路径上限可选。"""
         self.app = app
         self.max_bytes = max_bytes
+        self.max_import_bytes = max_import_bytes
+
+    def _limit_for(self, scope: Any) -> int:
+        """按请求路径选择有效上限（只对存档导入端点放宽）。"""
+        if self.max_import_bytes is not None and scope.get("path") == SAVE_IMPORT_PATH:
+            return self.max_import_bytes
+        return self.max_bytes
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         """ASGI 入口：只处理 HTTP；非 HTTP 原样透传。"""
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
+        limit = self._limit_for(scope)
         headers = dict(scope.get("headers") or [])
         declared = headers.get(b"content-length", b"")
-        if declared.isdigit() and int(declared) > self.max_bytes:
-            await self._reject(scope, receive, send)
+        if declared.isdigit() and int(declared) > limit:
+            await self._reject(scope, receive, send, limit)
             return
         received = 0
         started = False
@@ -164,7 +181,7 @@ class _BodyLimitMiddleware:
             message = await receive()
             if message.get("type") == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_bytes:
+                if received > limit:
                     raise _BodyTooLargeError
             return message
 
@@ -172,15 +189,15 @@ class _BodyLimitMiddleware:
             await self.app(scope, limited_receive, send_wrapper)
         except _BodyTooLargeError:
             if not started:
-                await self._reject(scope, receive, send)
+                await self._reject(scope, receive, send, limit)
 
-    async def _reject(self, scope: Any, receive: Any, send: Any) -> None:
+    async def _reject(self, scope: Any, receive: Any, send: Any, limit: int) -> None:
         """发送 413 统一失败信封。"""
         response = JSONResponse(
             status_code=413,
             content=error_body(
                 ErrorCode.INVALID_INPUT,
-                f"请求体超过 {self.max_bytes // 1024}KB 上限",
+                f"请求体超过 {limit // 1024}KB 上限",
             ),
         )
         await response(scope, receive, send)
@@ -342,8 +359,13 @@ def create_app(
     install_error_handlers(app)
     # R-25：Host 校验（默认仅本机/测试客户端；局域网/反代需显式设置 TEXTGAME_ALLOWED_HOSTS）。
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
-    # R-18：请求体上限（Content-Length 预检 + chunked 实际计数）。
-    app.add_middleware(_BodyLimitMiddleware, max_bytes=_MAX_REQUEST_BYTES)
+    # R-18：请求体上限（Content-Length 预检 + chunked 实际计数）；存档导入端点按契约
+    # 单独放宽到 8MB+报文头预算（N3-048），其余端点保持 1MB。
+    app.add_middleware(
+        _BodyLimitMiddleware,
+        max_bytes=_MAX_REQUEST_BYTES,
+        max_import_bytes=_MAX_SAVE_IMPORT_REQUEST_BYTES,
+    )
     # R-25：非 loopback 访问要求 TEXTGAME_API_TOKEN（本机/启动器无需 token）。
     app.add_middleware(
         _AccessTokenMiddleware,
@@ -354,12 +376,19 @@ def create_app(
     app.include_router(games_router)
     app.include_router(turns_router)
     app.include_router(cards_router)
+    app.include_router(saves_router)
     app.include_router(world_books_router)
     app.include_router(scenarios_router)
     app.include_router(settings_router)
     app.include_router(app_control_router)
     if orchestrator is not None:
         app.state.orchestrator = orchestrator
+        # N3-048 存档导出/导入：组合根从编排器已持有的仓储/引擎装配只读导出 + 校验后导入
+        # 服务（避免改动并行任务中的 orchestration/main.py；GameEngine 仍是唯一写入者）。
+        save_repo = getattr(orchestrator, "_repo", None)
+        save_engine = getattr(orchestrator, "_engine", None)
+        if save_repo is not None and save_engine is not None:
+            app.state.save_service = SaveService(repo=save_repo, engine=save_engine)
     if query_service is not None:
         app.state.query_service = query_service
     if audit_service is not None:

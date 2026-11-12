@@ -1,16 +1,22 @@
-"""用户自上传场景 JSON 的领域层（设计契约：``docs/design/user-scenario-modules.md`` §2/§3.1/§3.2）。
+"""用户自上传场景 JSON 的领域层（设计契约：``docs/design/user-scenario-modules.md`` §2/§3.1/§3.2；
+v2 扩展见 ``docs/design/scenario-dsl-v2.md``，ADR ``D-N1-1``）。
 
 本模块只做四件事，全部是**纯函数/纯数据**（不读库、不读配置、不联网、不写状态）：
 
-1. **定义模型**：``ScenarioDefinition`` 及其子模型（房间/物品/NPC/目标/结局/触发/对话），
+1. **定义模型**：``ScenarioDefinition`` 及其子模型（房间/物品/NPC/目标/结局/触发/对话/flags），
    ``extra="forbid"``：未知字段直接报错，错误信息带 JSON 路径（``rooms[2].exits.east``）。
 2. **校验**：``parse_definition(raw)`` 把一段 JSON 解析为 ``ParsedDefinition``（errors/warnings/
    summary），导入接口只需判断 ``ok``；错误不抛异常，便于接入层原样返回给玩家。
+   v1（``schema_version=1``）逐字兼容；v2（``schema_version=2``）在 v1 之上加法扩展
+   flag/目标进度/物品/NPC/时间条件与 ``flags`` 派生命题，仍白名单求值、无 eval。
 3. **确定性 ID 与建局**：``derive_ids`` 用 ``sha256(scenario_id|kind|key)`` + Crockford base32
    派生 26 位 ULID 形态 ID（回放/``state_hash`` 可复算）；``build_initial_state`` 把定义物化成
    既有 ``GameState``（**玩家槽位固定全局 ``PLAYER_ID``**，所有层按该常量取玩家）。
 4. **运行时钩子**：``UserScenarioHooks`` 按定义实现目标/结局/进入伤害/NPC 回复四个钩子，
    与内置场景钩子同接口；``scenario_runtime.ScenarioRuntime`` 负责按房间/NPC ID 索引与解析。
+
+条件求值只读既有派生状态（``GameState`` 的 turn/world_time/characters/rooms/items/npcs/
+quests/rng_state）与目标进度，不写状态、不抽随机、不读时钟。
 
 约束（与开发文档一致）：不新增 ``EventType``、不给 ``GameState`` 加字段（否则旧 ``state_hash``
 漂移）、不执行任何用户提供的表达式/脚本（条件 DSL 只认白名单原子谓词）。内置 4 个场景完全
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -32,6 +39,7 @@ from textgame.domain.types import Direction
 
 __all__ = [
     "MAX_DEFINITION_BYTES",
+    "MIN_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "ParsedDefinition",
     "ScenarioDefinition",
@@ -45,8 +53,11 @@ __all__ = [
     "parse_definition",
 ]
 
-#: 场景定义 schema 版本（本期只接受 1；更高版本给明确错误而不是静默降级）。
-SCHEMA_VERSION = 1
+#: 场景定义 schema 版本（v2 为当前最高版本；v1 逐字兼容读取，更高版本给明确错误而不是静默降级）。
+SCHEMA_VERSION = 2
+
+#: 仍兼容读取的最低 schema 版本（v1 文件语义逐字不变；旧读取器读 v2 会按上限拒绝）。
+MIN_SCHEMA_VERSION = 1
 
 #: 导入 dry-run 用的固定 scenario_id / save_seed（只派生合法 ID，不影响校验语义）。
 _DRY_RUN_SCENARIO_ID = "scn_00000000000000000000000000"
@@ -74,21 +85,48 @@ _PLAYER_ATTRIBUTE_KEYS: frozenset[str] = frozenset(
     {"str", "dex", "con", "int", "wis", "cha", "max_hp"}
 )
 
-#: 条件 DSL 允许的唯一键（未知名 = 校验错误，绝不执行任意代码）。
-_CONDITION_KEYS: frozenset[str] = frozenset(
-    {
-        "in_room",
-        "has_item",
-        "has_item_tag",
-        "npc_state",
-        "hp_lte",
-        "hp_gte",
-        "all",
-        "any",
-        "not",
-        "always",
-    }
+#: ``Condition`` 上全部谓词/组合子字段名：**恰好一个非空**（顺序仅用于提示与遍历）。
+#: v1 十个键语义冻结；其后是 v2 加法（需 ``schema_version=2``）。
+_CONDITION_FIELDS: tuple[str, ...] = (
+    # v1（逐字兼容，语义不变）
+    "in_room",
+    "has_item",
+    "has_item_tag",
+    "npc_state",
+    "hp_lte",
+    "hp_gte",
+    # v2 加法（白名单谓词，只读既有派生状态）
+    "flag",
+    "objective_done",
+    "has_item_tag_count",
+    "item_in_room",
+    "npc_in_room",
+    "turn_gte",
+    "turn_lte",
+    "world_time_gte",
+    "world_time_lte",
+    # 组合子（v1/v2 共用）
+    "all",
+    "any",
+    "negate",
+    "always",
 )
+
+#: 仅 ``schema_version=2`` 允许的条件字段（v1 声明中出现 → 结构化错误，不静默降级）。
+_V2_ONLY_CONDITION_FIELDS: tuple[str, ...] = (
+    "flag",
+    "objective_done",
+    "has_item_tag_count",
+    "item_in_room",
+    "npc_in_room",
+    "turn_gte",
+    "turn_lte",
+    "world_time_gte",
+    "world_time_lte",
+)
+
+#: 条件里数量/阈值类字段的上限（整数比较用，防止畸形大数进入求值/提示）。
+_CONDITION_COUNT_LIMIT = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -105,20 +143,60 @@ class NpcStateCondition(BaseModel):
     state: str = Field(min_length=1, max_length=32)
 
 
+class ItemTagCountCondition(BaseModel):
+    """``{"has_item_tag_count": {"tag": t, "at_least": n}}`` 的载荷（收集类目标）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tag: str = Field(min_length=1, max_length=32)
+    at_least: int = Field(ge=1, le=64)
+
+
+class ItemRoomCondition(BaseModel):
+    """``{"item_in_room": {"item": key, "room": key}}`` 的载荷（物品仍在某房间）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item: str = Field(pattern=_KEY_PATTERN)
+    room: str = Field(pattern=_KEY_PATTERN)
+
+
+class NpcRoomCondition(BaseModel):
+    """``{"npc_in_room": {"npc": key, "room": key}}`` 的载荷（NPC 当前所在房间）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    npc: str = Field(pattern=_KEY_PATTERN)
+    room: str = Field(pattern=_KEY_PATTERN)
+
+
 class Condition(BaseModel):
     """条件 DSL 的一个节点：**恰好**一个键（原子谓词或组合子）。
 
     ``when`` 缺失时语义由调用方决定：目标/结局按「不满足」，建议按「恒真」。
+    v1 十个键（in_room/.../always）语义冻结；v2 加法键只在 ``schema_version=2`` 下合法。
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    # v1 原子谓词（语义冻结）
     in_room: str | None = Field(default=None, pattern=_KEY_PATTERN)
     has_item: str | None = Field(default=None, pattern=_KEY_PATTERN)
     has_item_tag: str | None = Field(default=None, min_length=1, max_length=32)
     npc_state: NpcStateCondition | None = None
     hp_lte: int | None = None
     hp_gte: int | None = None
+    # v2 原子谓词（只读既有派生状态；flags 为顶层 `flags` 声明的派生命题）
+    flag: str | None = Field(default=None, pattern=_KEY_PATTERN)
+    objective_done: str | None = Field(default=None, pattern=_KEY_PATTERN)
+    has_item_tag_count: ItemTagCountCondition | None = None
+    item_in_room: ItemRoomCondition | None = None
+    npc_in_room: NpcRoomCondition | None = None
+    turn_gte: int | None = Field(default=None, ge=1, le=_CONDITION_COUNT_LIMIT)
+    turn_lte: int | None = Field(default=None, ge=1, le=_CONDITION_COUNT_LIMIT)
+    world_time_gte: int | None = Field(default=None, ge=0, le=_CONDITION_COUNT_LIMIT)
+    world_time_lte: int | None = Field(default=None, ge=0, le=_CONDITION_COUNT_LIMIT)
+    # 组合子（v1/v2 共用）
     all: tuple[Condition, ...] | None = Field(default=None, min_length=1, max_length=16)
     any: tuple[Condition, ...] | None = Field(default=None, min_length=1, max_length=16)
     negate: Condition | None = Field(default=None, alias="not")
@@ -127,26 +205,13 @@ class Condition(BaseModel):
     @model_validator(mode="after")
     def _exactly_one(self) -> Condition:
         """必须且只能有一个谓词/组合子（防止 ``{"in_room":..,"hp_lte":..}`` 的歧义）。"""
-        present = [
-            name
-            for name in (
-                "in_room",
-                "has_item",
-                "has_item_tag",
-                "npc_state",
-                "hp_lte",
-                "hp_gte",
-                "all",
-                "any",
-                "negate",
-                "always",
-            )
-            if getattr(self, name) is not None
-        ]
+        present = [name for name in _CONDITION_FIELDS if getattr(self, name) is not None]
         if len(present) != 1:
             raise ValueError(
-                "条件必须且只能包含一个键（in_room/has_item/has_item_tag/npc_state/"
-                "hp_lte/hp_gte/all/any/not/always）"
+                "条件必须且只能包含一个键（v1：in_room/has_item/has_item_tag/npc_state/"
+                "hp_lte/hp_gte；v2：flag/objective_done/has_item_tag_count/item_in_room/"
+                "npc_in_room/turn_gte/turn_lte/world_time_gte/world_time_lte；"
+                "组合子：all/any/not/always）"
             )
         return self
 
@@ -159,12 +224,94 @@ def _rebuild_condition() -> None:
 _rebuild_condition()
 
 
-def evaluate_condition(condition: Condition, state: GameState, ids: ScenarioIds) -> bool:
+@dataclass(frozen=True)
+class _ConditionEnv:
+    """一次求值所需的定义内查表（v2 flag / 目标进度；v1 定义为空表）。"""
+
+    flags: Mapping[str, Condition]
+    objectives: Mapping[str, Condition | None]
+
+
+_EMPTY_CONDITION_ENV = _ConditionEnv(flags={}, objectives={})
+
+#: 条件依赖节点：``("flag", key)`` / ``("objective", key)``（环检测与求值缓存共用）。
+_ConditionNode = tuple[str, str]
+
+
+def _condition_env(definition: ScenarioDefinition | None) -> _ConditionEnv:
+    """从定义构建 flag/目标进度查表（一次性；与状态无关，可在钩子构造期缓存）。"""
+    if definition is None:
+        return _EMPTY_CONDITION_ENV
+    flags = {flag.key: flag.when for flag in definition.flags}
+    goal = definition.goal
+    objectives = {objective.key: objective.when for objective in goal.objectives} if goal else {}
+    return _ConditionEnv(flags=flags, objectives=objectives)
+
+
+def evaluate_condition(
+    condition: Condition,
+    state: GameState,
+    ids: ScenarioIds,
+    *,
+    definition: ScenarioDefinition | None = None,
+) -> bool:
     """在给定状态上求值一个条件（纯函数；只读，不产生任何副作用）。
 
     ``ids`` 提供用户 key → 派生领域 ID 的映射；所有实体查找都走派生 ID，
     因此求值结果只依赖「定义 + 状态」，回放可复算。
+
+    ``definition`` 是 v2 的 flag/目标进度上下文（v1 条件不需要；缺省时 v2 的
+    ``flag``/``objective_done`` 恒为 ``False``——正常导入的定义不会走到该分支，
+    因为未知引用在校验期已被拒绝）。
     """
+    return _evaluate_condition(condition, state, ids, _condition_env(definition))
+
+
+def _evaluate_condition(
+    condition: Condition,
+    state: GameState,
+    ids: ScenarioIds,
+    env: _ConditionEnv,
+) -> bool:
+    """``evaluate_condition`` 的求值实现：带 memo 与环防御（每个 flag/目标最多求值一次）。"""
+    return _evaluate(condition, state, ids, env, {}, frozenset())
+
+
+def _evaluate_named(
+    *,
+    kind: str,
+    key: str,
+    catalog: Mapping[str, Condition | None],
+    state: GameState,
+    ids: ScenarioIds,
+    env: _ConditionEnv,
+    memo: dict[_ConditionNode, bool],
+    visiting: frozenset[_ConditionNode],
+) -> bool:
+    """求值一个具名派生节点（flag / 目标进度）：带缓存、环上返回 ``False``（fail-closed）。"""
+    node = (kind, key)
+    cached = memo.get(node)
+    if cached is not None:
+        return cached
+    if node in visiting:
+        return False
+    condition = catalog.get(key)
+    if condition is None:
+        return False
+    value = _evaluate(condition, state, ids, env, memo, visiting | {node})
+    memo[node] = value
+    return value
+
+
+def _evaluate(
+    condition: Condition,
+    state: GameState,
+    ids: ScenarioIds,
+    env: _ConditionEnv,
+    memo: dict[_ConditionNode, bool],
+    visiting: frozenset[_ConditionNode],
+) -> bool:
+    """条件树递归求值（白名单谓词；组合子短路；不读取/修改任何全局状态）。"""
     if condition.always is not None:
         return bool(condition.always)
     player = state.characters.get(PLAYER_ID)
@@ -177,13 +324,10 @@ def evaluate_condition(condition: Condition, state: GameState, ids: ScenarioIds)
         if player is None:
             return False
         tag = condition.has_item_tag
-        for inv_id in player.inventory:
-            item = state.items.get(inv_id)
-            if item is None:
-                continue
-            if tag in item.tags:
-                return True
-        return False
+        return any(
+            item is not None and tag in item.tags
+            for item in (state.items.get(inv_id) for inv_id in player.inventory)
+        )
     if condition.npc_state is not None:
         npc_id = ids.npcs.get(condition.npc_state.npc)
         if npc_id is None:
@@ -194,12 +338,66 @@ def evaluate_condition(condition: Condition, state: GameState, ids: ScenarioIds)
         return player is not None and player.hp <= condition.hp_lte
     if condition.hp_gte is not None:
         return player is not None and player.hp >= condition.hp_gte
+    if condition.flag is not None:
+        return _evaluate_named(
+            kind="flag",
+            key=condition.flag,
+            catalog=env.flags,
+            state=state,
+            ids=ids,
+            env=env,
+            memo=memo,
+            visiting=visiting,
+        )
+    if condition.objective_done is not None:
+        return _evaluate_named(
+            kind="objective",
+            key=condition.objective_done,
+            catalog=env.objectives,
+            state=state,
+            ids=ids,
+            env=env,
+            memo=memo,
+            visiting=visiting,
+        )
+    if condition.has_item_tag_count is not None:
+        if player is None:
+            return False
+        tag = condition.has_item_tag_count.tag
+        count = sum(
+            1
+            for inv_id in player.inventory
+            if (item := state.items.get(inv_id)) is not None and tag in item.tags
+        )
+        return count >= condition.has_item_tag_count.at_least
+    if condition.item_in_room is not None:
+        item_id = ids.items.get(condition.item_in_room.item)
+        room_id = ids.rooms.get(condition.item_in_room.room)
+        if item_id is None or room_id is None:
+            return False
+        room = state.rooms.get(room_id)
+        return room is not None and item_id in room.item_ids
+    if condition.npc_in_room is not None:
+        npc_id = ids.npcs.get(condition.npc_in_room.npc)
+        room_id = ids.rooms.get(condition.npc_in_room.room)
+        if npc_id is None or room_id is None:
+            return False
+        npc = state.npcs.get(npc_id)
+        return npc is not None and npc.room_id == room_id
+    if condition.turn_gte is not None:
+        return state.turn >= condition.turn_gte
+    if condition.turn_lte is not None:
+        return state.turn <= condition.turn_lte
+    if condition.world_time_gte is not None:
+        return state.world_time >= condition.world_time_gte
+    if condition.world_time_lte is not None:
+        return state.world_time <= condition.world_time_lte
     if condition.all is not None:
-        return all(evaluate_condition(item, state, ids) for item in condition.all)
+        return all(_evaluate(item, state, ids, env, memo, visiting) for item in condition.all)
     if condition.any is not None:
-        return any(evaluate_condition(item, state, ids) for item in condition.any)
+        return any(_evaluate(item, state, ids, env, memo, visiting) for item in condition.any)
     if condition.negate is not None:
-        return not evaluate_condition(condition.negate, state, ids)
+        return not _evaluate(condition.negate, state, ids, env, memo, visiting)
     return False
 
 
@@ -372,18 +570,36 @@ class SuggestionSpec(BaseModel):
     text: str = Field(min_length=1, max_length=120)
 
 
-class ScenarioDefinition(BaseModel):
-    """一份用户场景定义的完整模型（``schema_version`` 必须为 1）。"""
+class FlagSpec(BaseModel):
+    """v2 派生命题：``{"key": k, "when": cond}``；``{"flag": k}`` 求值其 ``when``。
+
+    flag **不是持久化变量**，而是读时求值的命名条件（别名/复用）；历史语义（曾经发生）
+    不在 v2 表达范围内（见 ``docs/design/scenario-dsl-v2.md`` §7）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = Field(ge=1, le=SCHEMA_VERSION)
+    key: str = Field(pattern=_KEY_PATTERN)
+    when: Condition
+
+
+class ScenarioDefinition(BaseModel):
+    """一份用户场景定义的完整模型（``schema_version`` 为 1 或 2）。
+
+    - ``schema_version=1``：v1 文件逐字兼容读取（不接受 v2 字段/谓词，声明即错误）；
+    - ``schema_version=2``：v1 全部字段 + ``flags`` 派生命题 + v2 条件谓词。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: int = Field(ge=MIN_SCHEMA_VERSION, le=SCHEMA_VERSION)
     slug: str = Field(pattern=_SLUG_PATTERN)
     meta: ScenarioMeta
     player: PlayerSpec
     rooms: list[RoomSpec] = Field(min_length=1, max_length=40)
     items: list[ItemSpec] = Field(default_factory=list, max_length=80)
     npcs: list[NpcSpec] = Field(default_factory=list, max_length=20)
+    flags: list[FlagSpec] = Field(default_factory=list, max_length=16)
     goal: GoalSpec | None = None
     endings: list[EndingSpec] = Field(default_factory=list, max_length=6)
     suggestions: list[SuggestionSpec] = Field(default_factory=list, max_length=16)
@@ -461,6 +677,43 @@ def _parse_json_body(raw: str | bytes) -> tuple[Any, ScenarioIssue | None]:
     return payload, None
 
 
+def _schema_version_issue(payload: dict[str, Any]) -> ScenarioIssue | None:
+    """预检 ``schema_version``：只接受 1/2（整数字面量），错误路径固定 ``schema_version``。
+
+    缺字段交给 Pydantic 的 required 错误（路径同样精确）；``true``（bool）等非整数字面量
+    在这里拒绝，避免隐式转成 1。
+    """
+    if "schema_version" not in payload:
+        return None
+    value = payload["schema_version"]
+    if type(value) is int and value in (MIN_SCHEMA_VERSION, SCHEMA_VERSION):
+        return None
+    return ScenarioIssue(
+        "schema_version",
+        f"不支持的 schema_version={value!r}（本版本只支持 {MIN_SCHEMA_VERSION} 或 {SCHEMA_VERSION}）",
+    )
+
+
+def _issue_of_validation_error(error: Mapping[str, Any]) -> ScenarioIssue:
+    """Pydantic 单条错误 → 中文 ``ScenarioIssue``（保留 JSON 路径；未知谓词给出白名单提示）。"""
+    loc = tuple(error.get("loc", ()))
+    error_type = str(error.get("type", ""))
+    message = str(error.get("msg", "字段非法"))
+    if error_type == "extra_forbidden" and loc:
+        unknown = str(loc[-1])
+        parent = loc[-2] if len(loc) >= 2 else None
+        if parent == "when":
+            message = (
+                f'未知谓词或组合子 "{unknown}"（只允许白名单键；v2 新谓词需 schema_version=2，'
+                "见 docs/design/scenario-dsl-v2.md §3）"
+            )
+        else:
+            message = f'未知字段 "{unknown}"（不允许多余字段；v2 新字段需 schema_version=2）'
+    elif loc == ("schema_version",) and error_type != "missing":
+        message = f"不支持的 schema_version（只支持 {MIN_SCHEMA_VERSION} 或 {SCHEMA_VERSION}）"
+    return ScenarioIssue(_format_loc(loc), message)
+
+
 def _condition_nodes(condition: Condition | None) -> list[Condition]:
     """深度优先展开条件树（供引用校验用）。"""
     if condition is None:
@@ -475,24 +728,100 @@ def _condition_nodes(condition: Condition | None) -> list[Condition]:
     return nodes
 
 
+def _condition_slots(definition: ScenarioDefinition) -> list[tuple[str, Condition | None]]:
+    """全部 ``when`` 槽位（路径, 条件）：目标/结局/建议/flags（v2），供统一静态校验。"""
+    slots: list[tuple[str, Condition | None]] = []
+    if definition.goal is not None:
+        for index, objective in enumerate(definition.goal.objectives):
+            slots.append((f"goal.objectives[{index}].when", objective.when))
+    for index, ending in enumerate(definition.endings):
+        slots.append((f"endings[{index}].when", ending.when))
+    for index, suggestion in enumerate(definition.suggestions):
+        slots.append((f"suggestions[{index}].when", suggestion.when))
+    for index, flag in enumerate(definition.flags):
+        slots.append((f"flags[{index}].when", flag.when))
+    return slots
+
+
+def _version_gate_errors(definition: ScenarioDefinition) -> list[ScenarioIssue]:
+    """v1 声明不得使用 v2 字段/谓词（``schema_version`` 是对特性级别的承诺，不静默升级）。"""
+    if definition.schema_version != MIN_SCHEMA_VERSION:
+        return []
+    errors: list[ScenarioIssue] = []
+    if definition.flags:
+        errors.append(
+            ScenarioIssue(
+                "flags",
+                "schema_version=1 不支持 flags（v2 字段）；如需使用请把 schema_version 改为 2",
+            )
+        )
+    for path, condition in _condition_slots(definition):
+        for node in _condition_nodes(condition):
+            for field_name in _V2_ONLY_CONDITION_FIELDS:
+                if getattr(node, field_name) is not None:
+                    errors.append(
+                        ScenarioIssue(
+                            f"{path}.{field_name}",
+                            f'谓词 "{field_name}" 需要 schema_version=2（当前为 1）',
+                        )
+                    )
+    return errors[:_MAX_ERRORS]
+
+
+def _condition_references(condition: Condition) -> list[_ConditionNode]:
+    """条件树内引用的 flag / 目标进度节点（环检测用；不展开被引用节点本身）。"""
+    refs: list[_ConditionNode] = []
+    for node in _condition_nodes(condition):
+        if node.flag is not None:
+            refs.append(("flag", node.flag))
+        if node.objective_done is not None:
+            refs.append(("objective", node.objective_done))
+    return refs
+
+
+def _find_dependency_cycle(
+    graph: Mapping[_ConditionNode, list[_ConditionNode]],
+) -> list[_ConditionNode] | None:
+    """在 flag/目标进度依赖图中找一条环；无环返回 ``None``（DFS 三色，规模 ≤28 节点）。"""
+    color: dict[_ConditionNode, int] = dict.fromkeys(graph, 0)
+    stack: list[_ConditionNode] = []
+
+    def _visit(node: _ConditionNode) -> list[_ConditionNode] | None:
+        color[node] = 1
+        stack.append(node)
+        for dep in graph.get(node, []):
+            if dep not in graph:
+                continue
+            if color[dep] == 1:
+                return [*stack[stack.index(dep) :], dep]
+            if color[dep] == 0:
+                found = _visit(dep)
+                if found is not None:
+                    return found
+        stack.pop()
+        color[node] = 2
+        return None
+
+    for node in graph:
+        if color[node] == 0:
+            found = _visit(node)
+            if found is not None:
+                return found
+    return None
+
+
 def _check_conditions(
     *,
     definition: ScenarioDefinition,
     room_keys: set[str],
     item_keys: set[str],
     npc_keys: set[str],
+    flag_keys: set[str],
+    objective_keys: set[str],
 ) -> list[ScenarioIssue]:
-    """校验条件里引用的 room/item/npc key 都存在（错误定位到 ``when`` 所在路径）。"""
+    """校验条件里的全部 key 引用（错误定位到 ``when`` 所在路径，含 v2 新谓词）。"""
     errors: list[ScenarioIssue] = []
-    texts: list[tuple[str, Condition | None]] = []
-    if definition.goal is not None:
-        for index, objective in enumerate(definition.goal.objectives):
-            texts.append((f"goal.objectives[{index}].when", objective.when))
-    for index, ending in enumerate(definition.endings):
-        texts.append((f"endings[{index}].when", ending.when))
-    for index, suggestion in enumerate(definition.suggestions):
-        texts.append((f"suggestions[{index}].when", suggestion.when))
-    for path, condition in texts:
+    for path, condition in _condition_slots(definition):
         for node in _condition_nodes(condition):
             if node.in_room is not None and node.in_room not in room_keys:
                 errors.append(ScenarioIssue(f"{path}.in_room", f'未知房间 key "{node.in_room}"'))
@@ -502,7 +831,70 @@ def _check_conditions(
                 errors.append(
                     ScenarioIssue(f"{path}.npc_state.npc", f'未知 NPC key "{node.npc_state.npc}"')
                 )
+            if node.flag is not None and node.flag not in flag_keys:
+                errors.append(
+                    ScenarioIssue(
+                        f"{path}.flag",
+                        f'未知 flag key "{node.flag}"（必须先在顶层 flags 声明）',
+                    )
+                )
+            if node.objective_done is not None and node.objective_done not in objective_keys:
+                errors.append(
+                    ScenarioIssue(
+                        f"{path}.objective_done",
+                        f'未知目标 key "{node.objective_done}"（必须是 goal.objectives 里的 key）',
+                    )
+                )
+            if node.item_in_room is not None:
+                if node.item_in_room.item not in item_keys:
+                    errors.append(
+                        ScenarioIssue(
+                            f"{path}.item_in_room.item",
+                            f'未知物品 key "{node.item_in_room.item}"',
+                        )
+                    )
+                if node.item_in_room.room not in room_keys:
+                    errors.append(
+                        ScenarioIssue(
+                            f"{path}.item_in_room.room",
+                            f'未知房间 key "{node.item_in_room.room}"',
+                        )
+                    )
+            if node.npc_in_room is not None:
+                if node.npc_in_room.npc not in npc_keys:
+                    errors.append(
+                        ScenarioIssue(
+                            f"{path}.npc_in_room.npc", f'未知 NPC key "{node.npc_in_room.npc}"'
+                        )
+                    )
+                if node.npc_in_room.room not in room_keys:
+                    errors.append(
+                        ScenarioIssue(
+                            f"{path}.npc_in_room.room", f'未知房间 key "{node.npc_in_room.room}"'
+                        )
+                    )
     return errors
+
+
+def _check_dependency_cycles(definition: ScenarioDefinition) -> list[ScenarioIssue]:
+    """flag/目标进度互相引用的环检测（跨两类节点统一依赖图；环 = 无法静态求值，必须拒绝）。"""
+    graph: dict[_ConditionNode, list[_ConditionNode]] = {}
+    node_paths: dict[_ConditionNode, str] = {}
+    for index, flag in enumerate(definition.flags):
+        node = ("flag", flag.key)
+        graph[node] = _condition_references(flag.when)
+        node_paths[node] = f"flags[{index}].when"
+    if definition.goal is not None:
+        for index, objective in enumerate(definition.goal.objectives):
+            node = ("objective", objective.key)
+            graph[node] = _condition_references(objective.when) if objective.when else []
+            node_paths[node] = f"goal.objectives[{index}].when"
+    cycle = _find_dependency_cycle(graph)
+    if cycle is None:
+        return []
+    rendered = " → ".join(f"{kind}:{key}" for kind, key in cycle)
+    path = node_paths.get(cycle[0], "flags")
+    return [ScenarioIssue(path, f"条件存在循环引用：{rendered}（flag / 目标进度不能互相依赖成环）")]
 
 
 def _check_references(definition: ScenarioDefinition) -> list[ScenarioIssue]:
@@ -520,12 +912,19 @@ def _check_references(definition: ScenarioDefinition) -> list[ScenarioIssue]:
     room_keys = [room.key for room in definition.rooms]
     item_keys = [item.key for item in definition.items]
     npc_keys = [npc.key for npc in definition.npcs]
+    flag_keys = [flag.key for flag in definition.flags]
+    objective_keys = (
+        [objective.key for objective in definition.goal.objectives]
+        if definition.goal is not None
+        else []
+    )
     _dupes(room_keys, "rooms.key")
     _dupes(item_keys, "items.key")
     _dupes(npc_keys, "npcs.key")
+    _dupes(flag_keys, "flags.key")
     _dupes(definition.player.inventory, "player.inventory")
     if definition.goal is not None:
-        _dupes([obj.key for obj in definition.goal.objectives], "goal.objectives.key")
+        _dupes(objective_keys, "goal.objectives.key")
     _dupes([ending.key for ending in definition.endings], "endings.key")
 
     rooms = set(room_keys)
@@ -618,13 +1017,16 @@ def _check_references(definition: ScenarioDefinition) -> list[ScenarioIssue]:
             room_keys=rooms,
             item_keys=items,
             npc_keys=npcs,
+            flag_keys=set(flag_keys),
+            objective_keys=set(objective_keys),
         )
     )
+    errors.extend(_check_dependency_cycles(definition))
     return errors[:_MAX_ERRORS]
 
 
 def _collect_warnings(definition: ScenarioDefinition, *, placed: set[str]) -> list[ScenarioIssue]:
-    """非阻断提示：物品没放任何地方、NPC 没对话、没有目标/结局（走兜底）。"""
+    """非阻断提示：物品没放任何地方、NPC 没对话、没有目标/结局、未使用的 flag。"""
     warnings: list[ScenarioIssue] = []
     inventory_keys = set(definition.player.inventory)
     for index, item in enumerate(definition.items):
@@ -648,6 +1050,20 @@ def _collect_warnings(definition: ScenarioDefinition, *, placed: set[str]) -> li
                 "endings", "未定义 endings：将使用内置兜底结局（HP≤0 失败 / 目标全完成胜利）"
             )
         )
+    referenced_flags = {
+        node.flag
+        for _, condition in _condition_slots(definition)
+        for node in _condition_nodes(condition)
+        if node.flag is not None
+    }
+    for index, flag in enumerate(definition.flags):
+        if flag.key not in referenced_flags:
+            warnings.append(
+                ScenarioIssue(
+                    f"flags[{index}]",
+                    f'flag "{flag.key}" 未被任何条件引用（不影响玩法，可删或留给编辑器预览）',
+                )
+            )
     return warnings
 
 
@@ -666,21 +1082,29 @@ def _summary_of(definition: ScenarioDefinition) -> dict[str, int]:
 def parse_definition(raw: str | bytes) -> ParsedDefinition:
     """解析并校验一段场景 JSON；返回结构化 errors/warnings/summary（不抛异常）。
 
-    错误来源三类：JSON 语法/编码/大小、Pydantic 字段错误（带路径）、语义引用错误。
-    只有 ``ok`` 为真时才应写入存储并允许建局。
+    错误来源四类：JSON 语法/编码/大小、``schema_version`` 版本、Pydantic 字段错误（带路径）、
+    语义引用/环错误。只有 ``ok`` 为真时才应写入存储并允许建局。
+
+    ``schema_version=1`` 逐字兼容：v1 文件不接受 v2 字段/谓词（版本门禁先于引用校验，避免
+    冗余错误）；``schema_version=2`` 在 v1 全部字段之上加法启用 v2。
     """
     payload, issue = _parse_json_body(raw)
     if issue is not None:
         return ParsedDefinition(definition=None, errors=(issue,), warnings=(), summary={})
     assert payload is not None
+    version_issue = _schema_version_issue(payload)
+    if version_issue is not None:
+        return ParsedDefinition(definition=None, errors=(version_issue,), warnings=(), summary={})
     try:
         definition = ScenarioDefinition.model_validate(payload)
     except ValidationError as exc:
-        errors = tuple(
-            ScenarioIssue(_format_loc(tuple(item["loc"])), str(item["msg"]))
-            for item in exc.errors()
-        )[:_MAX_ERRORS]
+        errors = tuple(_issue_of_validation_error(item) for item in exc.errors())[:_MAX_ERRORS]
         return ParsedDefinition(definition=None, errors=errors, warnings=(), summary={})
+    gate_errors = tuple(_version_gate_errors(definition))
+    if gate_errors:
+        return ParsedDefinition(
+            definition=None, errors=gate_errors, warnings=(), summary=_summary_of(definition)
+        )
     errors = tuple(_check_references(definition))
     if errors:
         return ParsedDefinition(
@@ -877,12 +1301,14 @@ class UserScenarioHooks:
     """
 
     def __init__(self, definition: ScenarioDefinition, ids: ScenarioIds) -> None:
-        """绑定定义与派生 ID（构造期一次性建反查表，运行期只读）。"""
+        """绑定定义与派生 ID（构造期一次性建反查表与 v2 条件上下文，运行期只读）。"""
         self._definition = definition
         self._ids = ids
         # 反查：room 派生 ID → RoomSpec；npc 派生 ID → NpcSpec（运行期只读）
         self._room_specs = {ids.rooms[room.key]: room for room in definition.rooms}
         self._npc_specs = {ids.npcs[npc.key]: npc for npc in definition.npcs}
+        # v2 flag / 目标进度求值上下文（v1 定义为空表；构造期缓存避免每回合重建）
+        self._condition_env = _condition_env(definition)
 
     @property
     def scenario_id(self) -> str:
@@ -918,6 +1344,10 @@ class UserScenarioHooks:
         """状态是否属于本场景：任一派生房间 ID 出现在状态房间表里。"""
         return any(room_id in state.rooms for room_id in self._room_specs)
 
+    def _match(self, condition: Condition, state: GameState) -> bool:
+        """在钩子绑定的定义上下文里求值（v2 flag/目标进度可用；纯只读）。"""
+        return _evaluate_condition(condition, state, self._ids, self._condition_env)
+
     def goal(self, state: GameState) -> dict[str, Any] | None:
         """按 ``goal.objectives[].when`` 求值出目标面板（与 story_goal 同结构）。"""
         goal = self._definition.goal
@@ -927,8 +1357,7 @@ class UserScenarioHooks:
             {
                 "id": objective.key,
                 "text": objective.text,
-                "done": objective.when is not None
-                and evaluate_condition(objective.when, state, self._ids),
+                "done": objective.when is not None and self._match(objective.when, state),
             }
             for objective in goal.objectives
         ]
@@ -948,7 +1377,7 @@ class UserScenarioHooks:
             key=lambda pair: (-pair[1].priority, pair[0]),
         )
         for _, ending in ordered:
-            if ending.when is not None and evaluate_condition(ending.when, state, self._ids):
+            if ending.when is not None and self._match(ending.when, state):
                 return {
                     "ending_id": f"ending_{self._definition.slug}_{ending.key}",
                     "title": ending.title,
@@ -957,7 +1386,7 @@ class UserScenarioHooks:
                 }
         goal = self._definition.goal
         if goal is not None and all(
-            objective.when is not None and evaluate_condition(objective.when, state, self._ids)
+            objective.when is not None and self._match(objective.when, state)
             for objective in goal.objectives
         ):
             return {

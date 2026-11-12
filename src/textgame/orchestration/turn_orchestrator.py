@@ -10,13 +10,16 @@ CAS 提交 → 审计」的多角色链路（第 11 章 §11.1–§11.3、契约
   由纯函数 ``Resolver`` 统一裁决；只有 ``applied`` 裁决的草稿事件才交给唯一写入者
   ``GameEngine.submit``（CAS，最多 3 次尝试；重试只重裁决、不重解析/不重叙事）。
 - 本类只负责串流程、幂等、错误码映射与审计落库，不做规则计算、不写状态、不调模型。
+- N2-038（D-N2-5）加法：``run(request, on_delta=...)`` 可选注入流式增量回调；叙事器实现
+  可选 ``render_with_meta_stream`` 时把**显示层增量**交给回调，最终写入/提交仍用校验后的
+  完整文本且时机不变（``on_delta=None`` 时行为与旧版逐字一致）。回调异常不得影响提交。
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -897,8 +900,18 @@ class TurnOrchestrator:
     # ------------------------------------------------------------------
     # 回合
     # ------------------------------------------------------------------
-    def run(self, request: TurnRequest) -> TurnResult:
+    def run(
+        self,
+        request: TurnRequest,
+        *,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> TurnResult:
         """执行一个回合；业务失败返回 ``TurnResult(ok=False)``（HTTP 仍 200，契约 §5.4）。
+
+        ``on_delta``（N2-038 加法，默认 ``None``）是可选的**显示层增量**回调：叙事器实现
+        可选 ``render_with_meta_stream`` 时，叙事生成过程中把已提取的叙事前缀交给它；它
+        不改变提交时机/唯一写入者/CAS/幂等，也不改变最终状态里的文本。回调异常不得影响
+        回合（见 ``_render_with_source``）。
 
         D-M4-15/G-1：同 ``Idempotency-Key`` 的请求在进程内按存储键串行（固定分段锁），
         后到者进入时能读到首请求写入的幂等记录并原样重放；失败路径再由
@@ -910,7 +923,7 @@ class TurnOrchestrator:
         store_key = _turn_store_key(request)
         request_hash = _turn_params_hash(request)
         with idempotency_lock(store_key):
-            result = self._run_once(request, store_key, request_hash)
+            result = self._run_once(request, store_key, request_hash, on_delta)
             if result.ok:
                 return result
             replayed = self._replay_idempotent(store_key, request_hash, result)
@@ -925,7 +938,13 @@ class TurnOrchestrator:
                 state = record.state
             return _with_failure_hints(result, state)
 
-    def _run_once(self, request: TurnRequest, store_key: str, request_hash: str) -> TurnResult:
+    def _run_once(
+        self,
+        request: TurnRequest,
+        store_key: str,
+        request_hash: str,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> TurnResult:
         """单次回合处理（原有逻辑）；同键串行化与失败后重查由 ``run`` 负责。"""
         cached = self._repo.get_idempotent(store_key)
         if cached is not None:
@@ -958,8 +977,12 @@ class TurnOrchestrator:
             # H4：本回合世界设定句在进入具体链路前统一计算（旧场景/未绑定 → 空列表）。
             lore_entries = self._lore_entries_for(request.game_id, record.state, request.text)
             if self.multi_actor_enabled:
-                return self._run_multi_actor(request, record, store_key, request_hash, lore_entries)
-            return self._run_single_actor(request, record, store_key, request_hash, lore_entries)
+                return self._run_multi_actor(
+                    request, record, store_key, request_hash, lore_entries, on_delta
+                )
+            return self._run_single_actor(
+                request, record, store_key, request_hash, lore_entries, on_delta
+            )
         except Exception:
             current = self._repo.load(request.game_id)
             return TurnResult.failed(
@@ -978,6 +1001,7 @@ class TurnOrchestrator:
         store_key: str,
         request_hash: str,
         lore_entries: Sequence[str] = (),
+        on_delta: Callable[[str], None] | None = None,
     ) -> TurnResult:
         """M2 单角色主流程（契约 §4.5 步骤 4–10），保持 M2 行为不回归。"""
         state = record.state
@@ -1050,7 +1074,11 @@ class TurnOrchestrator:
         if lore_entries:
             result_data["lore_entries"] = list(lore_entries)
         text, narrative_source = self._render_with_source(
-            action=outcome, events=drafts, state=state, result_data=result_data
+            action=outcome,
+            events=drafts,
+            state=state,
+            result_data=result_data,
+            on_delta=on_delta,
         )
 
         if not drafts:
@@ -1188,6 +1216,7 @@ class TurnOrchestrator:
         store_key: str,
         request_hash: str,
         lore_entries: Sequence[str] = (),
+        on_delta: Callable[[str], None] | None = None,
     ) -> TurnResult:
         """M3 多角色主流程：玩家提案 + 角色 Agent 提案 → 队列 → 裁决 → CAS 提交 → 审计。"""
         assert self._registry is not None  # multi_actor_enabled 已保证
@@ -1407,6 +1436,7 @@ class TurnOrchestrator:
                 player_drafts=player_drafts,
                 npc_drafts=npc_drafts,
                 read_only_data=read_only_data,
+                on_delta=on_delta,
             )
             drafts = [*player_drafts, *npc_drafts]
             if not drafts:
@@ -1528,10 +1558,15 @@ class TurnOrchestrator:
         player_drafts: list[Event],
         npc_drafts: list[Event],
         read_only_data: dict[str, Any],
+        on_delta: Callable[[str], None] | None = None,
     ) -> tuple[str, str]:
         """玩家事件用叙事器渲染（返回 ``(text, narrative_source)``），NPC 事件拼确定性短句。"""
         base, narrative_source = self._render_with_source(
-            action=action, events=player_drafts, state=state, result_data=read_only_data
+            action=action,
+            events=player_drafts,
+            state=state,
+            result_data=read_only_data,
+            on_delta=on_delta,
         )
         clause = _npc_event_clause(state, npc_drafts)
         return _compose_text(base, clause), narrative_source
@@ -1619,13 +1654,29 @@ class TurnOrchestrator:
         events: list[Event],
         state: GameState,
         result_data: dict[str, Any],
+        on_delta: Callable[[str], None] | None = None,
     ) -> tuple[str, str]:
         """返回 ``(text, narrative_source)``：LLM 叙事器带来源元数据，其余一律 ``template``。
 
         ``narrative_source`` 按 D-007-2 只有 ``llm``/``template`` 两值：LLM 叙事失败回退时
         由 Agent 自报 ``template``（``render_with_meta``），默认/模板路径恒为 ``template``。
+
+        N2-038 加法：``on_delta`` 非 ``None`` 且叙事器实现可选 ``render_with_meta_stream`` 时
+        走流式渲染（增量只用于显示；返回的最终文本仍写事件/``TurnResult``）。叙事器不支持
+        流式/未注入时退回原路径，接入层在回合结束后补一条完整 ``delta``（显示层行为）。
         """
         if self._narrator is not None:
+            if on_delta is not None:
+                render_with_meta_stream = getattr(self._narrator, "render_with_meta_stream", None)
+                if callable(render_with_meta_stream):
+                    text, source = render_with_meta_stream(
+                        action=action,
+                        events=events,
+                        state=state,
+                        result_data=result_data,
+                        on_delta=on_delta,
+                    )
+                    return text, source
             render_with_meta = getattr(self._narrator, "render_with_meta", None)
             if callable(render_with_meta):
                 text, source = render_with_meta(

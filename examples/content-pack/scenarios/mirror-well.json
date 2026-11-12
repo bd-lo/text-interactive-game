@@ -1,0 +1,138 @@
+{
+  "schema_version": 2,
+  "slug": "mirror-well",
+  "meta": {
+    "title": "镜井",
+    "author": "示例内容包",
+    "description": "v2 内容包分支场景：向卜者打听井底的东西，带着麻绳下去再回来；拿走古镜会走向另一条结局，拖到入夜则空手而归。",
+    "tags": ["示例", "v2", "选择", "时间"]
+  },
+  "player": {
+    "name": "夜行的旅人",
+    "hp": 14,
+    "max_hp": 14,
+    "location": "yard",
+    "inventory": []
+  },
+  "rooms": [
+    {
+      "key": "yard",
+      "name": "荒院",
+      "description": "石井在荒院中央，井沿结着薄霜，提灯搁在门槛边。",
+      "exits": {"north": "wellhead"},
+      "items": ["lantern"]
+    },
+    {
+      "key": "wellhead",
+      "name": "井口",
+      "description": "井口黑洞洞的，卜者坐在井栏上，脚边盘着一卷麻绳。",
+      "exits": {"south": "yard", "down": "undercroft"},
+      "npcs": ["seer"],
+      "items": ["rope"]
+    },
+    {
+      "key": "undercroft",
+      "name": "井底",
+      "description": "井底比井口宽得多，石台上嵌着一面古镜，镜面照不出火把的光。",
+      "exits": {"up": "wellhead"},
+      "items": ["mirror"],
+      "on_enter": {"hp_delta": -4, "hint": "井底的空气冰凉，像有人在耳边低声数着拍子。"}
+    }
+  ],
+  "items": [
+    {
+      "key": "lantern",
+      "name": "提灯",
+      "description": "一盏旧提灯，灯罩上有细细的裂纹。",
+      "tags": ["tool"]
+    },
+    {
+      "key": "rope",
+      "name": "麻绳",
+      "description": "一卷结实的长麻绳，绳结打得很牢。",
+      "tags": ["tool", "quest"]
+    },
+    {
+      "key": "mirror",
+      "name": "古镜",
+      "description": "一面巴掌大的铜镜，背面刻着看不懂的纹路。",
+      "tags": ["quest"]
+    }
+  ],
+  "npcs": [
+    {
+      "key": "seer",
+      "name": "卜者",
+      "room": "wellhead",
+      "description": "他坐在井栏上，手里的骨签停了又停。",
+      "dialogue": {
+        "default": "卜者没有抬头：井里的东西会记住看它的人。",
+        "topics": [
+          {
+            "keywords": ["井", "看见", "打听"],
+            "reply": "下去可以，带上麻绳。看见什么都别伸手——尤其是那面镜子。",
+            "dialogue_state": "seen"
+          },
+          {
+            "keywords": ["镜子", "古镜"],
+            "reply": "镜子会照出它想让你看见的东西。拿了它，你就未必肯回来了。",
+            "dialogue_state": "warned"
+          }
+        ]
+      }
+    }
+  ],
+  "flags": [
+    {"key": "seer_talked", "when": {"npc_state": {"npc": "seer", "state": "seen"}}},
+    {"key": "at_wellhead", "when": {"in_room": "wellhead"}},
+    {"key": "at_undercroft", "when": {"in_room": "undercroft"}},
+    {"key": "has_rope", "when": {"has_item": "rope"}},
+    {"key": "has_mirror", "when": {"has_item": "mirror"}},
+    {"key": "dusk", "when": {"world_time_gte": 6}},
+    {"key": "rope_waiting", "when": {"item_in_room": {"item": "rope", "room": "wellhead"}}},
+    {"key": "seer_here", "when": {"npc_in_room": {"npc": "seer", "room": "wellhead"}}},
+    {"key": "came_back", "when": {"all": [{"in_room": "yard"}, {"flag": "has_rope"}, {"hp_lte": 10}]}}
+  ],
+  "goal": {
+    "title": "下井，然后回来",
+    "description": "向卜者打听井底的传闻，带麻绳下去看一眼，趁天没黑回到院子。井底寒气会伤人，掉下去一趟再爬上来并不轻松。",
+    "objectives": [
+      {"key": "ask", "text": "向卜者打听井底的东西", "when": {"flag": "seer_talked"}},
+      {"key": "descend", "text": "下到井底", "when": {"flag": "at_undercroft"}},
+      {"key": "return", "text": "带着麻绳回到荒院", "when": {"flag": "came_back"}}
+    ]
+  },
+  "endings": [
+    {
+      "key": "mirror_bound",
+      "kind": "lose",
+      "title": "镜中的你",
+      "text": "你把古镜揣进怀里。再抬头时，井口只剩一线天光，而镜子里的人还站在井底朝你笑。",
+      "priority": 60,
+      "when": {"flag": "has_mirror"}
+    },
+    {
+      "key": "climb_out",
+      "kind": "win",
+      "title": "活着回来",
+      "text": "你抓着麻绳一级一级爬上来，卜者替你拍掉肩上的井灰：看见了就看见了，别带走。",
+      "priority": 40,
+      "when": {"all": [{"objective_done": "return"}, {"flag": "has_rope"}]}
+    },
+    {
+      "key": "empty_hands",
+      "kind": "lose",
+      "title": "空手而归",
+      "text": "天彻底黑下来时你还在井边打转，卜者收起骨签走了，只留一句：今晚井不等人。",
+      "priority": 10,
+      "when": {"all": [{"flag": "dusk"}, {"not": {"flag": "has_rope"}}]}
+    }
+  ],
+  "suggestions": [
+    {"when": {"flag": "rope_waiting"}, "text": "把麻绳拿起来"},
+    {"when": {"flag": "seer_here"}, "text": "和卜者聊聊"},
+    {"when": {"flag": "at_wellhead"}, "text": "下到井底"},
+    {"when": {"flag": "at_undercroft"}, "text": "仔细看看那面古镜"},
+    {"when": {"flag": "at_undercroft"}, "text": "顺着麻绳爬回井口"}
+  ]
+}

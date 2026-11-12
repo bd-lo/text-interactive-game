@@ -13,6 +13,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from textgame.domain.character_card import CardSource, CharacterCard
+from textgame.domain.results import ErrorCode
+from textgame.services.dto import TurnResult
 
 
 class TurnRequestBody(BaseModel):
@@ -23,6 +25,81 @@ class TurnRequestBody(BaseModel):
     game_id: str = Field(min_length=1, max_length=64)
     text: str = Field(alias="input", min_length=1, max_length=500)
     expected_version: int = Field(ge=0)
+
+
+# ---------------------------------------------------------------------------
+# 流式回合 NDJSON 事件（N2-038 / ADR D-N2-2）
+# ---------------------------------------------------------------------------
+#: NDJSON 媒体类型（``POST /api/v1/turns/stream`` 响应；每行一个事件对象）。
+NDJSON_MEDIA_TYPE = "application/x-ndjson; charset=utf-8"
+
+
+class TurnStreamStartEvent(BaseModel):
+    """``start``：回合开始（流已建立；幂等/CAS 结果可能随后以 ``error`` 表达）。
+
+    ``turn_id`` 是**预告回合号**（``expected_version + 1``）；只读回合不推进回合号，权威值
+    以 ``done.result.turn_id`` 为准（038 实施偏差，已登记设计文档）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["start"] = "start"
+    turn_id: int = Field(ge=1)
+    expected_version: int = Field(ge=0)
+
+
+class TurnStreamDeltaEvent(BaseModel):
+    """``delta``：叙事增量（客户端追加；未校验文本，仅用于显示）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["delta"] = "delta"
+    text: str
+
+
+class TurnStreamReplaceEvent(BaseModel):
+    """``replace``：丢弃已显示增量并替换为权威文本（校验失败/修复/模板回退）。
+
+    ``reason`` 机器可读：``TEMPLATE_FALLBACK``（回退模板）/ ``NARRATIVE_REVISED``（LLM 修复或
+    多角色拼接后文本变化）。前端以 ``text`` 覆盖打字机内容，最终仍以 ``done.result.text`` 为准。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["replace"] = "replace"
+    text: str
+    reason: str = Field(min_length=1, max_length=64)
+
+
+class TurnStreamDoneEvent(BaseModel):
+    """``done``：回合完整结束（事件已按既有唯一写入者/CAS/幂等语义提交）。
+
+    ``result`` 就是与 ``POST /api/v1/turns`` **完全相同**的 ``TurnResult``（权威文本/版本/事件）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["done"] = "done"
+    result: TurnResult
+
+
+class TurnStreamErrorEvent(BaseModel):
+    """``error``：回合未提交的失败（业务失败口径，HTTP 状态仍 200；统一失败信封字段）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["error"] = "error"
+    error_code: ErrorCode
+    message: str
+
+
+TurnStreamEvent = (
+    TurnStreamStartEvent
+    | TurnStreamDeltaEvent
+    | TurnStreamReplaceEvent
+    | TurnStreamDoneEvent
+    | TurnStreamErrorEvent
+)
 
 
 class CreateGameBody(BaseModel):
@@ -719,6 +796,12 @@ __all__ = [
     "ScenarioValidationErrorResponse",
     "ScenarioWarningResponse",
     "TurnRequestBody",
+    "TurnStreamDeltaEvent",
+    "TurnStreamDoneEvent",
+    "TurnStreamErrorEvent",
+    "TurnStreamEvent",
+    "TurnStreamReplaceEvent",
+    "TurnStreamStartEvent",
     "WorldBookDeleteResponse",
     "WorldBookDetailBodyResponse",
     "WorldBookDetailResponse",

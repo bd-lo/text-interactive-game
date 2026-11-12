@@ -19,6 +19,15 @@
   ``POST /api/v1/games {card_id}``，总是新开一局（与 ``--scenario``/``--continue`` 互斥并有
   中文提示）；``--list-cards`` 只读列出卡库最近人物卡（``GET /api/v1/character-cards``，
   失败时玩家可读降级）。**无卡参数时旧 CLI 行为逐字不变**（含 ``--check``）。
+- **N3-047 终端卡库浏览**：``--list-cards`` 补 ``--card-query``（标题/来源过滤）、``--card-limit``
+  （1..100，默认 20）、``--card-all``（上限内全量，单次最多 100 张），展示标题/来源标签/更新
+  时间/卡 ID 与可玩提示；``--card-detail <卡ID>`` 只读查看安全子集（标题/来源/属性摘要/背包
+  提示/警告）。只读浏览不建局；默认开局路径与 ``--check`` 输出逐字不变。
+- **N3-045 场景包批量导入/导出**：``--import-scenarios <目录>`` 批量导入目录下 ``*.json``
+  场景（逐文件 ≤256KB/UTF-8/JSON 对象，走既有 ``POST /api/v1/scenarios``；幂等键由文件内容
+  sha256 派生，重跑只回放不重复建档；逐文件 ``[ok]/[skip]/[error]`` 中文报告，部分失败
+  退出码 1）；``--export-scenarios <目录>`` 只读导出场景库为 ``<slug>.json``（先列表再详情取
+  原始定义，可直接再导入）。数量默认 50/上限 100（``--import-limit``/``--export-limit``）。
 
 模块结构：``GameSession`` 封装回合推进（内部维护版本链与幂等键，不对外暴露）；
 ``run_check``/``run_interactive`` 分别承载自动验收与交互循环；``build_app`` 负责进程内装配；
@@ -32,6 +41,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -39,10 +49,13 @@ import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from textgame import scenario_pack
+from textgame.domain.character_card import resolve_item_template
 from textgame.domain.scenario import (
     M3_NPC_SCAVENGER_A,
     M3_NPC_SCAVENGER_B,
@@ -87,12 +100,30 @@ SCENARIO_LABELS: dict[str, str] = {
 #: 结局屏提示（status=ended 后不再接收行动输入，只允许退出/查看）。
 ENDING_HINT = "故事结束，输入 :quit 退出。"
 
-#: 人物卡来源 → 玩家可读标签（``--list-cards`` 展示用；未知来源给中性文案）。
+#: 人物卡来源 → 玩家可读标签（``--list-cards``/``--card-detail`` 展示用；未知来源给中性文案）。
 _CARD_SOURCE_LABELS: dict[str, str] = {
     "upload": "导入",
     "llm": "LLM 生成",
     "manual": "手填/模板",
 }
+
+#: 卡库浏览：``--card-limit`` 合法范围与默认值（与后端列表端点 1..100 的上限一致）。
+CARD_LIMIT_MIN = 1
+CARD_LIMIT_MAX = 100
+CARD_LIMIT_DEFAULT = 20
+
+#: 属性键 → 中文短标签（``--card-detail`` 属性摘要展示顺序；与人物卡 7 键一致）。
+_CARD_ATTRIBUTE_LABELS: dict[str, str] = {
+    "str": "力量",
+    "dex": "敏捷",
+    "con": "体质",
+    "int": "智力",
+    "wis": "感知",
+    "cha": "魅力",
+}
+
+#: ``updated_at`` ISO 文本 → 玩家可读「YYYY-MM-DD HH:MM」的前缀匹配（解析失败则不显示）。
+_CARD_UPDATED_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})")
 
 #: SQLite DSN 前缀；``:memory:`` / ``file:`` 等 URI 形式不做存档发现（降级为新开）。
 _SQLITE_URL_PREFIX = "sqlite:///"
@@ -712,7 +743,11 @@ _HELP_LINES: tuple[str, ...] = (
     "命令：:help 帮助 ｜ :look 环顾四周 ｜ :inv 查看行囊 ｜ :status 状态行 ｜ :quit 退出",
     "场景：--scenario m2|m3|m4|story（story「余烬哨站」剧情，推荐首玩）",
     "上传场景：--scenario-id <场景ID> 按上传场景开局；--list-scenarios 列出已上传场景（场景文件在网页场景库导入）",
+    "场景包：--import-scenarios <目录> 批量导入场景文件（--import-limit 数量，默认 50、上限 100）",
+    "场景包：--export-scenarios <目录> 批量导出场景文件（--export-limit 数量，默认 50、上限 100）",
     "人物卡：--card-id <卡ID> 按人物卡开局；--list-cards 列出卡库（卡先在网页卡库生成/导入）",
+    "卡库浏览：--list-cards 可加 --card-query 关键词 / --card-limit 数量 / --card-all；"
+    "--card-detail <卡ID> 看单卡详情",
     "存档：默认自动继续同库最近存档；--new 新开，--continue 强制继续，--list 列出最近存档",
     "当前为默认离线确定性叙事（不联网、无需 API Key）",
 )
@@ -908,50 +943,247 @@ def _run_list_app(db_target: Path | str | None = None) -> int:
         dispose_app_engine(app)
 
 
-def _run_list_cards_app(db_target: Path | str | None = None) -> int:
-    """``--list-cards``：只读列出卡库最近人物卡（``GET /api/v1/character-cards``）后退出。
-
-    只读：不建局、不写库；``--db`` 与交互/``--list`` 同口径。旧后端缺该端点时给出
-    玩家可读提示（不阻塞其它入口）。卡 ID 完整打印，供 ``--card-id`` 直接复制使用。
-    """
+def _readonly_db_url(db_target: Path | str | None) -> str:
+    """``--db`` 目标 → 只读浏览用数据库 DSN（与交互/``--list`` 同口径）。"""
     if isinstance(db_target, str):
-        db_url = db_target
-    elif db_target is not None:
-        db_url = f"sqlite:///{db_target.resolve().as_posix()}"
+        return db_target
+    if db_target is not None:
+        return f"sqlite:///{db_target.resolve().as_posix()}"
+    return _configured_db_url()
+
+
+def _build_readonly_app(db_target: Path | str | None, unavailable: str) -> FastAPI:
+    """装配只读浏览组合根；装配失败转成玩家可读提示（不显示内部异常细节）。"""
+    try:
+        return build_app(_readonly_db_url(db_target) if db_target is not None else None)
+    except Exception as exc:  # 存档路径不可用/装配失败：玩家可读提示，不泄漏内部细节
+        raise ConsoleError(unavailable) from exc
+
+
+def _card_source_label(source: object) -> str:
+    """人物卡来源 → 玩家可读标签（未知/缺失来源给中性「人物卡」）。"""
+    return _CARD_SOURCE_LABELS.get(source, "人物卡") if isinstance(source, str) else "人物卡"
+
+
+def _card_updated_text(value: object) -> str:
+    """``updated_at`` ISO 文本 → 「YYYY-MM-DD HH:MM」；无法识别返回空串（该段不显示）。"""
+    if not isinstance(value, str):
+        return ""
+    match = _CARD_UPDATED_RE.match(value.strip())
+    if match is None:
+        return ""
+    return f"{match.group(1)} {match.group(2)}"
+
+
+def _card_matches_query(row: dict[str, Any], keyword: str) -> bool:
+    """``--card-query`` 客户端过滤：关键词匹配标题/来源标签/来源原值（大小写不敏感）。"""
+    needle = keyword.casefold()
+    if not needle:
+        return True
+    candidates = (row.get("name"), row.get("source"), _card_source_label(row.get("source")))
+    return any(isinstance(value, str) and needle in value.casefold() for value in candidates)
+
+
+def _card_detail_failure_message(status_code: int) -> str:
+    """卡详情失败 → 玩家可读中文（404 不存在、422 ID 格式非法、其余暂不可用）。"""
+    if status_code == 404:
+        return "卡库里找不到这张人物卡（可能已经被删除了）。"
+    if status_code == 422:
+        return "人物卡 ID 格式不正确：请从 --list-cards 里复制完整卡 ID（以 card_ 开头）。"
+    return "人物卡详情暂时打不开：可以先用 --list-cards 浏览卡库，或用网页版卡库查看。"
+
+
+def _card_detail_lines(card: dict[str, Any], card_id: str) -> list[str]:
+    """单卡详情 → 玩家可读安全子集（标题/来源/属性摘要/背包提示/警告）。
+
+    只读预览：不输出 ``schema_version``/``generated_by`` 等契约字段，也不渲染 ``background``
+    自由文本，终端保持玩家视角；卡片数据本身来自服务端 ``GET /character-cards/{id}``。
+    """
+    raw_name = card.get("name")
+    name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else "未命名人物卡"
+    lines: list[str] = [
+        f"【人物卡】{name}",
+        f"来源：{_card_source_label(card.get('source'))} · 卡 {card_id}",
+    ]
+    raw_attributes = card.get("attributes")
+    attributes: dict[str, Any] = raw_attributes if isinstance(raw_attributes, dict) else {}
+    hp = card.get("hp")
+    max_hp = attributes.get("max_hp")
+    if isinstance(hp, int) and isinstance(max_hp, int):
+        lines.append(f"生命：HP {hp}/{max_hp}")
+    elif isinstance(hp, int):
+        lines.append(f"生命：HP {hp}")
+    attribute_parts: list[str] = []
+    for key, label in _CARD_ATTRIBUTE_LABELS.items():
+        value = attributes.get(key)
+        if isinstance(value, int):
+            attribute_parts.append(f"{label} {value}")
+    if attribute_parts:
+        lines.append("属性：" + " ｜ ".join(attribute_parts))
+    raw_items = card.get("starting_items")
+    template_ids = (
+        [item for item in raw_items if isinstance(item, str)] if isinstance(raw_items, list) else []
+    )
+    item_names: list[str] = []
+    warnings: list[str] = []
+    for template_id in template_ids:
+        try:
+            item_names.append(resolve_item_template(template_id).name)
+        except KeyError:
+            warnings.append("初始物品里有无法识别的内容，开局可能失败。")
+    if item_names:
+        lines.append("背包：" + "、".join(item_names) + f"（合计 {len(item_names)} 件）")
     else:
-        db_url = _configured_db_url()
-    app = build_app(db_url if db_target is not None else None)
+        lines.append("背包：没有初始物品（开局时行囊是空的）")
+    if isinstance(hp, int) and isinstance(max_hp, int) and hp < max_hp:
+        warnings.append(f"开局时生命值未满（HP {hp}/{max_hp}），会从这张卡的当前生命值开始。")
+    if warnings:
+        lines.extend(f"警告：{warning}" for warning in warnings)
+    else:
+        lines.append("警告：无（这张人物卡可以直接用来开局）")
+    lines.append("")
+    lines.append(f"按这张卡开局：python -m textgame.console --card-id {card_id}")
+    return lines
+
+
+def _validate_card_browse_args(args: argparse.Namespace) -> None:
+    """卡库浏览参数校验：互斥/范围错误给玩家可读中文（main 统一转 exit 1）。"""
+    browse_only = args.card_query is not None or args.card_all or args.card_limit is not None
+    if args.card_detail is not None:
+        conflicts = [
+            flag
+            for flag, given in (
+                ("--list-cards", bool(args.list_cards)),
+                ("--list", bool(args.list_games)),
+                ("--list-scenarios", bool(args.list_scenarios)),
+                ("--card-id", args.card_id is not None),
+            )
+            if given
+        ]
+        if conflicts:
+            raise ConsoleError(
+                f"--card-detail 不能与 {'/'.join(conflicts)} 同时使用："
+                "看单卡详情就用 --card-detail <卡ID>。"
+            )
+        if browse_only:
+            raise ConsoleError(
+                "--card-query/--card-limit/--card-all 只能与 --list-cards 一起使用。"
+            )
+        return
+    if browse_only and not args.list_cards:
+        raise ConsoleError("--card-query/--card-limit/--card-all 只能与 --list-cards 一起使用。")
+    if args.card_all and args.card_limit is not None:
+        raise ConsoleError(
+            "--card-all 与 --card-limit 不能同时使用：--card-all 表示显示上限内的全部人物卡。"
+        )
+    if args.card_query is not None and not str(args.card_query).strip():
+        raise ConsoleError("--card-query 需要一个关键词：留空请直接去掉该参数查看全部人物卡。")
+    if args.card_limit is not None and not (
+        CARD_LIMIT_MIN <= int(args.card_limit) <= CARD_LIMIT_MAX
+    ):
+        raise ConsoleError(
+            f"--card-limit 必须在 {CARD_LIMIT_MIN} 到 {CARD_LIMIT_MAX} 之间"
+            f"（收到 {args.card_limit}）。"
+        )
+
+
+def _run_list_cards_app(
+    db_target: Path | str | None = None,
+    *,
+    query: str | None = None,
+    limit: int = CARD_LIMIT_DEFAULT,
+    show_all: bool = False,
+) -> int:
+    """``--list-cards``：只读浏览人物卡库（关键词过滤/限量/上限内全量）后退出。
+
+    只读：不建局、不写库；``--db`` 与交互/``--list`` 同口径。检索/全量时一次最多读
+    ``CARD_LIMIT_MAX``（100）张（后端列表端点单次上限），其余按 ``limit`` 读；过滤在客户端
+    按标题/来源标签完成。空结果、无匹配、后端不可用都只打印玩家可读中文提示。
+    """
+    keyword = query.strip() if isinstance(query, str) else ""
+    display_limit = limit if CARD_LIMIT_MIN <= limit <= CARD_LIMIT_MAX else CARD_LIMIT_DEFAULT
+    fetch_limit = CARD_LIMIT_MAX if (keyword or show_all) else display_limit
+    app = _build_readonly_app(db_target, "人物卡库暂时打不开：请检查存档路径，或稍后再试。")
     try:
         with TestClient(app) as client:
-            response = client.get("/api/v1/character-cards", params={"limit": 20})
+            response = client.get("/api/v1/character-cards", params={"limit": fetch_limit})
             if response.status_code != 200:
                 raise ConsoleError(
-                    "人物卡列表暂不可用（后端未提供 /api/v1/character-cards）；"
-                    "可以先用网页版卡库查看人物卡。"
+                    "人物卡列表暂时打不开：可以先用网页版卡库查看人物卡，或稍后再试。"
                 )
             payload = response.json()
-        cards = payload.get("cards") if isinstance(payload, dict) else None
-        rows = [row for row in cards if isinstance(row, dict)] if isinstance(cards, list) else []
-        total = payload.get("total") if isinstance(payload, dict) else None
-        if not rows:
-            print("还没有人物卡：先在网页版卡库生成或导入一张，再用 --card-id 开局。")
-            return 0
-        shown_total = total if isinstance(total, int) and total > 0 else len(rows)
-        print(f"最近人物卡（共 {shown_total} 张，按最近更新排序；最多显示 20 张）：")
-        for index, row in enumerate(rows, start=1):
-            raw_name = row.get("name")
-            name = raw_name if isinstance(raw_name, str) and raw_name else "未命名人物卡"
-            source = row.get("source")
-            label = _CARD_SOURCE_LABELS.get(str(source), "人物卡")
-            raw_card_id = row.get("card_id")
-            card_id = raw_card_id if isinstance(raw_card_id, str) and raw_card_id else "未知"
-            print(f"{index}. [{label}] {name} · 卡 {card_id}")
-        print("")
-        print("按人物卡开局：python -m textgame.console --card-id <卡ID>")
-        print("（人物卡的生成/导入请在网页版卡库操作）")
-        return 0
     finally:
         dispose_app_engine(app)
+    cards = payload.get("cards") if isinstance(payload, dict) else None
+    rows = [row for row in cards if isinstance(row, dict)] if isinstance(cards, list) else []
+    total = payload.get("total") if isinstance(payload, dict) else None
+    matched = [row for row in rows if _card_matches_query(row, keyword)] if keyword else rows
+    displayed = matched if show_all else matched[:display_limit]
+    if not displayed:
+        if keyword:
+            print(f"卡库里没有匹配「{keyword}」的人物卡：换个关键词试试。")
+            print("（去掉 --card-query 可以查看全部人物卡）")
+        else:
+            print("还没有人物卡：先在网页版卡库生成或导入一张，再用 --card-id 开局。")
+        return 0
+    total_count = total if isinstance(total, int) and total > 0 else len(rows)
+    if keyword:
+        print(
+            f"最近人物卡（共 {total_count} 张，按最近更新排序；"
+            f"匹配「{keyword}」{len(matched)} 张，显示 {len(displayed)} 张）："
+        )
+    else:
+        print(f"最近人物卡（共 {total_count} 张，按最近更新排序；显示 {len(displayed)} 张）：")
+    for index, row in enumerate(displayed, start=1):
+        raw_name = row.get("name")
+        name = raw_name if isinstance(raw_name, str) and raw_name.strip() else "未命名人物卡"
+        raw_card_id = row.get("card_id")
+        card_id = raw_card_id if isinstance(raw_card_id, str) and raw_card_id else "未知"
+        updated = _card_updated_text(row.get("updated_at"))
+        updated_part = f" · 更新 {updated}" if updated else ""
+        source_label = _card_source_label(row.get("source"))
+        print(f"{index}. [{source_label}] {name}{updated_part} · 卡 {card_id}")
+    print("")
+    if not keyword and not show_all and total_count > len(displayed):
+        print(
+            f"（还有更多人物卡：用 --card-limit <数量> 或 --card-all 查看，"
+            f"单次最多 {CARD_LIMIT_MAX} 张）"
+        )
+    elif total_count > len(rows):
+        print(
+            f"（卡库共 {total_count} 张，终端单次最多浏览 {CARD_LIMIT_MAX} 张；"
+            "更多请在网页版卡库查看）"
+        )
+    print("按人物卡开局：python -m textgame.console --card-id <卡ID>")
+    print("查看单卡详情：python -m textgame.console --card-detail <卡ID>")
+    print("（人物卡的生成/导入请在网页版卡库操作）")
+    return 0
+
+
+def _run_card_detail_app(db_target: Path | str | None, card_id: str) -> int:
+    """``--card-detail``：只读查看单张人物卡详情（``GET /character-cards/{id}``）后退出。
+
+    只打印安全子集（标题/来源/属性摘要/背包提示/警告）；卡 ID 不存在/格式非法/后端不可用
+    一律中文可读报错（退出码非 0），不显示内部错误细节，也不建局/写库。
+    """
+    resolved = card_id.strip() if isinstance(card_id, str) else ""
+    if not resolved:
+        raise ConsoleError("--card-detail 需要人物卡 ID：先用 --list-cards 查看卡库里的卡 ID。")
+    app = _build_readonly_app(db_target, "人物卡详情暂时打不开：请检查存档路径，或稍后再试。")
+    try:
+        with TestClient(app) as client:
+            response = client.get(f"/api/v1/character-cards/{quote(resolved, safe='')}")
+            if response.status_code != 200:
+                raise ConsoleError(_card_detail_failure_message(response.status_code))
+            payload = response.json()
+    finally:
+        dispose_app_engine(app)
+    card = payload.get("card") if isinstance(payload, dict) else None
+    if not isinstance(card, dict):
+        raise ConsoleError("人物卡详情暂时打不开：游戏引擎返回了无法识别的卡片信息。")
+    for line in _card_detail_lines(card, resolved):
+        print(line)
+    return 0
 
 
 def _run_list_scenarios_app(db_target: Path | str | None = None) -> int:
@@ -1015,6 +1247,268 @@ def _run_list_scenarios_app(db_target: Path | str | None = None) -> int:
         return 0
     finally:
         dispose_app_engine(app)
+
+
+def _safe_json(response: Any) -> Any:
+    """容错解析 HTTP 响应 JSON；失败返回空字典（错误报告只用状态码，不回显内部细节）。"""
+    try:
+        return response.json()
+    except ValueError:
+        return {}
+
+
+def _existing_scenario_ids(client: TestClient) -> set[str]:
+    """只读分页读取场景库现有场景 ID（批量导入的 ``[skip]`` 判定用）；失败降级为空集。"""
+    ids: set[str] = set()
+    offset = 0
+    for _ in range(20):  # 防御：最多 20 页 × 100 = 2000 个场景
+        response = client.get(
+            "/api/v1/scenarios",
+            params={"limit": scenario_pack.MAX_BATCH_LIMIT, "offset": offset},
+        )
+        if response.status_code != 200:
+            return ids
+        payload = _safe_json(response)
+        scenarios = payload.get("scenarios") if isinstance(payload, dict) else None
+        rows = (
+            [row for row in scenarios if isinstance(row, dict)]
+            if isinstance(scenarios, list)
+            else []
+        )
+        for row in rows:
+            scenario_id = row.get("scenario_id")
+            if isinstance(scenario_id, str) and scenario_id:
+                ids.add(scenario_id)
+        total = payload.get("total") if isinstance(payload, dict) else None
+        offset += len(rows)
+        if not rows or not isinstance(total, int) or offset >= total:
+            break
+    return ids
+
+
+def _run_import_scenarios_app(
+    db_target: Path | str | None,
+    directory: str,
+    *,
+    limit: int = scenario_pack.DEFAULT_BATCH_LIMIT,
+) -> int:
+    """``--import-scenarios``：批量导入目录下场景 JSON 到本机场景库（走既有导入端点）。
+
+    只读扫描 + 逐文件预检（≤256KB/UTF-8/JSON 对象），逐个 ``POST /api/v1/scenarios``；
+    幂等键 = 文件内容 sha256（重跑稳定跳过、不重复建档）。逐文件 ``[ok]/[skip]/[error]``
+    中文报告；有失败退出码 1，全部成功/跳过退出码 0。不建局、不写事件（只写场景资料库）。
+    """
+    directory_path = Path(directory).expanduser()
+    try:
+        files, total_files = scenario_pack.scan_scenario_files(directory_path)
+    except scenario_pack.ScenarioPackError as exc:
+        raise ConsoleError(str(exc)) from exc
+    print(f"批量导入场景包：{directory_path}")
+    if not files:
+        print("目录里没有可导入的场景文件（文件以对象为顶层、不超过 256KB）。")
+        return 0
+    selected = files[:limit]
+    if total_files > limit:
+        print(
+            f"（目录中共 {total_files} 个 .json，本次处理前 {limit} 个；"
+            f"可用 --import-limit 调整，上限 {scenario_pack.MAX_BATCH_LIMIT}）"
+        )
+    app = _build_readonly_app(db_target, "场景库暂时打不开：请检查存档路径，或稍后再试。")
+    ok = skip = failed = 0
+    try:
+        with TestClient(app) as client:
+            existing_ids = _existing_scenario_ids(client)
+            created_ids: set[str] = set()
+            for path in selected:
+                try:
+                    data = scenario_pack.read_scenario_file(path)
+                except scenario_pack.ScenarioPackError as exc:
+                    failed += 1
+                    print(f"[error] {path.name} → {exc}")
+                    continue
+                response = client.post(
+                    "/api/v1/scenarios",
+                    headers={
+                        "Idempotency-Key": scenario_pack.stable_import_key(data),
+                        "Content-Type": "application/json",
+                    },
+                    content=data,
+                )
+                if response.status_code not in (200, 201):
+                    failed += 1
+                    reason = scenario_pack.describe_import_failure(
+                        response.status_code, _safe_json(response)
+                    )
+                    print(f"[error] {path.name} → {reason}")
+                    continue
+                payload = _safe_json(response)
+                scenario_id = payload.get("scenario_id") if isinstance(payload, dict) else None
+                if not isinstance(scenario_id, str) or not scenario_id:
+                    failed += 1
+                    print(f"[error] {path.name} → 服务器返回了无法识别的场景信息")
+                    continue
+                if scenario_id in existing_ids or scenario_id in created_ids:
+                    skip += 1
+                    print(f"[skip] {path.name} → 已存在（同内容）· {scenario_id}")
+                else:
+                    created_ids.add(scenario_id)
+                    ok += 1
+                    print(f"[ok] {path.name} → {scenario_id}")
+    finally:
+        dispose_app_engine(app)
+    print("")
+    print(f"汇总：成功 {ok} / 跳过 {skip} / 失败 {failed}")
+    if ok:
+        print("按上传场景开局：python -m textgame.console --scenario-id <场景 ID>")
+        print("查看/导出场景：--list-scenarios、--export-scenarios <目录>")
+    return 1 if failed else 0
+
+
+def _run_export_scenarios_app(
+    db_target: Path | str | None,
+    directory: str,
+    *,
+    limit: int = scenario_pack.DEFAULT_BATCH_LIMIT,
+) -> int:
+    """``--export-scenarios``：只读导出场景库为 ``<slug>.json``（可直接再导入）。
+
+    先 ``GET /api/v1/scenarios`` 列表，再逐个 ``GET /{id}`` 取原始 ``definition`` 写文件
+    （slug 重名追加 ``-<scenario_id 后 8 位>``）；逐文件 ``[ok]/[error]`` 中文报告；有失败
+    退出码 1。导出只读场景资料库，不建局、不写事件。
+    """
+    directory_path = Path(directory).expanduser()
+    if directory_path.exists() and not directory_path.is_dir():
+        raise ConsoleError(f"导出目标不是目录：{directory_path}")
+    try:
+        directory_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConsoleError("无法创建导出目录：请检查路径与权限") from exc
+    app = _build_readonly_app(db_target, "场景库暂时打不开：请检查存档路径，或稍后再试。")
+    print(f"批量导出场景包：{directory_path}")
+    ok = failed = 0
+    used_names: set[str] = set()
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/scenarios", params={"limit": limit})
+            if response.status_code != 200:
+                raise ConsoleError(
+                    f"场景库暂时打不开：{scenario_pack.describe_list_failure(response.status_code)}"
+                )
+            payload = _safe_json(response)
+            scenarios = payload.get("scenarios") if isinstance(payload, dict) else None
+            rows = (
+                [row for row in scenarios if isinstance(row, dict)]
+                if isinstance(scenarios, list)
+                else []
+            )
+            total = payload.get("total") if isinstance(payload, dict) else None
+            if not rows:
+                print(
+                    "场景库里还没有可导出的场景：先用 --import-scenarios 导入，或在网页场景库导入。"
+                )
+                return 0
+            shown_total = total if isinstance(total, int) and total > 0 else len(rows)
+            export_count = min(limit, len(rows))
+            note = "；可用 --export-limit 调整，上限 100" if shown_total > export_count else ""
+            print(f"（场景库共 {shown_total} 个，本次导出 {export_count} 个{note}）")
+            for row in rows[:limit]:
+                scenario_id = row.get("scenario_id")
+                if not isinstance(scenario_id, str) or not scenario_id:
+                    failed += 1
+                    print("[error] （缺少场景 ID 的列表项） → 无法定位场景")
+                    continue
+                detail = client.get(f"/api/v1/scenarios/{quote(scenario_id, safe='')}")
+                if detail.status_code != 200:
+                    failed += 1
+                    reason = scenario_pack.describe_export_failure(detail.status_code)
+                    print(f"[error] {scenario_id} → {reason}")
+                    continue
+                detail_payload = _safe_json(detail)
+                definition = (
+                    detail_payload.get("definition") if isinstance(detail_payload, dict) else None
+                )
+                if not isinstance(definition, dict):
+                    failed += 1
+                    print(f"[error] {scenario_id} → 详情里没有可导出的场景定义")
+                    continue
+                try:
+                    data = scenario_pack.encode_export_payload(definition)
+                except scenario_pack.ScenarioPackError as exc:
+                    failed += 1
+                    print(f"[error] {scenario_id} → {exc}")
+                    continue
+                filename = scenario_pack.scenario_export_filename(
+                    row.get("slug"), scenario_id, used_names
+                )
+                try:
+                    (directory_path / filename).write_bytes(data)
+                except OSError:
+                    failed += 1
+                    print(f"[error] {scenario_id} → 无法写入文件（请检查目录权限）")
+                    continue
+                ok += 1
+                print(f"[ok] {scenario_id} → {filename}")
+    finally:
+        dispose_app_engine(app)
+    print("")
+    print(f"汇总：成功 {ok} / 失败 {failed}")
+    if ok:
+        print("导出文件可直接再导入：python -m textgame.console --import-scenarios <目录>")
+    return 1 if failed else 0
+
+
+def _validate_scenario_pack_args(args: argparse.Namespace, raw_args: Sequence[str]) -> None:
+    """场景包批量导入/导出参数校验：互斥/范围错误给玩家可读中文（main 统一转 exit 1）。"""
+    import_dir = args.import_scenarios
+    export_dir = args.export_scenarios
+    if import_dir is not None and export_dir is not None:
+        raise ConsoleError(
+            "--import-scenarios 与 --export-scenarios 不能同时使用：一次只做一种批量操作。"
+        )
+    if import_dir is None and export_dir is None:
+        if args.import_limit is not None:
+            raise ConsoleError("--import-limit 只能与 --import-scenarios 一起使用。")
+        if args.export_limit is not None:
+            raise ConsoleError("--export-limit 只能与 --export-scenarios 一起使用。")
+        return
+    conflicts = [
+        flag
+        for flag, given in (
+            ("--list", bool(args.list_games)),
+            ("--list-cards", bool(args.list_cards)),
+            ("--list-scenarios", bool(args.list_scenarios)),
+            ("--card-id", args.card_id is not None),
+            ("--card-detail", args.card_detail is not None),
+            ("--scenario-id", args.scenario_id is not None),
+            ("--continue", bool(args.continue_save)),
+            ("--new", bool(args.new_game)),
+            ("--scenario", _explicit_scenario(raw_args) is not None),
+            (
+                "--card-query/--card-limit/--card-all",
+                bool(args.card_all) or args.card_query is not None or args.card_limit is not None,
+            ),
+        )
+        if given
+    ]
+    if conflicts:
+        raise ConsoleError(
+            f"--import-scenarios/--export-scenarios 不能与 {'/'.join(conflicts)} 同时使用："
+            "请一次只执行一种操作。"
+        )
+    if import_dir is not None:
+        if not str(import_dir).strip():
+            raise ConsoleError("--import-scenarios 需要目录路径。")
+        try:
+            scenario_pack.normalize_batch_limit(args.import_limit)
+        except scenario_pack.ScenarioPackError as exc:
+            raise ConsoleError(f"--import-limit：{exc}") from exc
+    if export_dir is not None:
+        if not str(export_dir).strip():
+            raise ConsoleError("--export-scenarios 需要目录路径。")
+        try:
+            scenario_pack.normalize_batch_limit(args.export_limit)
+        except scenario_pack.ScenarioPackError as exc:
+            raise ConsoleError(f"--export-limit：{exc}") from exc
 
 
 def _run_interactive_app(
@@ -1094,6 +1588,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="列出人物卡库最近人物卡（按最近更新排序）后退出",
     )
     parser.add_argument(
+        "--card-query",
+        dest="card_query",
+        type=str,
+        default=None,
+        metavar="关键词",
+        help="配合 --list-cards：按人物卡标题或来源标签过滤（客户端匹配）",
+    )
+    parser.add_argument(
+        "--card-limit",
+        dest="card_limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"配合 --list-cards：显示数量 1..{CARD_LIMIT_MAX}（默认 {CARD_LIMIT_DEFAULT}）",
+    )
+    parser.add_argument(
+        "--card-all",
+        dest="card_all",
+        action="store_true",
+        help=f"配合 --list-cards：显示上限内的全部人物卡（单次最多 {CARD_LIMIT_MAX} 张）",
+    )
+    parser.add_argument(
+        "--card-detail",
+        dest="card_detail",
+        type=str,
+        default=None,
+        metavar="卡ID",
+        help="查看单张人物卡详情（只读；--list-cards 可查卡 ID）",
+    )
+    parser.add_argument(
         "--card-id",
         "--card",
         dest="card_id",
@@ -1113,6 +1637,44 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="按玩家上传的场景开局：传场景库中的场景 ID（--list-scenarios 可查；总是新开一局）",
+    )
+    parser.add_argument(
+        "--import-scenarios",
+        dest="import_scenarios",
+        type=str,
+        default=None,
+        metavar="目录",
+        help="批量导入目录中的 *.json 场景（逐文件 ≤256KB；幂等键由内容派生，可安全重跑）",
+    )
+    parser.add_argument(
+        "--import-limit",
+        dest="import_limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"配合 --import-scenarios：最多处理数量 1..{scenario_pack.MAX_BATCH_LIMIT}"
+            f"（默认 {scenario_pack.DEFAULT_BATCH_LIMIT}）"
+        ),
+    )
+    parser.add_argument(
+        "--export-scenarios",
+        dest="export_scenarios",
+        type=str,
+        default=None,
+        metavar="目录",
+        help="批量导出场景库到目录（每个场景一个 <slug>.json，可直接再导入）",
+    )
+    parser.add_argument(
+        "--export-limit",
+        dest="export_limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"配合 --export-scenarios：最多导出数量 1..{scenario_pack.MAX_BATCH_LIMIT}"
+            f"（默认 {scenario_pack.DEFAULT_BATCH_LIMIT}）"
+        ),
     )
     parser.add_argument("--seed", type=int, default=42, help="新存档随机种子（默认 42）")
     parser.add_argument(
@@ -1158,17 +1720,40 @@ def _explicit_scenario(argv: Sequence[str]) -> str | None:
 def main(argv: Sequence[str] | None = None) -> int:
     """终端入口：``python -m textgame.console [--check|--list|--list-cards|--list-scenarios]
     [--db PATH|DSN] [--seed N] [--scenario m2|m3|m4|story] [--continue|--resume] [--new]
-    [--card-id ID] [--scenario-id ID]``。"""
+    [--card-id ID] [--scenario-id ID] [--card-query 关键词] [--card-limit N] [--card-all]
+    [--card-detail 卡ID] [--import-scenarios 目录] [--import-limit N]
+    [--export-scenarios 目录] [--export-limit N]``。"""
     raw_args = list(argv) if argv is not None else sys.argv[1:]
     args = _build_parser().parse_args(raw_args)
     ensure_utf8_stdio()
     try:
         if args.check:
             return _run_check_app()
+        _validate_scenario_pack_args(args, raw_args)
+        if args.import_scenarios is not None:
+            return _run_import_scenarios_app(
+                _parse_db_target(args.db),
+                str(args.import_scenarios),
+                limit=scenario_pack.normalize_batch_limit(args.import_limit),
+            )
+        if args.export_scenarios is not None:
+            return _run_export_scenarios_app(
+                _parse_db_target(args.db),
+                str(args.export_scenarios),
+                limit=scenario_pack.normalize_batch_limit(args.export_limit),
+            )
+        _validate_card_browse_args(args)
+        if args.card_detail is not None:
+            return _run_card_detail_app(_parse_db_target(args.db), str(args.card_detail))
         if args.list_games:
             return _run_list_app(_parse_db_target(args.db))
         if args.list_cards:
-            return _run_list_cards_app(_parse_db_target(args.db))
+            return _run_list_cards_app(
+                _parse_db_target(args.db),
+                query=None if args.card_query is None else str(args.card_query),
+                limit=CARD_LIMIT_DEFAULT if args.card_limit is None else int(args.card_limit),
+                show_all=bool(args.card_all),
+            )
         if args.list_scenarios:
             return _run_list_scenarios_app(_parse_db_target(args.db))
         if args.scenario_id is not None:

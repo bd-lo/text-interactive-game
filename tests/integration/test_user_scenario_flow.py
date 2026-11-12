@@ -18,6 +18,8 @@ from textgame.config.settings import get_settings
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EMBER_WATCH = _REPO_ROOT / "examples" / "scenarios" / "ember-watch.json"
 _TINY_TOWER = _REPO_ROOT / "examples" / "scenarios" / "tiny-tower.json"
+_LANTERN_VIGIL = _REPO_ROOT / "examples" / "scenarios" / "lantern-vigil.json"
+_MOONLIT_MARKET = _REPO_ROOT / "examples" / "scenarios" / "moonlit-market.json"
 
 _M2_ENTRY_ROOM_ID = "room_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK"
 
@@ -276,3 +278,119 @@ def test_replay_contains_scenario_events(app: object) -> None:
         assert kinds[0] == "game_created"
         assert "CHARACTER_MOVED" in kinds
         json.dumps(replay)  # 可 JSON 序列化（无不可序列化对象泄漏）
+
+
+# ---------------------------------------------------------------------------
+# v2（schema_version=2）：flag / 目标进度 / 收集 / 时间 / 多结局
+# ---------------------------------------------------------------------------
+
+
+def test_v2_example_is_valid_and_reports_schema_version() -> None:
+    """v2 示例通过领域校验：schema_version=2、flags 生效、summary 6 键不变。"""
+    from textgame.domain.user_scenario import parse_definition
+
+    parsed = parse_definition(_LANTERN_VIGIL.read_bytes())
+    assert parsed.ok, parsed.errors
+    assert parsed.definition is not None
+    assert parsed.definition.schema_version == 2
+    assert len(parsed.definition.flags) == 5
+    # summary 契约冻结：v2 不新增统计键（前端契约测试保持不变）。
+    assert set(parsed.summary) == {
+        "rooms",
+        "items",
+        "npcs",
+        "objectives",
+        "endings",
+        "suggestions",
+    }
+    assert not parsed.warnings  # 示例定义无未使用 flag
+
+
+def test_v2_flags_goal_progress_and_ending_end_to_end(app: object) -> None:
+    """v2 端到端：导入 → 对话使 flag 成立 → 收集计数 → objective_done 链 → 胜利结局。"""
+    with TestClient(app) as client:  # type: ignore[arg-type]
+        imported = _import_scenario(client, _LANTERN_VIGIL, "flow-v2-import-0001")
+        assert imported["summary"]["rooms"] == 3
+        detail = client.get(f"/api/v1/scenarios/{imported['scenario_id']}").json()
+        assert detail["schema_version"] == 2  # v2 定义原样存/原样回
+        assert len(detail["definition"]["flags"]) == 5
+        created = _new_game(client, {"scenario_id": imported["scenario_id"]}, "flow-v2-game-0001")
+        game_id = created["game_id"]
+        version = created["version"]
+
+        first = _view(client, game_id)
+        assert first["scenario"] == "custom"
+        goal = first["goal"]
+        assert [item["id"] for item in goal["objectives"]] == ["listen", "gather", "light"]
+        assert [item["done"] for item in goal["objectives"]] == [False, False, False]
+
+        script = [
+            "向东走进厅堂",  # gate → hall
+            "和灯守说话",  # dialogue_state=briefed → flag keeper_briefed → listen 完成
+            "拿起蜡烛",  # 第 1 件 quest 物品
+            "向东走进灯室",  # hall → shrine（进入伤害 -2）
+            "拿起点灯的灯油",  # 第 2 件 quest 物品 → gather/light 完成 → 胜利
+        ]
+        for index, text in enumerate(script, start=1):
+            result = _turn(client, game_id, version, text, f"flow-v2-turn-{index:04d}")
+            assert result["ok"] is True, (text, result)
+            version = result["version"]
+
+        final = _view(client, game_id)
+        assert final["status"] == "ended"
+        assert final["ending_text"]
+        assert [item["done"] for item in final["goal"]["objectives"]] == [True, True, True]
+        assert final["hp"] == 10  # 初始 12，灯室进入伤害 -2
+
+        replay = client.get(f"/api/v1/games/{game_id}/replay").json()
+        kinds = [event["event_type"] for event in replay["events"]]
+        assert "DIALOGUE_EXCHANGED" in kinds  # flag 的数据来源
+        assert kinds.count("ENVIRONMENT_DAMAGE") == 1
+
+        # 结局后拒绝新回合（与 v1 同一读时判定，不写状态）。
+        rejected = _turn(client, game_id, version, "再看看", "flow-v2-turn-after-end")
+        assert rejected["ok"] is False
+        assert rejected["error_code"] == "INVALID_INPUT"
+
+
+def test_v2_declared_as_v1_rejected_via_validate_endpoint(app: object) -> None:
+    """schema_version=1 声明里出现 v2 字段/谓词 → validate 200 + 结构化 errors（带路径）。"""
+    payload = json.loads(_LANTERN_VIGIL.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    with TestClient(app) as client:  # type: ignore[arg-type]
+        response = client.post(
+            "/api/v1/scenarios/validate",
+            content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["ok"] is False
+        paths = {item["path"] for item in body["errors"]}
+        assert "flags" in paths
+        assert any(path.endswith(".when.flag") for path in paths), paths
+        assert any("schema_version=2" in item["message"] for item in body["errors"])
+
+
+# ---------------------------------------------------------------------------
+# 示例场景（分享来源）：全部示例可校验，且规范化（导出同口径）后仍可再导入
+# ---------------------------------------------------------------------------
+def test_all_share_examples_are_valid_and_reimportable() -> None:
+    """4 个示例（v1×2 + v2×2）通过领域校验；model_dump 规范化后再解析仍合法。"""
+    from textgame.domain.user_scenario import MAX_DEFINITION_BYTES, parse_definition
+
+    for path in (_TINY_TOWER, _EMBER_WATCH, _LANTERN_VIGIL, _MOONLIT_MARKET):
+        raw = path.read_bytes()
+        assert len(raw) <= MAX_DEFINITION_BYTES, path.name
+        parsed = parse_definition(raw)
+        assert parsed.ok, (path.name, parsed.errors)
+        assert parsed.definition is not None
+        # 「作者/标题/进入方式」写在格式自带的 meta 字段（JSON 不支持注释）。
+        assert parsed.definition.meta.title and parsed.definition.meta.author
+        assert parsed.definition.meta.description, path.name
+        normalized = json.dumps(
+            parsed.definition.model_dump(mode="json"), ensure_ascii=False
+        ).encode("utf-8")
+        again = parse_definition(normalized)
+        assert again.ok, (path.name, again.errors)
+        assert again.summary == parsed.summary

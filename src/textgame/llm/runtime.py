@@ -37,6 +37,7 @@ from pydantic import SecretStr
 from textgame.config.settings import Settings
 from textgame.llm.client import (
     ChatMessage,
+    DeltaCallback,
     DisabledLLMClient,
     LLMClient,
     LLMRequest,
@@ -55,7 +56,7 @@ from textgame.llm.credentials import (
     StoredLLMCredentials,
     mask_api_key,
 )
-from textgame.llm.litellm_client import LiteLLMClient, LLMTransport
+from textgame.llm.litellm_client import LiteLLMClient, LLMStreamTransport, LLMTransport
 from textgame.llm.records import LLMCallLog
 
 __all__ = [
@@ -129,6 +130,7 @@ class RuntimeLLMClient:
         *,
         store: LocalLLMCredentialStore | None = None,
         transport: LLMTransport | None = None,
+        stream_transport: LLMStreamTransport | None = None,
         calls: LLMCallLog | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -137,6 +139,7 @@ class RuntimeLLMClient:
         self._settings = settings
         self._store = store or LocalLLMCredentialStore(settings.llm_credentials_file)
         self._transport = transport
+        self._stream_transport = stream_transport
         self._calls = calls
         self._clock = clock
         self._sleep = sleep
@@ -311,6 +314,7 @@ class RuntimeLLMClient:
         return LiteLLMClient(
             config,
             transport=self._transport,
+            stream_transport=self._stream_transport,
             calls=self._calls,
             clock=self._clock,
             sleep=self._sleep,
@@ -393,6 +397,27 @@ class RuntimeLLMClient:
     def complete_text(self, req: LLMRequest) -> Any:
         """委托纯文本补全；离线时返回 ``LLM_UNAVAILABLE``。"""
         return self._current().complete_text(req)
+
+    def complete_json_stream(self, req: LLMRequest, on_delta: DeltaCallback) -> Any:
+        """委托流式结构化补全（N2-038 / D-N2-4）。
+
+        - 内部客户端支持流式（``LiteLLMClient``）→ 直接委托（热切换期间取出的实例固定）；
+        - 内部客户端不支持流式（默认离线 ``DisabledLLMClient``/测试 Fake）→ 退回普通
+          ``complete_json``；若成功则把完整内容**一次** ``on_delta`` 下发（与客户端缓存命中
+          语义一致，调用方不感知差别），失败时不下发（叙事 Agent 按模板回退）。
+        """
+        inner = self._current()
+        streamer = getattr(inner, "complete_json_stream", None)
+        if callable(streamer):
+            return streamer(req, on_delta)
+        result = inner.complete_json(req)
+        content = (result.data or {}).get("content") if result.ok else None
+        if isinstance(content, str) and content:
+            try:
+                on_delta(content)
+            except Exception:  # 显示层故障不得影响回合（D-N2-5）
+                _LOGGER.warning("llm_stream_delta_callback_failed")
+        return result
 
     # ------------------------------------------------------------------
     # 连接测试（网页「测试连接」按钮）

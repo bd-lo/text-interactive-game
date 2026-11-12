@@ -52,6 +52,70 @@ from textgame.tools.gate import ToolGate
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 
 
+# ---- P1-4：运行期间源码/测试被并行编辑的「陈旧 collection」诊断 --------------------
+# 2026-11-12 QA 首轮全量 pytest（随机顺序）偶发 5 failed（4 个 console assert_clean_output +
+# 1 个旧版断连时序断言），随后 3 次全绿。复盘证据：首轮约 20:09:18 启动、20:12:25 结束
+# （186.57s），而 ``src/textgame/console.py``（20:10:37）、``src/textgame/scenario_pack.py``
+# （20:10:26）、``tests/integration/test_streaming_acceptance.py``（20:09:41）等文件在该窗口内
+# 被并行开发写入——pytest 在 collection 阶段导入的是**旧版/中间态**模块（``.pytest_cache`` 的
+# nodeids 里还留着已被重命名删除的旧测试 id），因此失败在稳定工作区无法复现。
+# 这里在 session 起止对比 mtime：若运行期间源码/测试被改，结束时明确 WARNING 提示「本轮结果
+# 可能失真，请在稳定工作区重跑」。只做诊断、不改任何断言/用例行为（P1-4 最小 tests-only 修复）。
+_SOURCE_WATCH_ROOTS = ("src", "tests")
+_START_SOURCE_MTIMES: dict[str, float] = {}
+
+
+def _source_mtimes() -> dict[str, float]:
+    """收集本仓 ``src/``、``tests/`` 下 ``*.py`` 的 mtime（相对仓库根路径 → mtime）。"""
+    repo_root = Path(__file__).resolve().parents[1]
+    mtimes: dict[str, float] = {}
+    for root_name in _SOURCE_WATCH_ROOTS:
+        for path in (repo_root / root_name).rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            try:
+                mtimes[str(path.relative_to(repo_root))] = path.stat().st_mtime
+            except OSError:  # 文件在扫描瞬间被删除：忽略（下一次扫描会体现）
+                continue
+    return mtimes
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """记录 session 启动时的源码/测试 mtime（P1-4：运行期间并行编辑检测）。"""
+    del config
+    _START_SOURCE_MTIMES.clear()
+    _START_SOURCE_MTIMES.update(_source_mtimes())
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """运行期间源码/测试被改 → WARNING「结果可能失真，请稳定工作区重跑」（P1-4）。"""
+    del exitstatus
+    current = _source_mtimes()
+    modified = sorted(
+        name for name, before in _START_SOURCE_MTIMES.items() if current.get(name) != before
+    )
+    added = sorted(set(current) - set(_START_SOURCE_MTIMES))
+    if not modified and not added:
+        return
+    lines = [
+        "",
+        "WARNING(P1-4): pytest 运行期间 src/ 或 tests/ 下文件被修改/新增，本轮结果可能失真"
+        "（collection 已加载旧版本，稳定工作区不可复现）。请在稳定工作区重跑：",
+    ]
+    if modified:
+        lines.append("  修改：" + "、".join(modified[:20]))
+        if len(modified) > 20:
+            lines.append(f"  ...（共 {len(modified)} 个文件）")
+    if added:
+        lines.append("  新增：" + "、".join(added[:20]))
+    reporter = session.config.pluginmanager.getplugin("terminalreporter")
+    message = "\n".join(lines)
+    if reporter is not None:
+        reporter.write_line(message, yellow=True)
+    else:  # pragma: no cover - 程序化调用无终端插件时退回 stdout
+        print(message)
+
+
 @dataclass
 class GameHarness:
     """一套可断言的测试装配：HTTP 客户端 + 内存仓储 + 编排器 + 查询服务。"""

@@ -7,18 +7,25 @@ M5-019 起 ``LLMClient`` 是业务代码唯一允许依赖的 LLM 入口（第 1
   SDK 只能出现在 ``providers.py``（第 16 章 16.2 分层契约）。
 - ``DisabledLLMClient`` 是默认生产实现：零联网、恒 ``LLM_UNAVAILABLE``，各 Agent 退回
   确定性兜底，保证默认装配可复现（第 3 章 §3.6 方案 A、第 12 章 12.1）。
+- N2-038（D-N2-4）追加**可选**流式扩展 Protocol :class:`StreamingLLMClient`：不并入
+  ``LLMClient``（不破坏既有实现与测试 Fake），调用方用 :func:`supports_streaming` 探测。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from textgame.domain.results import ErrorCode, Result
+
+#: 流式增量回调：参数是**供应商原始文本片段**（JSON 片段，未校验；不得直接写状态/展示）。
+#: 回调异常由客户端吞掉并记日志（显示层故障不得影响回合提交，D-N2-4/D-N2-5）。
+DeltaCallback = Callable[[str], None]
 
 
 class ModelTier(str, Enum):
@@ -107,6 +114,10 @@ class LLMClient(Protocol):
     （``records.LLMCallRecord``）。失败时返回 ``Result.fail(LLM_UNAVAILABLE |
     SCHEMA_VIOLATION | INVALID_INPUT | INTERNAL)`` 且 ``events=[]``（LLM 调用不产生
     领域事件，第 12 章 12.2）。
+
+    **可选流式扩展**见 :class:`StreamingLLMClient`（D-N2-4）：它是独立 Protocol，不并入
+    本协议——``DisabledLLMClient``/测试 Fake 不实现它也不会破坏既有契约；调用方用
+    :func:`supports_streaming` 做 ``getattr`` 探测（``@runtime_checkable`` 不适用）。
     """
 
     def complete_json(self, req: LLMRequest) -> Result:
@@ -116,6 +127,29 @@ class LLMClient(Protocol):
     def complete_text(self, req: LLMRequest) -> Result:
         """执行一次纯文本补全（``output_schema`` 必须为 None）。"""
         ...
+
+
+class StreamingLLMClient(Protocol):
+    """LLM 客户端**可选**流式扩展（N2-038 / ADR D-N2-4）。
+
+    ``complete_json_stream(req, on_delta)`` 的返回值与 :meth:`LLMClient.complete_json`
+    完全同构（成功含 ``content``/``usage``/``call``），区别只是生成过程中把**供应商原始
+    文本片段**（JSON 片段，未校验）逐步交给 ``on_delta``；完整文本仍由返回值携带，调用方
+    必须走原校验/一次修复链后才能进入状态（未校验文本不得落库）。
+
+    治理口径（``LiteLLMClient`` 实现）：RPM 只按次前置、首 chunk 前可重试、首 chunk 后
+    不重试且不换供应商、整链 deadline/空闲超时、末 chunk usage、缓存/幂等命中一次下发、
+    ``LLMCallRecord.streamed=True``。
+    """
+
+    def complete_json_stream(self, req: LLMRequest, on_delta: DeltaCallback) -> Result:
+        """流式结构化补全：每到达一段原始文本调用一次 ``on_delta``，结束时返回完整结果。"""
+        ...
+
+
+def supports_streaming(client: object) -> bool:
+    """客户端是否实现可选流式扩展（``getattr`` 探测，D-N2-4；默认离线客户端不实现）。"""
+    return callable(getattr(client, "complete_json_stream", None))
 
 
 class DisabledLLMClient:

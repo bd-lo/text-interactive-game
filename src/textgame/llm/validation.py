@@ -79,8 +79,12 @@ def parse_and_validate(
     return dumped, ""
 
 
-def _build_repair_request(req: LLMRequest, error_detail: str) -> LLMRequest:
-    """构造修复请求：``max_repair=0`` + 追加一条携带错误说明的 user 消息。"""
+def build_repair_request(req: LLMRequest, error_detail: str) -> LLMRequest:
+    """构造修复请求：``max_repair=0`` + 追加一条携带错误说明的 user 消息。
+
+    N2-038 起公开本函数：流式叙事的「完整 JSON 到达后仍走原一次修复链」复用同一构造
+    （修复请求本身走非流式 ``complete_json``，避免二次流式协议与已显示增量混淆）。
+    """
     detail = error_detail[:_MAX_ERROR_DETAIL_CHARS]
     hint = (
         f"上一次输出未通过 JSON Schema 校验：{detail}。"
@@ -123,7 +127,7 @@ def complete_json_with_repair(
     if req.max_repair < 1:
         return Result.fail(ErrorCode.SCHEMA_VIOLATION, error_detail)
 
-    second = client.complete_json(_build_repair_request(req, error_detail))
+    second = client.complete_json(build_repair_request(req, error_detail))
     if not second.ok:
         return _failure_from_client(second)
     second_content = _content_of(second)

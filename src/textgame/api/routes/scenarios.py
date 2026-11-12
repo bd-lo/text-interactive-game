@@ -1,28 +1,31 @@
-"""场景库路由（设计契约 ``docs/design/user-scenario-modules.md`` §3.4）：只做 HTTP 映射。
+"""场景库路由（设计契约 ``docs/design/user-scenario-modules.md`` §3.4/§6）：只做 HTTP 映射。
 
-端点一览（5 个，v1 冻结）：
+端点一览（6 个；前 5 个为 v1 冻结契约，``export`` 为 032 分享加法）：
 
-==================================  ======  ==============================================
-端点                                成功    说明
-==================================  ======  ==============================================
-POST /api/v1/scenarios/validate     200     ``{ok, errors, warnings, summary}``（只读预检）
-POST /api/v1/scenarios              201     ``{scenario_id, slug, title, summary, warnings}``
-GET  /api/v1/scenarios              200     ``{scenarios, total}``（``?q=&limit=&offset=``）
-GET  /api/v1/scenarios/{id}         200     详情（含原始定义对象、summary、warnings）
-DELETE /api/v1/scenarios/{id}       204     软删（不影响已开局存档；重复删除 404）
-==================================  ======  ==============================================
+========================================  ======  ==============================================
+端点                                      成功    说明
+========================================  ======  ==============================================
+POST /api/v1/scenarios/validate           200     ``{ok, errors, warnings, summary}``（只读预检）
+POST /api/v1/scenarios                    201     ``{scenario_id, slug, title, summary, warnings}``
+GET  /api/v1/scenarios                    200     ``{scenarios, total}``（``?q=&limit=&offset=``）
+GET  /api/v1/scenarios/{id}               200     详情（含原始定义对象、summary、warnings）
+GET  /api/v1/scenarios/{id}/export        200     单文件 JSON 附件（可直接再导入；只读、零写入）
+DELETE /api/v1/scenarios/{id}             204     软删（不影响已开局存档；重复删除 404）
+========================================  ======  ==============================================
 
 请求体口径：
 
 - ``validate`` 与 ``import`` 的 body 都是**场景 JSON 原文**（``application/json``）；
   ``import`` 额外**兼容 multipart/form-data**（``file`` 部件，前端现状），两种形态都要求
   ≤256KB、UTF-8、JSON 对象；
-- ``validate`` 无需幂等键（只读、不写库）；``import`` 必带 ``Idempotency-Key``。
+- ``validate`` 无需幂等键（只读、不写库）；``import`` 必带 ``Idempotency-Key``；
+- ``export`` 是只读 GET：响应体就是场景定义 JSON 原文（可直接作为 ``import`` 的 body），
+  文件名取 ``<slug>.json``（ASCII 安全），无服务器路径/凭据/库内字段。
 
 失败统一为 4xx/5xx + ``{ok:false, error_code, message, violations?}``（第 6 章 §6.7）：
 场景定义非法 422（``violations`` 为 ``[{path,message}]``）；导入超 256KB 用
 ``INVALID_INPUT`` + HTTP 413 特例（与人物卡/世界书导入同口径）；未知/已删除 404；
-幂等同键异参 409。场景库**不参与事件溯源**：本模块只做资料库 CRUD + 只读校验。
+幂等同键异参 409。场景库**不参与事件溯源**：本模块只做资料库 CRUD + 只读校验/导出。
 """
 
 from __future__ import annotations
@@ -237,6 +240,29 @@ def get_scenario(
     except ScenarioServiceError as exc:
         raise _api_error(exc) from exc
     return ScenarioDetailResponse.model_validate(payload)
+
+
+@router.get("/{scenario_id}/export")
+def export_scenario(
+    scenario_id: str,
+    scenario_service: ScenarioServiceDep,
+) -> Response:
+    """导出场景为可直接再导入的单文件 JSON（``attachment`` 下载；只读、零写入）。
+
+    响应体 = 入库时校验通过的场景定义原文（v1/v2 均保留 ``schema_version`` 与全部字段，
+    **不含** summary/时间戳/服务器路径/凭据等库内字段）；同一文件可直接作为
+    ``POST /api/v1/scenarios`` 的 body 再导入（分享 = 文件交换，不托管用户内容）。
+    文件名取 ``<slug>.json``（ASCII 安全）；未知/已软删 404。
+    """
+    try:
+        exported = scenario_service.export_scenario(scenario_id)
+    except ScenarioServiceError as exc:
+        raise _api_error(exc) from exc
+    return Response(
+        content=exported.payload,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{exported.filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------

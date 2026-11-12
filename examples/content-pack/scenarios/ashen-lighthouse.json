@@ -1,0 +1,151 @@
+{
+  "schema_version": 2,
+  "slug": "ashen-lighthouse",
+  "meta": {
+    "title": "灰烬灯塔",
+    "author": "示例内容包",
+    "description": "v2 内容包主场景：向守塔人问路、下地窖收集灯油与灯芯、登灯室重燃长明灯；含时间失败与冻伤结局。",
+    "tags": ["示例", "v2", "多结局", "收集"]
+  },
+  "player": {
+    "name": "提灯的旅人",
+    "hp": 12,
+    "max_hp": 12,
+    "location": "shore",
+    "inventory": []
+  },
+  "rooms": [
+    {
+      "key": "shore",
+      "name": "灯塔海滩",
+      "description": "退潮后的海滩只剩湿冷的礁石，灰烬灯塔立在雾里，塔门虚掩。",
+      "exits": {"north": "stairs"}
+    },
+    {
+      "key": "stairs",
+      "name": "塔梯",
+      "description": "狭窄的石梯盘旋向上，守塔人靠在墙边，脚边落着一截灯芯。",
+      "exits": {"south": "shore", "north": "lamp", "down": "cellar"},
+      "npcs": ["keeper"],
+      "items": ["wick", "salve"]
+    },
+    {
+      "key": "lamp",
+      "name": "灯室",
+      "description": "长明灯的玻璃罩裂了，灯座里只剩冷灰。窗外是沉下去的潮声。",
+      "exits": {"south": "stairs"}
+    },
+    {
+      "key": "cellar",
+      "name": "塔底地窖",
+      "description": "地窖的石缝里渗着水，灯油和火石都收在木架上，冷气一阵紧过一阵。",
+      "exits": {"up": "stairs"},
+      "items": ["oil", "flint"],
+      "on_enter": {"hp_delta": -3, "hint": "冷气顺着脚踝往上爬，指尖很快麻木了。"}
+    }
+  ],
+  "items": [
+    {
+      "key": "wick",
+      "name": "灯芯",
+      "description": "一截干燥的灯芯，用油纸包着。",
+      "tags": ["quest"]
+    },
+    {
+      "key": "salve",
+      "name": "药膏",
+      "description": "小罐装的热药膏，能压住一阵寒气。",
+      "tags": ["consumable"],
+      "stats": {"heal": 5}
+    },
+    {
+      "key": "oil",
+      "name": "灯油",
+      "description": "半壶灯油，壶身还留着手心的温度。",
+      "tags": ["quest"]
+    },
+    {
+      "key": "flint",
+      "name": "火石",
+      "description": "一块打火石，边缘被磨得发亮。",
+      "tags": ["tool"]
+    }
+  ],
+  "npcs": [
+    {
+      "key": "keeper",
+      "name": "守塔人",
+      "room": "stairs",
+      "description": "他坐在塔梯上，眼睛望着灯室的方向。",
+      "dialogue": {
+        "default": "他抬眼看你：长明灯已经灭了两夜，塔下的潮水可不等人。",
+        "topics": [
+          {
+            "keywords": ["灯", "怎么", "点亮"],
+            "reply": "灯油和灯芯都在塔里。去地窖取油，别空手回来，潮水漫上塔基之前得把灯点上。",
+            "dialogue_state": "briefed"
+          },
+          {
+            "keywords": ["潮水", "时间"],
+            "reply": "再过几阵潮，海滩就上不来了。你要快些。",
+            "dialogue_state": "warned"
+          }
+        ]
+      }
+    }
+  ],
+  "flags": [
+    {"key": "keeper_briefed", "when": {"npc_state": {"npc": "keeper", "state": "briefed"}}},
+    {"key": "oil_ready", "when": {"has_item_tag_count": {"tag": "quest", "at_least": 2}}},
+    {"key": "in_lamp", "when": {"in_room": "lamp"}},
+    {"key": "oil_waiting", "when": {"item_in_room": {"item": "oil", "room": "cellar"}}},
+    {"key": "keeper_here", "when": {"npc_in_room": {"npc": "keeper", "room": "stairs"}}},
+    {"key": "dawn_close", "when": {"turn_gte": 8}}
+  ],
+  "goal": {
+    "title": "重燃长明灯",
+    "description": "向守塔人问清点灯的方法，集齐灯油和灯芯，在涨潮前登上灯室。",
+    "objectives": [
+      {"key": "ask", "text": "向守塔人打听点灯的方法", "when": {"flag": "keeper_briefed"}},
+      {"key": "gather", "text": "集齐灯油和灯芯", "when": {"flag": "oil_ready"}},
+      {
+        "key": "climb",
+        "text": "带着材料登上灯室",
+        "when": {"all": [{"objective_done": "gather"}, {"flag": "keeper_briefed"}, {"flag": "in_lamp"}]}
+      }
+    ]
+  },
+  "endings": [
+    {
+      "key": "lit",
+      "kind": "win",
+      "title": "长明灯重燃",
+      "text": "火光顺着灯芯爬上去，整座灯塔亮了起来。守塔人在塔梯上低低笑了一声，潮声退到了远处。",
+      "priority": 50,
+      "when": {"objective_done": "climb"}
+    },
+    {
+      "key": "becalmed",
+      "kind": "lose",
+      "title": "涨潮了",
+      "text": "潮水漫过海滩时灯还没点起来，你被困在塔门里面，听着冷雨敲了整整一夜。",
+      "priority": 30,
+      "when": {"all": [{"flag": "dawn_close"}, {"not": {"flag": "oil_ready"}}]}
+    },
+    {
+      "key": "frozen",
+      "kind": "lose",
+      "title": "冻僵在塔底",
+      "text": "寒气从地窖的石缝里一点点抽走你的力气，你靠着木架慢慢滑坐下去。",
+      "priority": 10,
+      "when": {"hp_lte": 0}
+    }
+  ],
+  "suggestions": [
+    {"when": {"flag": "keeper_here"}, "text": "和守塔人聊聊"},
+    {"when": {"flag": "oil_waiting"}, "text": "下到塔底地窖取灯油"},
+    {"when": {"flag": "oil_ready"}, "text": "带着灯油和灯芯登上灯室"},
+    {"when": {"flag": "in_lamp"}, "text": "在灯室点亮长明灯"},
+    {"when": {"hp_lte": 5}, "text": "用药膏处理一下伤口"}
+  ]
+}

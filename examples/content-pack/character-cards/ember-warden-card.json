@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "name": "提灯的巡夜人",
+  "attributes": {
+    "str": 11,
+    "dex": 12,
+    "con": 13,
+    "int": 10,
+    "wis": 14,
+    "cha": 10,
+    "max_hp": 14
+  },
+  "hp": 14,
+  "starting_items": ["item.torch", "item.potion", "item.chalk"],
+  "background": "灰烬海岸的巡夜人，替沿岸的村子看灯、看潮、看夜里不该出现的东西。手稳，脚慢，习惯在开口之前先听一会儿风声。有人说他在镜井边见过自己不该见的东西，他不否认，也不多讲。",
+  "appearance": "旧皮外套上落着洗不掉的灰，腰间挂一盏提灯，右手袖口用麻线缝过一道。",
+  "source": "manual",
+  "generated_by": null
+}

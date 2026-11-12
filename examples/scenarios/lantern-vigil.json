@@ -1,0 +1,123 @@
+{
+  "schema_version": 2,
+  "slug": "lantern-vigil",
+  "meta": {
+    "title": "灯守之夜",
+    "author": "示例",
+    "description": "v2 条件示例：flag / 目标进度 / 收集 / NPC 状态 / 时间 / 多结局"
+  },
+  "player": {
+    "name": "旅人",
+    "hp": 12,
+    "max_hp": 12,
+    "location": "gate",
+    "inventory": []
+  },
+  "rooms": [
+    {
+      "key": "gate",
+      "name": "塔门",
+      "description": "风从门缝里挤进来，远处有一点将熄的灯。",
+      "exits": {"east": "hall"}
+    },
+    {
+      "key": "hall",
+      "name": "厅堂",
+      "description": "长明灯的灯座空着，灯守靠着柱子取暖。",
+      "exits": {"west": "gate", "east": "shrine"},
+      "npcs": ["keeper"],
+      "items": ["candle"]
+    },
+    {
+      "key": "shrine",
+      "name": "灯室",
+      "description": "石台上摆着灯油和火石，寒气从地缝里渗上来。",
+      "exits": {"west": "hall"},
+      "items": ["oil", "flint"],
+      "on_enter": {"hp_delta": -2, "hint": "寒气顺着脚踝爬上来。"}
+    }
+  ],
+  "items": [
+    {"key": "candle", "name": "蜡烛", "description": "一截干净的蜡烛。", "tags": ["quest"]},
+    {"key": "oil", "name": "灯油", "description": "半壶灯油，还有余温。", "tags": ["quest"]},
+    {"key": "flint", "name": "火石", "description": "一块打火石。", "tags": ["tool"]}
+  ],
+  "npcs": [
+    {
+      "key": "keeper",
+      "name": "灯守",
+      "room": "hall",
+      "description": "他守了这盏灯很多年。",
+      "dialogue": {
+        "default": "他抬眼看你：灯要亮，得先有油。",
+        "topics": [
+          {
+            "keywords": ["任务", "灯", "怎么"],
+            "reply": "去灯室取灯油和火石，再把蜡烛点上。",
+            "dialogue_state": "briefed"
+          }
+        ]
+      }
+    }
+  ],
+  "flags": [
+    {"key": "keeper_briefed", "when": {"npc_state": {"npc": "keeper", "state": "briefed"}}},
+    {"key": "oil_waiting", "when": {"item_in_room": {"item": "oil", "room": "shrine"}}},
+    {"key": "in_shrine", "when": {"in_room": "shrine"}},
+    {"key": "keeper_at_hall", "when": {"npc_in_room": {"npc": "keeper", "room": "hall"}}},
+    {
+      "key": "supplies_ready",
+      "when": {"has_item_tag_count": {"tag": "quest", "at_least": 2}}
+    }
+  ],
+  "goal": {
+    "title": "点亮长明灯",
+    "description": "向灯守问清方法，集齐材料，回到灯室把灯点上。",
+    "objectives": [
+      {"key": "listen", "text": "向灯守打听点灯的方法", "when": {"flag": "keeper_briefed"}},
+      {"key": "gather", "text": "集齐蜡烛和灯油", "when": {"flag": "supplies_ready"}},
+      {
+        "key": "light",
+        "text": "带着材料进入灯室",
+        "when": {"all": [{"objective_done": "gather"}, {"flag": "in_shrine"}]}
+      }
+    ]
+  },
+  "endings": [
+    {
+      "key": "lit",
+      "kind": "win",
+      "title": "长明灯亮起",
+      "text": "灯芯跳了一下，整间灯室亮了起来。",
+      "priority": 10,
+      "when": {"all": [{"objective_done": "light"}, {"flag": "keeper_briefed"}]}
+    },
+    {
+      "key": "empty_handed",
+      "kind": "lose",
+      "title": "灯守的白眼",
+      "text": "灯守看你空着手回来，摇了摇头。",
+      "priority": 6,
+      "when": {
+        "all": [
+          {"turn_gte": 8},
+          {"not": {"flag": "supplies_ready"}},
+          {"npc_in_room": {"npc": "keeper", "room": "hall"}}
+        ]
+      }
+    },
+    {
+      "key": "fallen",
+      "kind": "lose",
+      "title": "冻倒在灯室",
+      "text": "你倒在石台边，灯最终没有亮。",
+      "priority": 1,
+      "when": {"hp_lte": 0}
+    }
+  ],
+  "suggestions": [
+    {"when": {"flag": "oil_waiting"}, "text": "把灯油拿起来"},
+    {"when": {"flag": "keeper_at_hall"}, "text": "和灯守聊聊"},
+    {"when": {"flag": "in_shrine"}, "text": "检查灯座"}
+  ]
+}
