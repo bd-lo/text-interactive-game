@@ -4,6 +4,12 @@
 （出口存在、物品在房间/背包、NPC 同房间），不依赖工具层或编排层兜底。草稿事件字段
 ``turn_id/actor_id/method/event_type/params/result`` 由本层填好，``id/seq/rng_seed/ts``
 留给 ``GameEngine`` 盖章（第 5 章 5.3）。
+
+R7 动作包（D-N6，用户批准新增 EventType）：``drop_item``（放下）、``give_item``（给予）、
+``attack``（确定性攻击判定）、``improvise``（裁判确认后的临场动作）四方法均为**纯加法**：
+只由 ``build_game_tool_registry()`` 中的 freedom 工具经 ``ToolGate.dispatch`` 路由调用，
+旧 m2/m3/m4 场景不注册这些工具 → 旧事件流/golden 逐字不变。``attack`` 的 d20 与修正
+全部来自 ``DerivedRandom`` 派生种子（禁直接 ``random``），同 seed 同回合可复算。
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from typing import Any
 from textgame.domain.events import Event, EventType
 from textgame.domain.models import NPC, GameState
 from textgame.domain.results import ErrorCode, Result
+from textgame.domain.rules.dice import DerivedRandom
 from textgame.domain.scenario import DIRECTION_NAMES
 from textgame.domain.scenario_runtime import ScenarioRuntime
 from textgame.domain.scenario_story import story_reply
@@ -264,6 +271,143 @@ class ActionService:
             data={"npc_id": npc_id, "npc_name": npc.name, "dialogue_state": "greeted"},
             events=[draft],
         )
+
+    def drop_item(self, ctx: ToolContext, state: GameState, *, item_id: ItemId) -> Result:
+        """R7：把背包里的一件物品放到当前房间地面（``ITEM_DROPPED``）。
+
+        L0 自检：actor/房间存在、物品在背包、物品定义存在、当前房间地面无该物品；
+        任一不满足 → ``NOT_FOUND``/``INVALID_INPUT`` 且零事件。
+        """
+        character = state.characters.get(ctx.actor_id)
+        if character is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
+        room = state.rooms.get(character.location)
+        if room is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色所在地点不存在: {character.location}")
+        item = state.items.get(item_id)
+        if item is None or item_id not in character.inventory:
+            return Result.fail(ErrorCode.NOT_FOUND, "背包里没有这件物品")
+        if item_id in room.item_ids:
+            return Result.fail(ErrorCode.INVALID_INPUT, "这件物品已经在地上了")
+        draft = Event(
+            turn_id=ctx.turn_id,
+            actor_id=ctx.actor_id,
+            method="drop_item",
+            event_type=EventType.ITEM_DROPPED,
+            params={"item_id": item_id, "from_room": room.id},
+            result={"to_room": room.id, "item_name": item.name},
+        )
+        return Result.success(
+            data={"item_id": item_id, "item_name": item.name, "to_room": room.id},
+            events=[draft],
+        )
+
+    def give_item(
+        self, ctx: ToolContext, state: GameState, *, item_id: ItemId, npc_id: NpcId
+    ) -> Result:
+        """R7：把背包里的一件物品交给同房间的 NPC（``ITEM_GIVEN``）。
+
+        NPC 模型没有背包字段：物品只离开玩家持有（``state.items`` 保留定义，文档注明）；
+        L0 自检：actor 存在、物品在背包、NPC 存在且与 actor 同房间，否则零事件。
+        """
+        character = state.characters.get(ctx.actor_id)
+        if character is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
+        item = state.items.get(item_id)
+        if item is None or item_id not in character.inventory:
+            return Result.fail(ErrorCode.NOT_FOUND, "背包里没有这件物品")
+        npc = state.npcs.get(npc_id)
+        if npc is None or npc.room_id != character.location:
+            return Result.fail(ErrorCode.NOT_FOUND, "这里没有可以交出物品的人")
+        draft = Event(
+            turn_id=ctx.turn_id,
+            actor_id=ctx.actor_id,
+            method="give_item",
+            event_type=EventType.ITEM_GIVEN,
+            params={"item_id": item_id, "npc_id": npc_id},
+            result={"npc_name": npc.name},
+        )
+        return Result.success(
+            data={
+                "item_id": item_id,
+                "item_name": item.name,
+                "npc_id": npc_id,
+                "npc_name": npc.name,
+            },
+            events=[draft],
+        )
+
+    def attack(self, ctx: ToolContext, state: GameState, *, npc_id: NpcId) -> Result:
+        """R7：对同房间目标做一次确定性攻击判定（``COMBAT_RESOLVED``，恒定一条事件）。
+
+        判定公式（契约 §3，禁其他随机源）::
+
+            seed = DerivedRandom.derive_seed(ctx.save_seed, ctx.turn_id, ctx.actor_id,
+                                             "attack", 0)
+            roll = DerivedRandom(seed).randint(1, 20)
+            mod  = (actor.attributes["str"] - 10) // 2
+            dc   = 10; total = roll + mod
+            hit  = roll == 20 or (roll != 1 and total >= dc)
+            damage = 0 if not hit else max(1, 3 + mod)
+
+        目标不存在/不同房间 → ``NOT_FOUND`` 零事件；命中时由 reducer 让目标退出场景。
+        """
+        character = state.characters.get(ctx.actor_id)
+        if character is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
+        npc = state.npcs.get(npc_id)
+        if npc is None or npc.room_id != character.location:
+            return Result.fail(ErrorCode.NOT_FOUND, "这里没有可以攻击的目标")
+        seed = DerivedRandom.derive_seed(ctx.save_seed, ctx.turn_id, ctx.actor_id, "attack", 0)
+        roll = DerivedRandom(seed).randint(1, 20)
+        mod = (character.attributes.get("str", 10) - 10) // 2
+        dc = 10
+        total = roll + mod
+        hit = roll == 20 or (roll != 1 and total >= dc)
+        damage = 0 if not hit else max(1, 3 + mod)
+        draft = Event(
+            turn_id=ctx.turn_id,
+            actor_id=ctx.actor_id,
+            method="attack",
+            event_type=EventType.COMBAT_RESOLVED,
+            params={"npc_id": npc_id, "room_id": character.location},
+            result={"hit": hit, "roll": roll, "total": total, "dc": dc, "damage": damage},
+        )
+        return Result.success(
+            data={
+                "npc_id": npc_id,
+                "npc_name": npc.name,
+                "hit": hit,
+                "roll": roll,
+                "total": total,
+                "dc": dc,
+                "damage": damage,
+            },
+            events=[draft],
+        )
+
+    def improvise(self, ctx: ToolContext, state: GameState, *, action_text: str) -> Result:
+        """R7：产 ``IMPROVISED_ACTION`` 草稿（裁判 allow 后由编排层提交）。
+
+        只做形状自检（actor 存在、1..200 字非空文本），不产生数值/物品；``result`` 只带
+        ``narrative_hint=action_text[:120]``（契约 §3）。失败 → ``INVALID_INPUT``/``NOT_FOUND``
+        零事件；是否需要裁判由 ``RuleEngine`` 的 needs_judge 分支决定，不在本层。
+        """
+        character = state.characters.get(ctx.actor_id)
+        if character is None:
+            return Result.fail(ErrorCode.NOT_FOUND, f"角色不存在: {ctx.actor_id}")
+        if not isinstance(action_text, str) or not action_text.strip() or len(action_text) > 200:
+            return Result.fail(ErrorCode.INVALID_INPUT, "临场动作必须是一段 1..200 字的文本")
+        narrative_hint = action_text[:120]
+        draft = Event(
+            turn_id=ctx.turn_id,
+            actor_id=ctx.actor_id,
+            method="improvise",
+            event_type=EventType.IMPROVISED_ACTION,
+            params={"action_text": action_text},
+            result={"narrative_hint": narrative_hint},
+        )
+        return Result.success(data={"narrative_hint": narrative_hint}, events=[draft])
 
     def inspect(
         self,

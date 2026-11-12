@@ -10,6 +10,8 @@ import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,20 +23,23 @@ from textgame.agents.dto import ParseOutcome
 from textgame.agents.parser_agent import IntentParseAgent
 from textgame.api.app import create_app
 from textgame.config.settings import get_settings
+from textgame.domain.hashing import state_hash
 from textgame.domain.models import ActionIntent, PerceptionSlice
 from textgame.domain.rules.engine import RuleEngine
 from textgame.domain.scenario import M3_NONPLAYER_TAGS, M3_NPC_PLANS, PLAYER_ID
 from textgame.llm.client import DisabledLLMClient
 from textgame.orchestration.direct_gate import DirectGate
+from textgame.orchestration.dto import TurnRequest
 from textgame.orchestration.intent import DeterministicIntentParser
 from textgame.orchestration.narrator import TemplateNarrator
 from textgame.orchestration.resolver import Resolver, ToolGateRouter
-from textgame.orchestration.turn_orchestrator import TurnOrchestrator
+from textgame.orchestration.turn_orchestrator import CreateGameRequest, TurnOrchestrator
 from textgame.persistence.memory import InMemoryRepository
 from textgame.services.action_service import ActionService
 from textgame.services.actor_directory import ActorDirectory
 from textgame.services.audit_service import AuditService
 from textgame.services.craft_service import CraftService
+from textgame.services.dto import TurnResult
 from textgame.services.game_engine import GameEngine
 from textgame.services.query_service import QueryService
 from textgame.services.recipe_catalog import RecipeCatalog
@@ -500,3 +505,129 @@ def m4_prod_harness() -> Iterator[M4ProdHarness]:
     harness, client = build_m4_prod_harness()
     with client:
         yield harness
+
+
+# ---------------------------------------------------------------------------
+# R7 行动自由度：生产同构多角色 harness（裁判接线 / improvise 集成测试用）
+# ---------------------------------------------------------------------------
+@dataclass
+class R7ProdHarness:
+    """R7 生产同构多角色装配：生产工具注册表 + agent_assisted 派生 + 裁判 + 审计。
+
+    与 ``main.py`` 同构的关键接线：``build_game_tool_registry()``（R7 起含
+    attack/drop_item/give_item/improvise）、``RuleEngine(agent_assisted_tools=
+    registry.agent_assisted_tools())``（``improvise`` → ``needs_judge``）、
+    ``Resolver``/``ToolGate``/``AuditService``；``judge`` 可注入（``None`` = 不产生
+    裁判证据 → 确定性兜底拒绝）。直接驱动编排器、不经 HTTP，零网络、零真实 LLM。
+
+    现有 fixture 均未改动：本 harness 仅供 R7 裁判/动作集成测试使用。
+    """
+
+    orchestrator: TurnOrchestrator
+    repo: InMemoryRepository
+    query: QueryService
+    audit: AuditService
+    registry: Any
+    rules: RuleEngine
+    resolver: Resolver
+    judge: Any
+    game_id: str
+
+    def play(self, text: str, *, expected_version: int = 1) -> TurnResult:
+        """执行一个回合（默认第 2 回合；每次唯一幂等键，避免跨装配幂等回放）。"""
+        return self.orchestrator.run(
+            TurnRequest(
+                game_id=self.game_id,
+                text=text,
+                expected_version=expected_version,
+                idempotency_key=f"r7-turn-{uuid4().hex}",
+            )
+        )
+
+    def write_snapshot(self) -> tuple[int, int, str, int]:
+        """零写入断言四元组：(version, 事件数, state_hash, last_seq)。"""
+        record = self.repo.load(self.game_id)
+        assert record is not None
+        return (
+            record.version,
+            len(self.repo.read_events(self.game_id)),
+            state_hash(record.state),
+            record.last_seq,
+        )
+
+    def audit_rows(self, turn_id: int = 2) -> list[Any]:
+        """本回合审计行（只读）。"""
+        return self.audit.query(self.game_id, turn_id=turn_id)
+
+
+def build_r7_prod_harness(
+    *,
+    judge: Any = None,
+    character_agents: Mapping[str, Any] | None = None,
+    scenario: str = "m2",
+    seed: int = 42,
+    parser: Any = None,
+) -> R7ProdHarness:
+    """构建 R7 生产同构多角色 harness（内存仓储；零网络、零真实 LLM）。
+
+    - ``judge``：可注入 ``DeterministicJudgeAgent`` / ``LLMJudgeAgent(DisabledLLMClient())``
+      等；默认 ``None`` = 不产生裁判证据（needs_judge 提案走确定性兜底拒绝）；
+    - ``character_agents``：可注入 NPC Agent（默认空 = 无 NPC 提案）；
+    - ``parser``：可注入测试解析器（默认生产同构：``IntentParseAgent`` + 确定性解析器）；
+    - 本函数只新增装配入口，现有 fixture 行为/事件序列不变。
+    """
+    repo = InMemoryRepository()
+    engine = GameEngine(repo)
+    query = QueryService(repo)
+    action = ActionService(query)
+    registry = build_game_tool_registry()
+    gate = ToolGate(registry=registry, query=query, action=action)
+    # 生产同构：agent_assisted_tools 由工具声明派生（R7 起 {"improvise"} → needs_judge）。
+    rules = RuleEngine(agent_assisted_tools=registry.agent_assisted_tools())
+    actors = ActorDirectory(nonplayer_tags=M3_NONPLAYER_TAGS)
+    resolver = Resolver(
+        rules=rules, services=ToolGateRouter(gate), actors=actors, save_seed="save-42"
+    )
+    resolved_parser = parser
+    if resolved_parser is None:
+        resolved_parser = IntentParseAgent(
+            DisabledLLMClient(),
+            DeterministicIntentParser(),
+            tool_specs=registry.visible_tools(PLAYER_ID, frozenset({"player"})),
+        )
+    audit = AuditService(repo)
+    orchestrator = TurnOrchestrator(
+        repo=repo,
+        engine=engine,
+        query=query,
+        action=action,
+        parser=resolved_parser,
+        gate=gate,
+        narrator=TemplateNarrator(),
+        rules=rules,
+        save_seed_default="save-42",
+        registry=registry,
+        resolver=resolver,
+        actors=actors,
+        character_agents=dict(character_agents or {}),
+        audit=audit,
+        judge=judge,
+    )
+    created = orchestrator.create_game(
+        CreateGameRequest(
+            seed=seed,
+            idempotency_key=f"r7-game-{uuid4().hex}",
+            scenario=scenario,
+        )
+    )
+    return R7ProdHarness(
+        orchestrator=orchestrator,
+        repo=repo,
+        query=query,
+        audit=audit,
+        registry=registry,
+        rules=rules,
+        resolver=resolver,
+        judge=judge,
+        game_id=created.game_id,
+    )

@@ -12,8 +12,10 @@
   **一次修复**（``max_repair=1``，D-M5-2 终局）；Schema 不合格/离线/修复耗尽/任何异常 →
   返回 ``None``（由编排层/Resolver 走确定性兜底），**永不把未校验输出交给裁决链**；
 - 不写状态、不产生事件、不调服务层；``prompt_version`` 可追溯（第 12 章 §12.5）；
-- 默认离线装配不构造本类（``main.py`` 仅 ``TEXTGAME_LLM_ENABLED=true`` 时接线），
-  生产当前也没有 ``agent_assisted`` 工具（needs_judge 无消费者），因此默认零调用。
+- 生产组合根常驻 ``LLMJudgeAgent``（由 ``RuntimeLLMClient`` 决定是否真实启用）；离线时
+  ``evaluate`` 返回 ``None`` → ``RuleEngine.deterministic_fallback`` 确定性兜底拒绝。
+  R7 起 ``improvise`` 是首个 ``resolution_policy=agent_assisted`` 工具（needs_judge 生产
+  可达）；每回合最多 1 次裁判调用（编排层预算，重试不重调）。
 """
 
 from __future__ import annotations
@@ -49,6 +51,8 @@ _MAX_MEMORY_ITEMS = 8
 _MAX_REASON_CHARS = 120
 _MAX_REPLY_CHARS = 120
 _MAX_FREE_DESCRIPTION_CHARS = 200
+#: R7：``improvise`` 的临场动作原文与 ``free_description`` 同口径裁剪（契约 §7）。
+_MAX_ACTION_TEXT_CHARS = 200
 
 
 class JudgeAgentLike(Protocol):
@@ -212,7 +216,11 @@ class LLMJudgeAgent:
 
     @staticmethod
     def _proposal_payload(proposal: Proposal, name_by_id: dict[str, str]) -> dict[str, Any]:
-        """提案投影：工具名 + 参数展示名 + 服务端理由（不含内部 ID/玩家长原文）。"""
+        """提案投影：工具名 + 参数展示名/自由文本 + 服务端理由（不含内部 ID/玩家长原文）。
+
+        R7：``improvise`` 的 ``action_text`` 是玩家临场动作原文（自由文本，非内部 ID），
+        按契约裁剪 200 后**原样**进 payload；其余参数口径不变（item_id/npc_id 仍映射展示名）。
+        """
         args: dict[str, Any] = {}
         for key, value in proposal.args.items():
             if key in {"item_id", "npc_id"} and isinstance(value, str):
@@ -225,6 +233,8 @@ class LLMJudgeAgent:
                 args[key] = value
             elif key == "free_description" and isinstance(value, str):
                 args[key] = value[:_MAX_FREE_DESCRIPTION_CHARS]
+            elif key == "action_text" and isinstance(value, str):
+                args[key] = value[:_MAX_ACTION_TEXT_CHARS]
             elif isinstance(value, (int, float, bool)):
                 args[key] = value
         return {

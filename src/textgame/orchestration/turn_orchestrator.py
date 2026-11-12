@@ -26,7 +26,7 @@ from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from textgame.agents.dto import ParseOutcome
+from textgame.agents.dto import ParseOutcome, ParseStep, confidence_floor_for
 from textgame.agents.judge_agent import JudgeAgentLike
 from textgame.config.rng import save_seed_from_settings
 from textgame.domain.events import Event, EventType
@@ -56,6 +56,7 @@ from textgame.domain.world_book import (
 )
 from textgame.orchestration.direct_gate import ToolGateLike
 from textgame.orchestration.dto import TurnRequest
+from textgame.orchestration.intent import normalize_parse_outcome, resolve_entity_arg
 from textgame.orchestration.pre_queue import prepare_free_craft_draft
 from textgame.orchestration.proposal_queue import (
     ProposalQueue,
@@ -74,7 +75,6 @@ from textgame.services.tool_context import ToolContext
 
 _MIN_TEXT_CHARS = 80
 _MAX_TEXT_CHARS = 150
-_CONFIDENCE_FLOOR = 0.6
 _DEFAULT_SAVE_SEED = "save-42"
 _MAX_SUBMIT_ATTEMPTS = 3
 #: 单回合裁判调用上限（第 8 章 §8.3 "仅规则空白时 1 次"、第 12 章 §12.8 最多 3 次含裁判）。
@@ -558,6 +558,128 @@ def _success_suggestions(state: GameState) -> list[str]:
     return suggest_actions(state, limit=4)
 
 
+# ---------------------------------------------------------------------------
+# R7 行动自由度：多步原子执行 / 分工具置信阈值 / 确认式澄清（契约 §6）
+# ---------------------------------------------------------------------------
+#: 多步执行上限（T2 解析层已限制 3 步；编排层防御性复核，超限只取前 3 步）。
+_MAX_PARSE_STEPS = 3
+#: 澄清建议动作条数上限（契约 §6.3：1–2 条可点击动作句）。
+_MAX_CLARIFY_ACTIONS = 2
+
+
+def _multi_steps(outcome: ParseOutcome) -> tuple[ParseStep, ...]:
+    """取出可原子执行的多步动作（0 或 ≥2 步；1 步保持旧单步路径逐字不变）。"""
+    if outcome.tool is None or len(outcome.steps) < 2:
+        return ()
+    return tuple(outcome.steps[:_MAX_PARSE_STEPS])
+
+
+def _mapped_entity_id(
+    perception: PerceptionSlice, kind: Literal["item", "npc"], value: object
+) -> str | None:
+    """参数值（展示名/别名/ID）→ 感知切片内真实实体 ID；无法确定返回 ``None``。
+
+    ``normalize_parse_outcome`` 已对 ``tool/args`` 与 ``steps`` 做映射；这里只用于
+    澄清候选（``candidate_args``）的展示句生成，未知/越界值不猜（不生成动作句）。
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    return resolve_entity_arg(kind, value, perception)
+
+
+def _clarify_action_sentence(
+    *, state: GameState, perception: PerceptionSlice, tool: str, args: dict[str, Any]
+) -> str | None:
+    """按契约 §6.3 模板把候选工具/参数生成一条可点击的中文动作句；无法确定返回 ``None``。"""
+    if tool == "get_room_view":
+        return "环顾四周"
+    if tool == "get_inventory":
+        return "查看行囊"
+    if tool == "move_to":
+        direction = args.get("direction")
+        if isinstance(direction, str) and direction:
+            return f"向{_direction_name(direction)}走"
+        return None
+    if tool in {"take_item", "use_item", "inspect_item", "drop_item"}:
+        item_id = _mapped_entity_id(perception, "item", args.get("item_id"))
+        if item_id is None or item_id not in state.items:
+            return None
+        name = _entity_name(state, item_id)
+        prefix = {
+            "take_item": "拿起",
+            "use_item": "使用",
+            "inspect_item": "细看",
+            "drop_item": "放下",
+        }[tool]
+        return f"{prefix}{name}"
+    if tool in {"talk_to", "attack"}:
+        npc_id = _mapped_entity_id(perception, "npc", args.get("npc_id"))
+        if npc_id is None or npc_id not in state.npcs:
+            return None
+        name = _npc_name(state, npc_id)
+        return f"和{name}说话" if tool == "talk_to" else f"攻击{name}"
+    if tool == "give_item":
+        item_id = _mapped_entity_id(perception, "item", args.get("item_id"))
+        npc_id = _mapped_entity_id(perception, "npc", args.get("npc_id"))
+        if item_id is None or npc_id is None:
+            return None
+        if item_id not in state.items or npc_id not in state.npcs:
+            return None
+        return f"把{_entity_name(state, item_id)}交给{_npc_name(state, npc_id)}"
+    # craft_item/未知工具/只读组合：没有契约模板，不补自定义建议（走既有失败提示）。
+    return None
+
+
+def _clarification_payload(
+    outcome: ParseOutcome, state: GameState, perception: PerceptionSlice
+) -> tuple[str, list[str]] | None:
+    """低置信/无法解析时的确认式澄清（P0-1/P0-3）：返回 ``(hint, suggested_actions)``。
+
+    只在候选工具 + 目标可确定时生成；``craft_item``/未知工具/目标无法确定返回 ``None``，
+    由 ``_with_failure_hints`` 走既有通用失败提示（契约 §6.3）。
+    """
+    tool = outcome.candidate_tool or outcome.tool
+    if not tool or tool == "craft_item":
+        return None
+    candidate_args = dict(outcome.candidate_args or outcome.args)
+    sentence = _clarify_action_sentence(
+        state=state, perception=perception, tool=tool, args=candidate_args
+    )
+    if sentence is None:
+        return None
+    hint = f"你是想{sentence}吗？如果是，直接说「{sentence}」就可以。"
+    fallback = "环顾四周" if sentence != "环顾四周" else "查看行囊"
+    return hint, [sentence, fallback][:_MAX_CLARIFY_ACTIONS]
+
+
+def _step_failure_error_code(verdict: str | None) -> ErrorCode:
+    """多步裁决里失败步骤的对外错误码：``conflict`` → CONFLICT，其余 INVALID_INPUT。"""
+    return ErrorCode.CONFLICT if verdict == "conflict" else ErrorCode.INVALID_INPUT
+
+
+def _multi_step_failure_result(
+    *,
+    state: GameState,
+    error_code: ErrorCode,
+    failed_step: int,
+    version: int,
+    turn_id: int,
+    text: str = _ACTION_REJECTED_TEXT,
+    reason: str | None = None,
+) -> TurnResult:
+    """多步原子执行的整回合失败结果：零提交 + 「第 N 步没能完成。」提示（契约 §6.4）。"""
+    hint = f"第 {failed_step} 步没能完成。"
+    safe_reason = _safe_player_reason(reason)
+    if safe_reason:
+        hint = f"{hint}{safe_reason}"
+    return TurnResult.failed(error_code, version=version, turn_id=turn_id, text=text).model_copy(
+        update={
+            "effects": [{"hint": hint}],
+            "suggested_actions": _success_suggestions(state),
+        }
+    )
+
+
 class TurnOrchestrator:
     """单回合编排器；依赖全部构造注入，M2 依赖与 M3 依赖可分别装配。"""
 
@@ -1024,13 +1146,36 @@ class TurnOrchestrator:
             turn_id=turn_id,
             save_seed=ctx.save_seed,
         )
-        outcome = self._parser.parse(request.text, perception=perception, ctx=ctx)
-        if outcome.tool is None or outcome.confidence < _CONFIDENCE_FLOOR:
-            return TurnResult.failed(
+        outcome = normalize_parse_outcome(
+            self._parser.parse(request.text, perception=perception, ctx=ctx), perception
+        )
+        if outcome.tool is None or outcome.confidence < confidence_floor_for(outcome.tool):
+            result = TurnResult.failed(
                 ErrorCode.INVALID_INPUT,
                 version=record.version,
                 turn_id=state.turn,
                 text=_UNKNOWN_ACTION_TEXT,
+            )
+            clarification = _clarification_payload(outcome, state, perception)
+            if clarification is not None:
+                hint, actions = clarification
+                result = result.model_copy(
+                    update={"effects": [{"hint": hint}], "suggested_actions": actions}
+                )
+            return result
+
+        steps = _multi_steps(outcome)
+        if steps:
+            return self._run_single_actor_steps(
+                request=request,
+                record=record,
+                store_key=store_key,
+                request_hash=request_hash,
+                outcome=outcome,
+                steps=steps,
+                ctx=ctx,
+                lore_entries=lore_entries,
+                on_delta=on_delta,
             )
 
         gate_result = self._gate.dispatch(
@@ -1127,6 +1272,152 @@ class TurnOrchestrator:
                 ),
                 state,
                 _safe_player_reason(engine_result.message) or _context_reason(state, outcome),
+            )
+        data = engine_result.data or {}
+        committed_turn = data.get("turn_id")
+        committed_version = data.get("version")
+        if not isinstance(committed_turn, int) or not isinstance(committed_version, int):
+            return TurnResult.failed(
+                ErrorCode.INTERNAL,
+                version=record.version,
+                turn_id=state.turn,
+                text=_INTERNAL_ERROR_TEXT,
+            )
+        state_after = state.apply(narrated)
+        response = TurnResult.success(
+            turn_id=committed_turn,
+            version=committed_version,
+            text=text,
+            events=engine_result.events,
+            suggested_actions=_success_suggestions(state_after),
+            narrative_source=narrative_source,
+        )
+        self._save_idempotent(
+            store_key,
+            request_hash,
+            response.model_dump(mode="json"),
+            events=tuple(engine_result.events),
+        )
+        return response
+
+    def _run_single_actor_steps(
+        self,
+        *,
+        request: TurnRequest,
+        record: GameRecord,
+        store_key: str,
+        request_hash: str,
+        outcome: ParseOutcome,
+        steps: Sequence[ParseStep],
+        ctx: ToolContext,
+        lore_entries: Sequence[str] = (),
+        on_delta: Callable[[str], None] | None = None,
+    ) -> TurnResult:
+        """M2 单角色链路的多步原子执行（R7 契约 §6.4）。
+
+        按步骤顺序 ``gate.dispatch`` + ``evaluate_preconditions``，并以
+        ``working_state = state.apply(已收集草稿)`` 逐步重新校验；任一步失败 → 整回合
+        失败、零提交（失败 hint 带步骤序号）。全部成功才一次性提交（含末尾环境伤害草稿）。
+        """
+        state = record.state
+        turn_id = state.turn + 1
+        working_state = state
+        drafts: list[Event] = []
+        for index, step in enumerate(steps, start=1):
+            gate_result = self._gate.dispatch(
+                tool=step.tool, args=dict(step.args), ctx=ctx, state=working_state
+            )
+            if not gate_result.ok:
+                return _multi_step_failure_result(
+                    state=state,
+                    error_code=gate_result.error_code or ErrorCode.INTERNAL,
+                    failed_step=index,
+                    version=record.version,
+                    turn_id=state.turn,
+                    reason=gate_result.message,
+                )
+            step_drafts = list(gate_result.events)
+            if not step_drafts:
+                # 多步只允许写动作：零事件步骤（只读）视为整句失败、零提交。
+                return _multi_step_failure_result(
+                    state=state,
+                    error_code=ErrorCode.INVALID_INPUT,
+                    failed_step=index,
+                    version=record.version,
+                    turn_id=state.turn,
+                )
+            if self._rules is not None:
+                preconditions = self._rules.evaluate_preconditions(
+                    tool=step.tool,
+                    args=dict(step.args),
+                    actor_id=ctx.actor_id,
+                    turn_id=ctx.turn_id,
+                    save_seed=ctx.save_seed,
+                    state=working_state,
+                )
+                if not preconditions.ok:
+                    return _multi_step_failure_result(
+                        state=state,
+                        error_code=preconditions.error_code or ErrorCode.INTERNAL,
+                        failed_step=index,
+                        version=record.version,
+                        turn_id=state.turn,
+                        reason=preconditions.message,
+                    )
+            try:
+                working_state = working_state.apply(step_drafts)
+            except ValueError:
+                return TurnResult.failed(
+                    ErrorCode.INTERNAL,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=_INTERNAL_ERROR_TEXT,
+                )
+            drafts.extend(step_drafts)
+
+        damage_draft = self._environment_damage_draft(state=state, drafts=drafts, turn_id=turn_id)
+        if damage_draft is not None:
+            drafts.append(damage_draft)
+        result_data: dict[str, Any] = {}
+        if damage_draft is not None:
+            result_data["environment"] = self._environment_payload(state, damage_draft)
+        if lore_entries:
+            result_data["lore_entries"] = list(lore_entries)
+        text, narrative_source = self._render_with_source(
+            action=outcome,
+            events=drafts,
+            state=state,
+            result_data=result_data,
+            on_delta=on_delta,
+        )
+        narrated = [
+            draft.model_copy(
+                update={
+                    "result": {
+                        **draft.result,
+                        "narrative": text,
+                        "narrative_source": narrative_source,
+                    }
+                }
+            )
+            for draft in drafts
+        ]
+        engine_result = self._engine.submit(
+            game_id=request.game_id,
+            expected_version=record.version,
+            drafts=narrated,
+            idempotency_key=request.idempotency_key,
+        )
+        if not engine_result.ok:
+            return _with_failure_hints(
+                TurnResult.failed(
+                    engine_result.error_code or ErrorCode.INTERNAL,
+                    version=record.version,
+                    turn_id=state.turn,
+                    text=engine_result.message or _ACTION_REJECTED_TEXT,
+                ),
+                state,
+                _safe_player_reason(engine_result.message),
             )
         data = engine_result.data or {}
         committed_turn = data.get("turn_id")
@@ -1252,52 +1543,108 @@ class TurnOrchestrator:
             save_seed=save_seed,
             events=events_history,
         )
-        outcome = self._parser.parse(request.text, perception=perception, ctx=player_ctx)
-        if outcome.tool is None or outcome.confidence < _CONFIDENCE_FLOOR:
-            return TurnResult.failed(
+        outcome = normalize_parse_outcome(
+            self._parser.parse(request.text, perception=perception, ctx=player_ctx), perception
+        )
+        if outcome.tool is None or outcome.confidence < confidence_floor_for(outcome.tool):
+            result = TurnResult.failed(
                 ErrorCode.INVALID_INPUT,
                 version=record.version,
                 turn_id=state.turn,
                 text=_UNKNOWN_ACTION_TEXT,
             )
+            clarification = _clarification_payload(outcome, state, perception)
+            if clarification is not None:
+                hint, actions = clarification
+                result = result.model_copy(
+                    update={"effects": [{"hint": hint}], "suggested_actions": actions}
+                )
+            return result
 
-        player_proposal: Proposal | None = None
+        # R7 多步原子执行（契约 §6.4）：steps ≥2 时每步一条玩家提案（priority 100/99/98），
+        # 全部 applied 才提交；1 步时 player_actions 只有一条，行为与旧版逐字一致。
+        steps = _multi_steps(outcome)
+        is_multi_step = bool(steps)
+        player_actions: list[tuple[str, dict[str, Any]]] = (
+            [(step.tool, dict(step.args)) for step in steps]
+            if is_multi_step
+            else [(outcome.tool, dict(outcome.args))]
+        )
         read_only_data: dict[str, Any] = {}
-        # R-19：自由制造草稿的 pre-queue 载荷（成功/失败二选一；None = 不适用/旧路径）。
-        prepared_free_craft: dict[str, Any] | None = None
-        try:
-            spec = self._registry.get(outcome.tool)
-        except KeyError:
-            spec = None
-        if spec is None:
-            return TurnResult.failed(
-                ErrorCode.NOT_FOUND,
-                version=record.version,
-                turn_id=state.turn,
-                text=f"未知工具: {outcome.tool}",
-            )
-        if spec.side_effect is SideEffect.READ_ONLY:
-            read_only = self._gate.dispatch(
-                tool=outcome.tool, args=outcome.args, ctx=player_ctx, state=state
-            )
-            if not read_only.ok:
+        # R-19：自由制造草稿的 pre-queue 载荷（成功/失败二选一；None = 不适用/旧路径）；
+        # 与 player_actions 同序，入队后按 proposal_id 收集随提案交给 Resolver。
+        prepared_payloads: list[dict[str, Any] | None] = []
+        player_proposals: list[Proposal] = []
+        for index, (tool_name, raw_args) in enumerate(player_actions, start=1):
+            try:
+                spec = self._registry.get(tool_name)
+            except KeyError:
+                spec = None
+            if spec is None:
+                if is_multi_step:
+                    return _multi_step_failure_result(
+                        state=state,
+                        error_code=ErrorCode.NOT_FOUND,
+                        failed_step=index,
+                        version=record.version,
+                        turn_id=state.turn,
+                    )
                 return TurnResult.failed(
-                    read_only.error_code or ErrorCode.INTERNAL,
+                    ErrorCode.NOT_FOUND,
                     version=record.version,
                     turn_id=state.turn,
-                    text=read_only.message or _ACTION_REJECTED_TEXT,
+                    text=f"未知工具: {outcome.tool}",
                 )
-            read_only_data = dict(read_only.data or {})
-        else:
-            if not self._registry.is_visible(outcome.tool, player_ctx):
+            if spec.side_effect is SideEffect.READ_ONLY:
+                if is_multi_step:
+                    # 多步只允许写动作：解析层保证；编排层防御性拒绝（整回合零提交）。
+                    return _multi_step_failure_result(
+                        state=state,
+                        error_code=ErrorCode.INVALID_INPUT,
+                        failed_step=index,
+                        version=record.version,
+                        turn_id=state.turn,
+                    )
+                read_only = self._gate.dispatch(
+                    tool=tool_name, args=raw_args, ctx=player_ctx, state=state
+                )
+                if not read_only.ok:
+                    return TurnResult.failed(
+                        read_only.error_code or ErrorCode.INTERNAL,
+                        version=record.version,
+                        turn_id=state.turn,
+                        text=read_only.message or _ACTION_REJECTED_TEXT,
+                    )
+                read_only_data = dict(read_only.data or {})
+                prepared_payloads.append(None)
+                continue
+            if not self._registry.is_visible(tool_name, player_ctx):
+                if is_multi_step:
+                    return _multi_step_failure_result(
+                        state=state,
+                        error_code=ErrorCode.NOT_ALLOWED,
+                        failed_step=index,
+                        version=record.version,
+                        turn_id=state.turn,
+                        reason="当前角色无权执行这个动作。",
+                    )
                 return TurnResult.failed(
                     ErrorCode.NOT_ALLOWED,
                     version=record.version,
                     turn_id=state.turn,
                     text="当前角色无权执行这个动作。",
                 )
-            validated = self._registry.validate_args(outcome.tool, outcome.args)
+            validated = self._registry.validate_args(tool_name, raw_args)
             if not validated.ok or not validated.data:
+                if is_multi_step:
+                    return _multi_step_failure_result(
+                        state=state,
+                        error_code=validated.error_code or ErrorCode.INVALID_INPUT,
+                        failed_step=index,
+                        version=record.version,
+                        turn_id=state.turn,
+                        reason=validated.message,
+                    )
                 return TurnResult.failed(
                     validated.error_code or ErrorCode.INVALID_INPUT,
                     version=record.version,
@@ -1308,20 +1655,24 @@ class TurnOrchestrator:
             # R-19 pre-queue：自由制造草稿在进入 Resolver/CAS 重试循环之前生成一次
             # （开关关闭/未注入生成器 → None：保持旧路径，Resolver 内服务直接 NOT_ALLOWED，
             # 零 LLM；生成失败也收敛为失败载荷，执行路径零事件拒绝、不重试模型）。
-            prepared_free_craft = prepare_free_craft_draft(
-                gate=self._gate,
-                ctx=player_ctx,
-                state=state,
-                tool=outcome.tool,
-                args=player_args,
+            prepared_payloads.append(
+                prepare_free_craft_draft(
+                    gate=self._gate,
+                    ctx=player_ctx,
+                    state=state,
+                    tool=tool_name,
+                    args=player_args,
+                )
             )
-            player_proposal = Proposal(
-                turn_id=turn_id,
-                actor_id=PLAYER_ID,
-                tool=outcome.tool,
-                args=player_args,
-                reason="玩家明确动作",
-                priority=100,
+            player_proposals.append(
+                Proposal(
+                    turn_id=turn_id,
+                    actor_id=PLAYER_ID,
+                    tool=tool_name,
+                    args=player_args,
+                    reason="玩家明确动作",
+                    priority=100 - (index - 1) if is_multi_step else 100,
+                )
             )
         if lore_entries:
             # H4：世界设定句通过 result_data 传给叙事器（不改 NarratorLike 签名）；
@@ -1329,9 +1680,9 @@ class TurnOrchestrator:
             read_only_data = {**read_only_data, "lore_entries": list(lore_entries)}
 
         queue = ProposalQueue(turn_id=turn_id)
-        player_entry: QueueEntry | None = None
-        if player_proposal is not None:
-            player_entry = queue.enqueue(player_proposal, source=ProposalSource.PLAYER)
+        player_entries: list[QueueEntry] = []
+        for player_proposal in player_proposals:
+            player_entries.append(queue.enqueue(player_proposal, source=ProposalSource.PLAYER))
         if self._agent_scheduler is not None:
             # M5-023 接线：调度器一次返回本回合全部 NPC 提案（批量/休眠/审计由其负责）；
             # 默认 None 时走下方原逐 Agent 循环，M2–M4 行为与 golden 逐字不变。
@@ -1388,8 +1739,13 @@ class TurnOrchestrator:
         # R-19：pre-queue 载荷只随玩家提案进入裁决（proposal_id 在入队后才确定）；
         # CAS 重试循环复用同一映射 → 重试只重裁决，不重调模型。
         prepared_crafts: dict[str, dict[str, Any]] | None = None
-        if player_entry is not None and prepared_free_craft is not None:
-            prepared_crafts = {player_entry.proposal_id: prepared_free_craft}
+        # 只读单步时 player_entries 为空、prepared_payloads 为 [None]（长度可不等），故 strict=False。
+        for entry, payload in zip(player_entries, prepared_payloads, strict=False):
+            if payload is None:
+                continue
+            if prepared_crafts is None:
+                prepared_crafts = {}
+            prepared_crafts[entry.proposal_id] = payload
 
         current = record
         text = ""
@@ -1402,17 +1758,18 @@ class TurnOrchestrator:
                     drained, current.state, judgements, prepared_crafts=prepared_crafts
                 )
             by_proposal = {resolution.proposal_id: resolution for resolution in resolutions}
-            player_resolution = (
-                by_proposal.get(player_entry.proposal_id) if player_entry is not None else None
-            )
-            if player_entry is not None and (
-                player_resolution is None or player_resolution.verdict != "applied"
-            ):
+            failed_step = 0
+            failed_resolution: Resolution | None = None
+            for index, entry in enumerate(player_entries, start=1):
+                resolution = by_proposal.get(entry.proposal_id)
+                if resolution is None or resolution.verdict != "applied":
+                    failed_step = index
+                    failed_resolution = resolution
+                    break
+            if failed_step:
                 # 对外文案保持中文（2G 文字风格）；裁决理由（可能为规则层英文诊断）只进审计。
-                error_code = (
-                    ErrorCode.CONFLICT
-                    if player_resolution is not None and player_resolution.verdict == "conflict"
-                    else ErrorCode.INVALID_INPUT
+                error_code = _step_failure_error_code(
+                    failed_resolution.verdict if failed_resolution is not None else None
                 )
                 self._save_audit(
                     self._audit_rows(
@@ -1427,10 +1784,19 @@ class TurnOrchestrator:
                 # 其中 ActionService 给出的中文具体原因（如「「北」边没有出口」）经
                 # ``_safe_player_reason`` 过滤后作为失败 hint 展示，玩家能看到「为什么」。
                 rejected_reason = (
-                    _safe_player_reason(player_resolution.reason)
-                    if player_resolution is not None
+                    _safe_player_reason(failed_resolution.reason)
+                    if failed_resolution is not None
                     else None
-                ) or _context_reason(state, outcome)
+                )
+                if is_multi_step:
+                    return _multi_step_failure_result(
+                        state=state,
+                        error_code=error_code,
+                        failed_step=failed_step,
+                        version=current.version,
+                        turn_id=state.turn,
+                        reason=rejected_reason,
+                    )
                 return _with_failure_hints(
                     TurnResult.failed(
                         error_code,
@@ -1439,21 +1805,22 @@ class TurnOrchestrator:
                         text=_ACTION_REJECTED_TEXT,
                     ),
                     state,
-                    rejected_reason,
+                    rejected_reason or _context_reason(state, outcome),
                 )
 
             entry_by_id = {entry.proposal_id: entry for entry in entries}
             player_drafts: list[Event] = []
+            for entry in player_entries:
+                resolution = by_proposal.get(entry.proposal_id)
+                if resolution is not None and resolution.verdict == "applied":
+                    player_drafts.extend(resolution.applied_events)
             npc_drafts: list[Event] = []
             for resolution in resolutions:
                 if resolution.verdict != "applied":
                     continue
-                source = entry_by_id[resolution.proposal_id].source
-                for draft in resolution.applied_events:
-                    if source is ProposalSource.PLAYER:
-                        player_drafts.append(draft)
-                    else:
-                        npc_drafts.append(draft)
+                if entry_by_id[resolution.proposal_id].source is ProposalSource.PLAYER:
+                    continue
+                npc_drafts.extend(resolution.applied_events)
             # H4/L1：story 存档进入受伤房间 → 同回合给玩家批次追加一条 ENVIRONMENT_DAMAGE。
             damage_draft = self._environment_damage_draft(
                 state=state, drafts=player_drafts, turn_id=turn_id

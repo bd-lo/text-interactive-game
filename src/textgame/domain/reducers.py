@@ -16,6 +16,7 @@ reducer 是回放与回合提交共用的唯一投影实现：``GameState.apply`
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -185,11 +186,18 @@ class ReducerRegistry:
         self._reducers[event_type] = reducer
 
     def get(self, event_type: EventType) -> Reducer:
-        """取 reducer；未注册时抛 ``ValueError``（禁止静默跳过未知事件）。"""
-        reducer = self._reducers.get(event_type)
-        if reducer is None:
-            raise ValueError(f"no reducer registered for event_type {event_type.value}")
-        return reducer
+        """取 reducer；非 ``EventType`` 或未注册时抛 ``ValueError``（禁止静默跳过未知事件）。
+
+        T7 加固：``Event.model_construct(event_type="X")`` 可绕过 pydantic 校验传入非
+        ``EventType`` 值；错误信息不得访问 ``.value``（否则抛 ``AttributeError``），
+        统一按运行时防御回退为 ``ValueError``。合法已注册类型的行为逐字不变。
+        """
+        if isinstance(event_type, EventType):
+            reducer = self._reducers.get(event_type)
+            if reducer is not None:
+                return reducer
+        raw = getattr(event_type, "value", event_type)
+        raise ValueError(f"no reducer registered for event_type {raw!r}")
 
     def reduce(self, state: GameState | None, event: Event) -> GameState:
         """投影单条事件；返回新状态，不修改入参。"""
@@ -321,6 +329,166 @@ def _reduce_identity(state: GameState | None, event: Event) -> GameState:
     return _require_state(state, event)
 
 
+# ---------------------------------------------------------------------------
+# R7（D-N6，用户批准新增 EventType）：行动自由度动作包的纯投影
+# ---------------------------------------------------------------------------
+def _require_str(mapping: dict[str, Any], key: str, *, where: str) -> str:
+    """取 ``mapping[key]`` 的非空字符串值；缺失/非字符串/空串 → ``ValueError``。"""
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{where}.{key} must be a non-empty string")
+    return value
+
+
+def _require_int(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    where: str,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """取 ``mapping[key]`` 的严格整数（显式排除 ``bool``）并做区间校验。"""
+    value = mapping.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{where}.{key} must be an int")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{where}.{key} must be >= {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{where}.{key} must be <= {maximum}")
+    return value
+
+
+def _reduce_item_dropped(state: GameState | None, event: Event) -> GameState:
+    """``ITEM_DROPPED``（R7）：背包移除物品并追加到当前房间地面（纯投影）。
+
+    校验：actor 存在；``item_id`` 是背包内的已知物品；``params.from_room`` 等于 actor
+    当前房间且房间存在；地面尚未有该物品；``result.to_room`` 与 ``from_room`` 一致、
+    ``result.item_name`` 为非空字符串。成功只改 ``characters``/``rooms``。
+    """
+    current = _require_state(state, event)
+    character = current.characters.get(event.actor_id)
+    if character is None:
+        raise ValueError(f"ITEM_DROPPED actor {event.actor_id} not in state")
+    item_id = _require_str(event.params, "item_id", where="ITEM_DROPPED params")
+    from_room = _require_str(event.params, "from_room", where="ITEM_DROPPED params")
+    if item_id not in character.inventory:
+        raise ValueError(f"ITEM_DROPPED item {item_id!r} not in inventory")
+    if item_id not in current.items:
+        raise ValueError(f"ITEM_DROPPED unknown item {item_id!r}")
+    if from_room != character.location:
+        raise ValueError(
+            f"ITEM_DROPPED from_room {from_room!r} does not match actor location "
+            f"{character.location!r}"
+        )
+    room = current.rooms.get(from_room)
+    if room is None:
+        raise ValueError(f"ITEM_DROPPED unknown room {from_room!r}")
+    if item_id in room.item_ids:
+        raise ValueError(f"ITEM_DROPPED item {item_id!r} already on the ground")
+    to_room = _require_str(event.result, "to_room", where="ITEM_DROPPED result")
+    if to_room != from_room:
+        raise ValueError(
+            f"ITEM_DROPPED result.to_room {to_room!r} does not match params.from_room {from_room!r}"
+        )
+    _require_str(event.result, "item_name", where="ITEM_DROPPED result")
+    inventory = [existing for existing in character.inventory if existing != item_id]
+    characters = dict(current.characters)
+    characters[event.actor_id] = character.model_copy(update={"inventory": inventory})
+    rooms = dict(current.rooms)
+    rooms[from_room] = room.model_copy(update={"item_ids": [*room.item_ids, item_id]})
+    return current.model_copy(update={"characters": characters, "rooms": rooms})
+
+
+def _reduce_item_given(state: GameState | None, event: Event) -> GameState:
+    """``ITEM_GIVEN``（R7）：背包移除物品交给同房间 NPC；``state.items`` 保留该物品。
+
+    NPC 模型没有背包字段（第 5 章基线模型不新增字段），物品只从玩家持有中离开；
+    校验：actor 存在、``item_id`` 在背包且是已知物品、``npc_id`` 存在且与 actor 同房间、
+    ``result.npc_name`` 为非空字符串。成功只改 ``characters``。
+    """
+    current = _require_state(state, event)
+    character = current.characters.get(event.actor_id)
+    if character is None:
+        raise ValueError(f"ITEM_GIVEN actor {event.actor_id} not in state")
+    item_id = _require_str(event.params, "item_id", where="ITEM_GIVEN params")
+    npc_id = _require_str(event.params, "npc_id", where="ITEM_GIVEN params")
+    if item_id not in character.inventory:
+        raise ValueError(f"ITEM_GIVEN item {item_id!r} not in inventory")
+    if item_id not in current.items:
+        raise ValueError(f"ITEM_GIVEN unknown item {item_id!r}")
+    npc = current.npcs.get(npc_id)
+    if npc is None:
+        raise ValueError(f"ITEM_GIVEN unknown npc {npc_id!r}")
+    if npc.room_id != character.location:
+        raise ValueError(
+            f"ITEM_GIVEN npc {npc_id!r} is in {npc.room_id!r}, not actor location "
+            f"{character.location!r}"
+        )
+    _require_str(event.result, "npc_name", where="ITEM_GIVEN result")
+    inventory = [existing for existing in character.inventory if existing != item_id]
+    characters = dict(current.characters)
+    characters[event.actor_id] = character.model_copy(update={"inventory": inventory})
+    return current.model_copy(update={"characters": characters})
+
+
+def _reduce_combat_resolved(state: GameState | None, event: Event) -> GameState:
+    """``COMBAT_RESOLVED``（R7）：一次攻击判定；命中则目标退出场景。
+
+    校验：actor 存在；``params.npc_id`` 存在且 ``params.room_id == npc.room_id ==
+    actor.location``；``result`` 为严格类型（``hit`` 必须是 bool，``roll`` 是 1..20 的 int，
+    ``total``/``dc`` 是 int，``damage`` 是 >=0 的 int；``bool`` 不得冒充 int）。
+    ``hit=True``：从房间 ``npc_ids`` 移除并从 ``state.npcs`` 删除；``hit=False``：状态零变化
+    （仅由注册表补公共规则 turn/world_time）。
+    """
+    current = _require_state(state, event)
+    character = current.characters.get(event.actor_id)
+    if character is None:
+        raise ValueError(f"COMBAT_RESOLVED actor {event.actor_id} not in state")
+    npc_id = _require_str(event.params, "npc_id", where="COMBAT_RESOLVED params")
+    room_id = _require_str(event.params, "room_id", where="COMBAT_RESOLVED params")
+    npc = current.npcs.get(npc_id)
+    if npc is None:
+        raise ValueError(f"COMBAT_RESOLVED unknown npc {npc_id!r}")
+    if room_id != character.location or npc.room_id != room_id:
+        raise ValueError(
+            f"COMBAT_RESOLVED npc {npc_id!r} (room {npc.room_id!r}) is not with actor "
+            f"{event.actor_id!r} in room {room_id!r}"
+        )
+    if room_id not in current.rooms:
+        raise ValueError(f"COMBAT_RESOLVED unknown room {room_id!r}")
+    hit = event.result.get("hit")
+    if not isinstance(hit, bool):
+        raise ValueError("COMBAT_RESOLVED result.hit must be a bool")
+    _require_int(event.result, "roll", where="COMBAT_RESOLVED result", minimum=1, maximum=20)
+    _require_int(event.result, "total", where="COMBAT_RESOLVED result")
+    _require_int(event.result, "dc", where="COMBAT_RESOLVED result")
+    _require_int(event.result, "damage", where="COMBAT_RESOLVED result", minimum=0)
+    if not hit:
+        return current
+    room = current.rooms[room_id]
+    rooms = dict(current.rooms)
+    rooms[room_id] = room.model_copy(
+        update={"npc_ids": [existing for existing in room.npc_ids if existing != npc_id]}
+    )
+    npcs = {key: value for key, value in current.npcs.items() if key != npc_id}
+    return current.model_copy(update={"rooms": rooms, "npcs": npcs})
+
+
+def _reduce_improvised_action(state: GameState | None, event: Event) -> GameState:
+    """``IMPROVISED_ACTION``（R7）：裁判已确认的临场动作，identity 投影。
+
+    不产生数值/物品；只校验 actor 存在与 ``params.action_text`` / ``result.narrative_hint``
+    为非空字符串（严格类型），状态零变化后由注册表补公共规则 turn/world_time。
+    """
+    current = _require_state(state, event)
+    if event.actor_id not in current.characters:
+        raise ValueError(f"IMPROVISED_ACTION actor {event.actor_id} not in state")
+    _require_str(event.params, "action_text", where="IMPROVISED_ACTION params")
+    _require_str(event.result, "narrative_hint", where="IMPROVISED_ACTION result")
+    return current
+
+
 DEFAULT_REGISTRY = ReducerRegistry()
 DEFAULT_REGISTRY.register(EventType.GAME_CREATED, _reduce_game_created)
 DEFAULT_REGISTRY.register(EventType.CHARACTER_MOVED, _reduce_character_moved)
@@ -331,6 +499,10 @@ DEFAULT_REGISTRY.register(EventType.CRAFT_DETERMINISTIC, _reduce_craft)
 DEFAULT_REGISTRY.register(EventType.CRAFT_GENERATED, _reduce_craft)
 DEFAULT_REGISTRY.register(EventType.CRAFT_REJECTED, _reduce_identity)
 DEFAULT_REGISTRY.register(EventType.ENVIRONMENT_DAMAGE, _reduce_environment_damage)
+DEFAULT_REGISTRY.register(EventType.ITEM_DROPPED, _reduce_item_dropped)
+DEFAULT_REGISTRY.register(EventType.ITEM_GIVEN, _reduce_item_given)
+DEFAULT_REGISTRY.register(EventType.COMBAT_RESOLVED, _reduce_combat_resolved)
+DEFAULT_REGISTRY.register(EventType.IMPROVISED_ACTION, _reduce_improvised_action)
 
 
 def apply_events(state: GameState | None, events: list[Event]) -> GameState:

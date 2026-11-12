@@ -57,6 +57,17 @@ class ActionServicePort(Protocol):
         self, ctx: ToolContext, state: GameState, *, npc_id: NpcId, topic: str
     ) -> Result: ...
 
+    # R7 行动自由度动作包（契约 §1/§3）：均只产草稿 ``Event``，不提交、不写库。
+    def drop_item(self, ctx: ToolContext, state: GameState, *, item_id: ItemId) -> Result: ...
+
+    def give_item(
+        self, ctx: ToolContext, state: GameState, *, item_id: ItemId, npc_id: NpcId
+    ) -> Result: ...
+
+    def attack(self, ctx: ToolContext, state: GameState, *, npc_id: NpcId) -> Result: ...
+
+    def improvise(self, ctx: ToolContext, state: GameState, *, action_text: str) -> Result: ...
+
 
 class CraftServicePort(Protocol):
     """gate 用到的制造服务方法（第 13 章 §13.5）：只产草稿 ``Event``，不提交。
@@ -227,6 +238,22 @@ class ToolGate:
                     state,
                     npc_id=cast(NpcId, params["npc_id"]),
                     topic=cast(str, params["topic"]),
+                )
+            # R7 行动自由度四工具（契约 §1/§3）：gate 只做路由，L0/投影由服务与 reducer 负责。
+            if tool == "attack":
+                return self._action.attack(ctx, state, npc_id=cast(NpcId, params["npc_id"]))
+            if tool == "drop_item":
+                return self._action.drop_item(ctx, state, item_id=cast(ItemId, params["item_id"]))
+            if tool == "give_item":
+                return self._action.give_item(
+                    ctx,
+                    state,
+                    item_id=cast(ItemId, params["item_id"]),
+                    npc_id=cast(NpcId, params["npc_id"]),
+                )
+            if tool == "improvise":
+                return self._action.improvise(
+                    ctx, state, action_text=cast(str, params["action_text"])
                 )
         except Exception:  # 服务层异常统一转 INTERNAL，零事件
             return Result.fail(ErrorCode.INTERNAL, "tool dispatch failed")

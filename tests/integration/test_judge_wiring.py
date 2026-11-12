@@ -2,13 +2,14 @@
 
 装配口径与 ``main.py`` 同构（内存仓储 + 真实 GameEngine/Query/Action/ToolGate/Resolver/
 Audit + 确定性解析/模板叙事；可注入 ``judge`` 与测试专用 agent_assisted 策略）。覆盖：
-1. 默认离线（``llm_enabled=false``）生产组合根无裁判、零调用；
+1. 默认离线（``llm_enabled=false``）生产组合根：裁判常驻但运行期离线 → 零模型调用、回合正常；
 2. ``judge=None``（省略/显式）裁决结果逐字等价（默认路径零回归）；
 3. needs_judge + 合法证据 → applied 且 audit 可追溯裁判理由；
 4. needs_judge + deny / 低置信 / LLM 不可用 / 非法 Schema×2 / 证据越界 / 裁判异常 →
    确定性保守兜底：rejected、零事件、零写入、不 5xx/不外泄异常；
 5. 每回合裁判调用上限 1（m3 双 NPC 提案同回合）；
-6. 生产 ``llm_enabled=true`` 装配：构造 LLMJudgeAgent 但 needs_judge 集合为空 → 零裁判调用。
+6. R7：``improvise`` 是首个 ``agent_assisted`` 工具（生产 registry 的 needs_judge 生产点
+   = ``{"improvise"}``）；LLM 启用装配下本回合输入不触发该工具 → 仍零裁判调用。
 零网络：cassette（``tests/fixtures/cassettes/judge_*.json``）/FakeLLM + conftest socket guard。
 """
 
@@ -259,8 +260,9 @@ def test_default_offline_assembly_wires_judge_but_zero_calls(
         orchestrator = app.state.orchestrator
         assert isinstance(orchestrator._judge, LLMJudgeAgent)
         assert app.state.llm_runtime.status().enabled is False
-        assert orchestrator._registry.agent_assisted_tools() == frozenset()
-        assert orchestrator._rules.agent_assisted_tools == frozenset()
+        # R7：生产 registry 的 needs_judge 生产点来自工具声明（improvise 是首个 agent_assisted 工具）。
+        assert orchestrator._registry.agent_assisted_tools() == frozenset({"improvise"})
+        assert orchestrator._rules.agent_assisted_tools == frozenset({"improvise"})
         with TestClient(app) as client:
             created = client.post(
                 "/api/v1/games",
@@ -451,14 +453,14 @@ def test_judge_call_budget_is_one_per_turn() -> None:
 def test_production_llm_enabled_assembly_wires_judge_but_zero_judge_calls(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    """``llm_enabled=true`` 生产装配：构造 LLMJudgeAgent，但 needs_judge 空集 → 零裁判调用。"""
+    """``llm_enabled=true`` 生产装配：improvise 已是 needs_judge 生产点，但本回合不触发 → 零裁判调用。"""
     fake = FakeLLM([])  # 该装配的解析/叙事/角色 LLM 调用全部失败回退，也不应有 judge 调用
     app = _main_app(monkeypatch, tmp_path, llm_enabled=True, llm_client=fake)
     try:
         orchestrator = app.state.orchestrator
         assert isinstance(orchestrator._judge, LLMJudgeAgent)
-        assert orchestrator._registry.agent_assisted_tools() == frozenset()
-        assert orchestrator._rules.agent_assisted_tools == frozenset()
+        assert orchestrator._registry.agent_assisted_tools() == frozenset({"improvise"})
+        assert orchestrator._rules.agent_assisted_tools == frozenset({"improvise"})
         with TestClient(app) as client:
             created = client.post(
                 "/api/v1/games",

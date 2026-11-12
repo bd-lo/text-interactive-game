@@ -4,7 +4,7 @@
 - 7 条 m2 golden 输入映射逐字不变（tool/args/confidence/source 精确断言）；
 - 细看 ``inspect_item``（item/npc + 别名 + 模糊）、背包同义词、方向变体、
   房间名导航（``PerceptionSlice.exit_refs``）、使用/拿取/对话的日常说法；
-- 反例：无关输入/能力缺口/攻击类不得乱猜（``tool=None, confidence=0.0``）；
+- 反例：无关输入/能力缺口不得乱猜（``tool=None, confidence=0.0``）；R7 战斗词表命中 npc → attack；
 - 模糊匹配（difflib cutoff 0.6）只在动词命中且无精确/别名命中时兜底（防御性单测）。
 """
 
@@ -267,7 +267,11 @@ _CASES: tuple[tuple[str, str, str | None, dict[str, Any], str], ...] = (
         {"mode": "recipe", "recipe_id": "recipe.forge_sword"},
         "keyword",
     ),
-    # ---- 反例：无关/能力缺口/攻击类不得乱猜 ----
+    # ---- R7 战斗词表（attack 工具加入后：命中 npc 不再「乱猜」，而是明确攻击意图）----
+    ("entry", "攻击老哨兵", "attack", {"npc_id": NPC_SENTINEL}, "keyword"),
+    ("entry", "砍老哨兵", "attack", {"npc_id": NPC_SENTINEL}, "keyword"),
+    ("entry", "拔剑砍向老哨兵", "attack", {"npc_id": NPC_SENTINEL}, "keyword"),
+    # ---- 反例：无关/能力缺口不得乱猜 ----
     ("entry", "跳舞", None, {}, "keyword"),
     ("entry", "唱歌", None, {}, "keyword"),
     ("entry", "asdfgh", None, {}, "keyword"),
@@ -278,9 +282,6 @@ _CASES: tuple[tuple[str, str, str | None, dict[str, Any], str], ...] = (
     ("entry", "唱一首歌吧", None, {}, "keyword"),
     ("entry", "帮助", None, {}, "keyword"),
     ("entry", "我的状态", None, {}, "keyword"),
-    ("entry", "攻击老哨兵", None, {}, "keyword"),
-    ("entry", "砍老哨兵", None, {}, "keyword"),
-    ("entry", "拔剑砍向老哨兵", None, {}, "keyword"),
     ("entry", "打他", None, {}, "keyword"),
     ("empty", "去地窖", None, {}, "keyword"),
     ("empty", "查看治疗药水", "get_room_view", {}, "keyword"),

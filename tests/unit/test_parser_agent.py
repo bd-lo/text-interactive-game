@@ -7,9 +7,20 @@ from typing import Any
 from pydantic import ValidationError
 
 from fakes import FakeLLM
-from textgame.agents.dto import ParseOutcome
+from textgame.agents.dto import (
+    CONFIDENCE_FLOORS,
+    ParseOutcome,
+    ParseStep,
+    confidence_floor_for,
+)
 from textgame.agents.parser_agent import IntentParseAgent, ParseOutput
-from textgame.domain.models import EntityRef, PerceptionSlice, SideEffect, ToolSpec
+from textgame.domain.models import (
+    EntityRef,
+    PerceptionSlice,
+    ResolutionPolicy,
+    SideEffect,
+    ToolSpec,
+)
 from textgame.domain.results import ErrorCode
 from textgame.llm.client import ChatMessage, DisabledLLMClient, LLMRequest
 from textgame.orchestration.intent import DeterministicIntentParser
@@ -366,9 +377,343 @@ def test_whitelist_is_derived_from_tool_specs() -> None:
 
 
 def test_request_carries_prompt_version() -> None:
-    """R-14：解析请求必须带 parse@v1，供幂等键/调用日志按版本追溯。"""
+    """R-14/R7：解析请求必须带 parse@v2（输出 Schema 新增 steps，Prompt 版本递增）。"""
     agent, llm = _agent([_output()])
 
     agent.parse("向北走", perception=_perception(), ctx=_ctx())
 
-    assert llm.calls[0].prompt_version == "parse@v1"
+    assert llm.calls[0].prompt_version == "parse@v2"
+
+
+# ---------------------------------------------------------------------------
+# R7：分工具置信阈值 / 多步 steps / 低置信候选（契约 §5.1/§5.2）
+# ---------------------------------------------------------------------------
+_EXPECTED_FLOORS: dict[str, float] = {
+    "get_room_view": 0.45,
+    "get_inventory": 0.45,
+    "move_to": 0.45,
+    "inspect_item": 0.5,
+    "take_item": 0.5,
+    "use_item": 0.5,
+    "talk_to": 0.5,
+    "craft_item": 0.6,
+    "attack": 0.55,
+    "drop_item": 0.5,
+    "give_item": 0.5,
+    "improvise": 0.55,
+}
+
+
+def test_confidence_floors_match_contract() -> None:
+    """契约 §5.1：分工具阈值表逐项一致（只读放开 / 制造最严 / 未知回退 0.6）。"""
+    assert CONFIDENCE_FLOORS == _EXPECTED_FLOORS
+    assert confidence_floor_for(None) == 0.6
+    assert confidence_floor_for("admin_override") == 0.6
+    for tool, floor in _EXPECTED_FLOORS.items():
+        assert confidence_floor_for(tool) == floor
+
+
+def test_read_only_floor_accepts_lower_confidence_than_old_global_floor() -> None:
+    """R7：get_room_view 阈值 0.45 —— 0.46 的只读动作不再被旧的 0.6 全局阈值澄清。"""
+    agent, _ = _agent([_output(tool="get_room_view", args={}, confidence=0.46)])
+
+    outcome = agent.parse("看看四周", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool == "get_room_view"
+    assert outcome.source == "llm"
+    assert outcome.steps == ()
+
+
+def test_write_tool_floor_still_rejects_below_threshold() -> None:
+    """R7：take_item 阈值 0.5 —— 0.49 仍澄清（写操作不放宽）。"""
+    agent, _ = _agent([_output(tool="take_item", args={"item_id": _TORCH_ID}, confidence=0.49)])
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool is None
+    assert outcome.confidence == 0.49
+
+
+def test_craft_floor_stays_strict_at_global_value() -> None:
+    """R7：craft_item 阈值保持 0.6（制造是 STRONG 档高风险动作）。"""
+    agent, _ = _agent(
+        [
+            _output(
+                tool="craft_item",
+                args={"mode": "free", "free_description": "拿火把做东西"},
+                confidence=0.58,
+            )
+        ],
+        tool_whitelist=frozenset({"craft_item"}),
+    )
+
+    outcome = agent.parse("做个东西", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool is None
+    assert outcome.candidate_tool == "craft_item"
+
+
+def test_clarify_carries_candidate_tool_and_args_for_hints() -> None:
+    """R7：低置信澄清必须携带候选工具/参数（仅用于编排层给建议，不执行）。"""
+    agent, _ = _agent([_output(tool="take_item", args={"item_id": _TORCH_ID}, confidence=0.2)])
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool is None
+    assert outcome.args == {}
+    assert outcome.candidate_tool == "take_item"
+    assert outcome.candidate_args == {"item_id": _TORCH_ID}
+    assert outcome.confidence == 0.2
+
+
+def test_oversized_args_clarify_also_carries_candidate() -> None:
+    """R7：参数体量超限的澄清同样带候选（便于玩家看到「大概是这个动作」）。"""
+    agent, _ = _agent(
+        [
+            _output(
+                tool="move_to",
+                args={"direction": "north", "payload": "x" * 2000},
+            )
+        ]
+    )
+
+    outcome = agent.parse("向北走", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool is None
+    assert outcome.candidate_tool == "move_to"
+    assert outcome.candidate_args["payload"] == "x" * 2000
+
+
+def _stepped_output(
+    *,
+    tool: str = "take_item",
+    args: dict[str, Any] | None = None,
+    steps: list[dict[str, Any]] | None = None,
+    confidence: float = 0.9,
+) -> dict[str, Any]:
+    """构造带 steps 的 LLM 输出（首步与顶层 tool/args 一致）。"""
+    payload = {"item_id": _TORCH_ID} if args is None else args
+    return {
+        **_output(tool=tool, args=payload, confidence=confidence),
+        "steps": steps or [],
+    }
+
+
+def test_valid_multi_step_is_projected_to_outcome() -> None:
+    """2 步写工具计划 → ParseOutcome.steps 投影两步（首步与顶层一致）。"""
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                steps=[
+                    {"tool": "take_item", "args": {"item_id": _TORCH_ID}},
+                    {"tool": "move_to", "args": {"direction": "north"}},
+                ]
+            )
+        ]
+    )
+
+    outcome = agent.parse("拿起火把然后向北走", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool == "take_item"
+    assert outcome.args == {"item_id": _TORCH_ID}
+    assert [step.tool for step in outcome.steps] == ["take_item", "move_to"]
+    assert outcome.steps[1].args == {"direction": "north"}
+    assert all(isinstance(step, ParseStep) for step in outcome.steps)
+
+
+def test_unknown_write_tool_step_drops_steps_but_keeps_single_action() -> None:
+    """任一步工具不在白名单 → 丢弃 steps，整句按单步处理（不整句失败）。"""
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                steps=[
+                    {"tool": "take_item", "args": {"item_id": _TORCH_ID}},
+                    {"tool": "admin_override", "args": {}},
+                ]
+            )
+        ]
+    )
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.tool == "take_item"
+    assert outcome.steps == ()
+
+
+def test_read_only_step_drops_steps() -> None:
+    """多步只允许写工具：第二步是只读 get_room_view → 丢弃 steps。"""
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                steps=[
+                    {"tool": "take_item", "args": {"item_id": _TORCH_ID}},
+                    {"tool": "get_room_view", "args": {}},
+                ]
+            )
+        ]
+    )
+
+    outcome = agent.parse("拿起火把再看看四周", perception=_perception(), ctx=_ctx())
+
+    assert outcome.steps == ()
+    assert outcome.tool == "take_item"
+
+
+def test_first_step_mismatch_drops_steps() -> None:
+    """首步与顶层 tool/args 不一致 → 丢弃 steps（防止模型自相矛盾的计划被执行）。"""
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                tool="take_item",
+                args={"item_id": _TORCH_ID},
+                steps=[
+                    {"tool": "move_to", "args": {"direction": "north"}},
+                    {"tool": "move_to", "args": {"direction": "east"}},
+                ],
+            )
+        ]
+    )
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.steps == ()
+    assert outcome.tool == "take_item"
+
+
+def test_oversized_total_steps_drop_steps() -> None:
+    """steps 总 JSON 超过 1000 字符 → 丢弃 steps（单步仍可用）。"""
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                steps=[
+                    {"tool": "take_item", "args": {"item_id": _TORCH_ID}},
+                    {
+                        "tool": "move_to",
+                        "args": {"direction": "north", "note": "x" * 950},
+                    },
+                ]
+            )
+        ]
+    )
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.steps == ()
+    assert outcome.tool == "take_item"
+
+
+def test_write_tool_set_is_derived_from_tool_specs() -> None:
+    """R7：写工具集从 tool_specs 的 side_effect=DESTRUCTIVE 派生；只读步骤被丢弃。"""
+    specs = (
+        ToolSpec(
+            name="take_item",
+            description="拿取物品。",
+            json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            side_effect=SideEffect.DESTRUCTIVE,
+        ),
+        ToolSpec(
+            name="get_room_view",
+            description="查看房间。",
+            json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            side_effect=SideEffect.READ_ONLY,
+        ),
+    )
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                steps=[
+                    {"tool": "take_item", "args": {"item_id": _TORCH_ID}},
+                    {"tool": "get_room_view", "args": {}},
+                ]
+            )
+        ],
+        tool_specs=specs,
+    )
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.steps == ()
+
+
+def test_prompt_contains_multi_step_guidance() -> None:
+    """Prompt 必须给出多步说明（2–3 步、首步同顶层、只允许写操作、不确定时省略）。"""
+    agent, llm = _agent([_output()])
+
+    agent.parse("向北走", perception=_perception(), ctx=_ctx())
+
+    system_prompt = llm.calls[0].messages[0].content
+    assert "steps" in system_prompt
+    assert "2–3 步" in system_prompt
+    assert "只允许写操作" in system_prompt
+
+
+def test_parse_output_steps_capped_at_three() -> None:
+    """ParseOutput.Schema：steps 超过 3 步是 Schema 违规（触发修复/兜底，而非执行）。"""
+    steps = [
+        {"tool": "move_to", "args": {"direction": "north"}},
+        {"tool": "move_to", "args": {"direction": "south"}},
+        {"tool": "move_to", "args": {"direction": "east"}},
+        {"tool": "move_to", "args": {"direction": "west"}},
+    ]
+    try:
+        ParseOutput.model_validate(_stepped_output(steps=steps))
+    except ValidationError as exc:
+        assert "steps" in str(exc)
+    else:  # pragma: no cover - 防御性断言
+        raise AssertionError("ParseOutput must reject more than 3 steps")
+
+
+def test_parse_step_rejects_nested_args() -> None:
+    """ParseStep：args 只允许标量（拒绝嵌套，注入防御）。"""
+    try:
+        ParseStep(tool="move_to", args={"direction": {"x": 1}})
+    except ValidationError as exc:
+        assert "scalar" in str(exc)
+    else:  # pragma: no cover - 防御性断言
+        raise AssertionError("ParseStep must reject nested args")
+
+
+def test_parse_outcome_rejects_single_step() -> None:
+    """ParseOutcome：steps 语义为 0 或 2–3 步，单步是非法状态（契约 §5.1）。"""
+    step = ParseStep(tool="take_item", args={"item_id": _TORCH_ID})
+    try:
+        ParseOutcome(confidence=1.0, tool="take_item", steps=(step,))
+    except ValidationError as exc:
+        assert "steps" in str(exc)
+    else:  # pragma: no cover - 防御性断言
+        raise AssertionError("ParseOutcome must reject a single step")
+
+
+def test_agent_assisted_improvise_is_not_allowed_in_steps() -> None:
+    """``improvise``（AGENT_ASSISTED）不进多步计划：每回合 ≤1 次裁判，多步不能绕过它。"""
+    specs = (
+        ToolSpec(
+            name="take_item",
+            description="拿取物品。",
+            json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            side_effect=SideEffect.DESTRUCTIVE,
+        ),
+        ToolSpec(
+            name="improvise",
+            description="做规则没覆盖的临场动作。",
+            json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            side_effect=SideEffect.DESTRUCTIVE,
+            resolution_policy=ResolutionPolicy.AGENT_ASSISTED,
+        ),
+    )
+    agent, _ = _agent(
+        [
+            _stepped_output(
+                steps=[
+                    {"tool": "take_item", "args": {"item_id": _TORCH_ID}},
+                    {"tool": "improvise", "args": {"action_text": "跳个舞"}},
+                ]
+            )
+        ],
+        tool_specs=specs,
+    )
+
+    outcome = agent.parse("拿起火把", perception=_perception(), ctx=_ctx())
+
+    assert outcome.steps == ()
+    assert outcome.tool == "take_item"

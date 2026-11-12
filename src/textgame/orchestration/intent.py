@@ -14,15 +14,29 @@ R2 离线 NLU 增强（D6/D7，**不改变 7 条 golden 输入的原映射**）�
   ``difflib.SequenceMatcher`` 保守模糊（cutoff 0.6，仅在动词命中且无精确/别名命中时启用）；
 - 房间名导航：``PerceptionSlice.exit_refs``（R2 加法字段；``id``=方向英文值、``name``=目标房间名）
   按「地窖∈哨站地窖」「铁匠铺∈废弃铁匠铺」「入口∈废弃哨站·入口」把地名映射为出口方向。
+
+R7「行动自由度」加法（契约 §5.3，**旧 7 条 golden / 既有矩阵映射逐字不变**）：
+
+- 词表：阅读（读/阅读/念/念动 + item → ``inspect_item``）、感官（听/聆听/闻/嗅/摸/触摸，
+  无实体目标 → ``get_room_view``）、战斗（攻击/袭击/砍/劈/刺向/挥刀/挥剑/揍 + npc →
+  ``attack``）、放下（放下/丢下/扔下/丢掉/搁下/放在地上 + item → ``drop_item``）、
+  给予（递给/交给/送给/塞给 + item + npc → ``give_item``）；感官分支放在 talk/use/take
+  之后，保证「打听/问候」等既有对话映射不变；
+- 多步：文本含分隔符（，,。；;、换行）或连接词（然后/接着/随后/再）时先尝试拆 ≤3 段，
+  去段首连接词后逐段单步解析；**全部段都是写工具**才返回 ``ParseOutcome.steps``
+  （``tool``/``args`` 取第一步），否则逐字回退旧的「整句单步解析」；
+- 实体名→ID：公开 ``resolve_entity_arg`` / ``normalize_parse_outcome``（精确 ID → 全名 →
+  名称片段别名 → difflib 模糊），编排层用它在解析后、校验前把模型给的展示名映射为 ID。
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Literal
 
-from textgame.agents.dto import ParseOutcome
+from textgame.agents.dto import ParseOutcome, ParseStep
 from textgame.domain.models import ActionIntent, EntityRef, PerceptionSlice
 from textgame.domain.scenario import DIRECTION_ALIASES, DIRECTION_KEYWORDS, DIRECTION_NAMES
 from textgame.services.free_craft import FreeCraftSwitch
@@ -131,6 +145,73 @@ _CRAFT_WORDS: tuple[str, ...] = (
     "炼制",
     "加工",
 )
+#: R7 阅读类词（命中 item → 细看，用于「读/阅读/念」这类查看表达）。
+_READ_WORDS: tuple[str, ...] = (
+    "阅读",
+    "读",
+    "念动",
+    "念",
+)
+#: R7 感官类词（无实体目标 → 房间查看；放在 talk/use/take 之后，避免抢占既有映射）。
+_SENSORY_WORDS: tuple[str, ...] = (
+    "聆听",
+    "听",
+    "嗅",
+    "闻",
+    "触摸",
+    "摸",
+)
+#: R7 战斗类词（命中 npc → ``attack``）。
+_COMBAT_WORDS: tuple[str, ...] = (
+    "攻击",
+    "袭击",
+    "砍",
+    "劈",
+    "刺向",
+    "挥刀",
+    "挥剑",
+    "揍",
+)
+#: R7 放下类词（命中 item → ``drop_item``）。
+_DROP_WORDS: tuple[str, ...] = (
+    "放在地上",
+    "放下",
+    "丢下",
+    "扔下",
+    "丢掉",
+    "搁下",
+)
+#: R7 给予类词（item + npc 都在 → ``give_item``；缺一个不命中，交上层澄清）。
+_GIVE_WORDS: tuple[str, ...] = (
+    "递给",
+    "交给",
+    "送给",
+    "塞给",
+)
+#: R7 多步计划允许的写工具集合（与契约 §5.3 一致；``improvise`` 需裁判，不纳入多步）。
+_STEP_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "move_to",
+        "take_item",
+        "use_item",
+        "talk_to",
+        "craft_item",
+        "attack",
+        "drop_item",
+        "give_item",
+    }
+)
+#: 多步拆分触发：分隔符或连接词（然后/接着/随后/再）。
+_MULTI_SPLIT_RE = re.compile(r"[，,。；;、\n]|然后|接着|随后|再")
+#: 拆分后段首可能残留的连接词（按长度优先剥离）。
+_LEADING_CONNECTORS: tuple[str, ...] = ("然后", "接着", "随后", "再")
+#: 多步计划最多 3 步（契约 §5.2/§5.3）。
+_MAX_MULTI_STEPS = 3
+#: 内部实体 ID 前缀：以这些前缀开头的值不做 difflib 模糊映射（未知 ID 原样保留给 gate）。
+_ENTITY_ID_PREFIXES: dict[str, tuple[str, ...]] = {
+    "item": ("item_",),
+    "npc": ("npc_", "char_"),
+}
 #: 可被「细看」的实体种类（房间细看仍走 ``get_room_view``）。
 _INSPECT_KINDS: frozenset[str] = frozenset({"item", "npc"})
 #: 实体别名片段的最短长度（过短会误配，如单字「剑」）。
@@ -335,10 +416,45 @@ class DeterministicIntentParser:
         """解析一句玩家输入；无法映射时返回 ``tool=None, confidence=0.0``。
 
         ``ctx`` 只为与 ``IntentParseAgent`` 保持同一端口签名（确定性解析不需要回合上下文）。
+
+        R7：先尝试「多步拆分」（仅当文本含分隔符/连接词且拆出的 2–3 段全部是写工具），
+        成功返回带 ``steps`` 的结果（``tool``/``args`` = 第一步）；否则逐字回退旧的整句单步
+        解析，保证旧 7 条 golden 与既有玩家输入映射不变。
         """
         normalized = text.strip()
         if not normalized:
             return _UNKNOWN
+        multi = self._try_multi_step(normalized, perception)
+        if multi is not None:
+            return multi
+        return self._parse_single(normalized, perception)
+
+    # ------------------------------------------------------------------
+    # 内部：多步拆分 / 单步解析
+    # ------------------------------------------------------------------
+    def _try_multi_step(self, text: str, perception: PerceptionSlice) -> ParseOutcome | None:
+        """尝试多步解析：全部段都解析成功且都是写工具才返回 ``steps``，否则 ``None``。"""
+        parts = _split_multi_steps(text)
+        if parts is None:
+            return None
+        outcomes = [self._parse_single(part, perception) for part in parts]
+        steps: list[ParseStep] = []
+        for outcome in outcomes:
+            if outcome.tool is None or outcome.tool not in _STEP_WRITE_TOOLS:
+                return None
+            steps.append(ParseStep(tool=outcome.tool, args=dict(outcome.args)))
+        first = outcomes[0]
+        return ParseOutcome(
+            intent=first.intent,
+            tool=first.tool,
+            args=dict(first.args),
+            confidence=1.0,
+            source="keyword",
+            steps=tuple(steps),
+        )
+
+    def _parse_single(self, normalized: str, perception: PerceptionSlice) -> ParseOutcome:
+        """旧「整句 → 单工具」解析（R7 前后逐字不变；多步拆分的每段也走这里）。"""
         entities = perception.visible_entities
         items = [entity for entity in entities if entity.kind == "item"]
         npcs = [entity for entity in entities if entity.kind == "npc"]
@@ -361,6 +477,9 @@ class DeterministicIntentParser:
                 return _outcome("inspect_item", {key: target.id})
             # 读工具名用第 7 章 §7.3 的规范名 ``get_room_view``（``look`` 只是服务方法名）。
             return _outcome("get_room_view", {})
+        if item is not None and _contains_any(normalized, _READ_WORDS):
+            # R7 阅读：读/阅读/念 + 命中 item → 细看（查看类词之后的独立表达）。
+            return _outcome("inspect_item", {"item_id": item.id})
         if _contains_any(normalized, _CRAFT_WORDS):
             if self._recipe_names is not None:
                 matched = next(
@@ -404,7 +523,143 @@ class DeterministicIntentParser:
             npc = _match_entity_fuzzy(normalized, npcs)
         if npc is not None and _contains_any(normalized, _TALK_WORDS):
             return _outcome("talk_to", {"npc_id": npc.id, "topic": normalized})
+        # ---- R7 新增分支（在旧分支之后，保证既有映射逐字不变）----
+        if npc is None and _contains_any(normalized, _COMBAT_WORDS):
+            npc = _match_entity_fuzzy(normalized, npcs)
+        if npc is not None and _contains_any(normalized, _COMBAT_WORDS):
+            return _outcome("attack", {"npc_id": npc.id})
+        if item is not None and _contains_any(normalized, _DROP_WORDS):
+            return _outcome("drop_item", {"item_id": item.id})
+        if item is not None and npc is not None and _contains_any(normalized, _GIVE_WORDS):
+            return _outcome("give_item", {"item_id": item.id, "npc_id": npc.id})
+        if item is None and npc is None and _contains_any(normalized, _SENSORY_WORDS):
+            # 纯感官表达（听/闻/摸…）没有实体目标 → 视作「留意四周」的房间查看。
+            return _outcome("get_room_view", {})
         return _UNKNOWN
 
 
-__all__ = ["DeterministicIntentParser"]
+def _split_multi_steps(text: str) -> list[str] | None:
+    """按分隔符/连接词把一句话拆成 2–3 个动作段（契约 §5.3）。
+
+    触发条件：文本含 ``，,。；;、``/换行之一，或含连接词（然后/接着/随后/再）。
+    拆分后过滤空段、剥离段首连接词；不足 2 段或超过 3 段返回 ``None``（调用方回退整句
+    单步解析），因此「含分隔符但拆不出合法多步」的旧输入行为逐字不变。
+    """
+    if not _MULTI_SPLIT_RE.search(text):
+        return None
+    parts = [part.strip() for part in _MULTI_SPLIT_RE.split(text)]
+    parts = [part for part in parts if part]
+    if not 2 <= len(parts) <= _MAX_MULTI_STEPS:
+        return None
+    cleaned: list[str] = []
+    for part in parts:
+        for connector in _LEADING_CONNECTORS:
+            if part.startswith(connector):
+                part = part[len(connector) :].strip()
+                break
+        if part:
+            cleaned.append(part)
+    if len(cleaned) < 2:
+        return None
+    return cleaned
+
+
+def _entity_candidates(
+    kind: Literal["item", "npc"], perception: PerceptionSlice
+) -> list[EntityRef]:
+    """取该 kind 的可见实体（``npc`` 同时覆盖 NPC 与同房间其他角色实体）。"""
+    if kind == "item":
+        return [entity for entity in perception.visible_entities if entity.kind == "item"]
+    return [entity for entity in perception.visible_entities if entity.kind in {"npc", "character"}]
+
+
+def resolve_entity_arg(
+    kind: Literal["item", "npc"], value: str, perception: PerceptionSlice
+) -> str | None:
+    """把「实体展示名/简称/别名」解析为可见实体 ID（契约 §5.3 的实体名→ID 映射）。
+
+    顺序与既有匹配 helper 一致：精确 ID → 全名子串 → 名称片段别名 → difflib 模糊。
+    以内部 ID 前缀开头（``item_``/``npc_``/``char_``）但未精确命中时**不做模糊**，
+    直接返回 ``None``（调用方保留原值，交 gate 报 NOT_FOUND，避免把错 ID 映射成别的实体）。
+    """
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    entities = _entity_candidates(kind, perception)
+    for entity in entities:
+        if entity.id == text:
+            return entity.id
+    matched = _match_entity_exact(text, entities)
+    if matched is None:
+        matched = _match_entity_alias(text, entities)
+    if matched is None and not text.startswith(_ENTITY_ID_PREFIXES[kind]):
+        matched = _match_entity_fuzzy(text, entities)
+    return matched.id if matched is not None else None
+
+
+def _normalize_args(args: Mapping[str, Any], perception: PerceptionSlice) -> dict[str, Any]:
+    """映射 ``item_id``/``npc_id`` 展示名；未知/越界值原样保留（交 gate 报 NOT_FOUND）。"""
+    mapped = dict(args)
+    item_value = mapped.get("item_id")
+    if isinstance(item_value, str):
+        resolved_item = resolve_entity_arg("item", item_value, perception)
+        if resolved_item is not None:
+            mapped["item_id"] = resolved_item
+    npc_value = mapped.get("npc_id")
+    if isinstance(npc_value, str):
+        resolved_npc = resolve_entity_arg("npc", npc_value, perception)
+        if resolved_npc is not None:
+            mapped["npc_id"] = resolved_npc
+    return mapped
+
+
+def normalize_parse_outcome(outcome: ParseOutcome, perception: PerceptionSlice) -> ParseOutcome:
+    """把解析结果里的实体展示名映射为可见实体 ID（顶层 args / steps / 候选参数）。
+
+    - 只改 ``item_id``/``npc_id``；未知/越界值原样保留（gate 报 NOT_FOUND，零写入）；
+    - ``steps`` 内每步同样映射，``intent.params/target`` 与顶层 ``args`` 保持一致；
+    - 无任何变化时返回原对象（避免无谓的 model_copy，便于调用方判断恒等）。
+    """
+    new_args = _normalize_args(outcome.args, perception)
+    new_candidate_args = (
+        _normalize_args(outcome.candidate_args, perception) if outcome.candidate_args else {}
+    )
+    new_steps = tuple(
+        step.model_copy(update={"args": _normalize_args(step.args, perception)})
+        for step in outcome.steps
+    )
+    new_intent = outcome.intent
+    if new_intent is not None and new_args != outcome.args:
+        target = new_intent.target
+        if isinstance(target, str):
+            for key in ("item_id", "npc_id"):
+                old_value = outcome.args.get(key)
+                if isinstance(old_value, str) and target == old_value:
+                    mapped_value = new_args.get(key, target)
+                    if isinstance(mapped_value, str):
+                        target = mapped_value
+        new_intent = new_intent.model_copy(update={"params": new_args, "target": target})
+    if (
+        new_args == outcome.args
+        and new_candidate_args == outcome.candidate_args
+        and new_steps == outcome.steps
+        and new_intent is outcome.intent
+    ):
+        return outcome
+    return outcome.model_copy(
+        update={
+            "args": new_args,
+            "candidate_args": new_candidate_args,
+            "steps": new_steps,
+            "intent": new_intent,
+        }
+    )
+
+
+__all__ = [
+    "DeterministicIntentParser",
+    "normalize_parse_outcome",
+    "resolve_entity_arg",
+]

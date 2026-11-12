@@ -84,6 +84,13 @@ class EventType(str, Enum):
     # H4/L1 加法：可重复的环境伤害（story 枯井寒气等）；旧场景永不产生该事件，
     # reducer 只改 actor 的 hp（clamp 0..max_hp），不改背包/位置/其他字段。
     ENVIRONMENT_DAMAGE = "ENVIRONMENT_DAMAGE"
+    # R7/D-N6（用户批准新增 EventType「行动自由度」动作包）：攻击/放下/给予/临场动作。
+    # 只由 freedom 工具（tools/builtin/freedom.py）产生；旧 m2/m3/m4 场景不注册这些工具
+    # （``build_m2_tool_registry`` 未改），因此旧 golden 永不产生新事件、逐字不变。
+    ITEM_DROPPED = "ITEM_DROPPED"
+    ITEM_GIVEN = "ITEM_GIVEN"
+    COMBAT_RESOLVED = "COMBAT_RESOLVED"
+    IMPROVISED_ACTION = "IMPROVISED_ACTION"
 
 
 # Event.event_type 需要在 EventType 定义之后解析（模型定义在枚举之前，保持 M1 文件结构）。

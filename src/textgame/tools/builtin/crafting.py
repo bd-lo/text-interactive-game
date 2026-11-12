@@ -2,8 +2,9 @@
 
 本模块只承载 ToolSpec/JSON Schema/actor_scope/side_effect：工具函数不持有 GameState、
 不直接执行服务调用（第 7 章 §7.1 不变量 5）；执行由 tools/gate.py::ToolGate 校验后路由到
-CraftService（第 13 章 §13.5）。build_game_tool_registry() = M2 六工具 + craft_item，
-不改 build_m2_tool_registry()（旧安全用例不回归）。
+CraftService（第 13 章 §13.5）。build_game_tool_registry() = M2 六工具 + craft_item +
+R7 行动自由度四工具（attack/drop_item/give_item/improvise），不改 build_m2_tool_registry()
+（旧安全用例/旧 golden 不回归）。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pydantic import Field
 from textgame.domain.models import ResolutionPolicy, SideEffect
 from textgame.domain.results import ErrorCode, Result
 from textgame.services.tool_context import ToolContext
+from textgame.tools.builtin.freedom import attack, drop_item, give_item, improvise
 from textgame.tools.builtin.m2 import build_m2_tool_registry
 from textgame.tools.decorators import tool
 from textgame.tools.registry import ToolRegistry
@@ -49,9 +51,17 @@ def craft_item(
 
 
 def build_game_tool_registry() -> ToolRegistry:
-    """游戏完整工具注册表：M2 六工具 + M4 craft_item（M2 注册表本身不变）。"""
+    """游戏完整工具注册表：M2 七工具 + M4 craft_item + R7 行动自由度四工具。
+
+    ``build_m2_tool_registry()`` 本身不变：旧场景/旧 golden 的工具白名单与行为逐字不变，
+    R7 新工具只在本注册表（生产组合根）中可见。
+    """
     registry = build_m2_tool_registry()
     registry.register(craft_item)
+    registry.register(attack)
+    registry.register(drop_item)
+    registry.register(give_item)
+    registry.register(improvise)
     return registry
 
 

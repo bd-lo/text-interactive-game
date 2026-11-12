@@ -32,13 +32,27 @@ from .types import CheckResult, DiceRoll, Modifier, RandomSource
 # L0 工具集合 (M2 六工具子集): 只读工具恒允许; 写工具按第 10 章 10.1 L0 检查。
 READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset({"look"})
 PRECONDITION_TOOLS: Final[frozenset[str]] = frozenset(
-    {"move_to", "take_item", "use_item", "talk_to", "craft_item"}
+    {
+        "move_to",
+        "take_item",
+        "use_item",
+        "talk_to",
+        "craft_item",
+        # R7 行动自由度动作包（契约 §4）：attack/drop_item/give_item 为确定性 L0，
+        # improvise 另由 agent_assisted_tools 触发 needs_judge（裁判链路）。
+        "attack",
+        "drop_item",
+        "give_item",
+        "improvise",
+    }
 )
 BACKPACK_CAPACITY: Final[int] = 64
 
 #: M5E-2 裁判拒绝/兜底时给玩家的中文短句（不含内部 ID/英文，可被编排层 hint 过滤展示）。
 _JUDGE_EVIDENCE_REJECTED = "裁判证据不足：降级为确定性保守判定。"
 _JUDGE_FALLBACK_DENIED = "裁判不可用：降级为确定性保守判定。"
+#: R7：裁判不可用时 improvise 的保守拒绝（明确说「世界没有确认」，不产生任何效果）。
+_IMPROVISE_FALLBACK_DENIED = "裁判不可用：这个临场动作没有被世界确认。"
 
 
 def _allowed() -> Result:
@@ -90,10 +104,13 @@ class RuleEngine:
     ) -> Result:
         """L0 硬约束 (第 10 章 10.1): 不满足直接 ``Result.fail``, 零事件。
 
-        规则 (M2 六工具 + M4 ``craft_item``): ``look`` 恒允许; ``move_to`` 方向合法且
-        出口存在; ``take_item`` 物品在当前房间且背包未满 (<64); ``use_item`` 物品在背包;
+        规则 (M2 六工具 + M4 ``craft_item`` + R7 动作包): ``look`` 恒允许; ``move_to`` 方向
+        合法且出口存在; ``take_item`` 物品在当前房间且背包未满 (<64); ``use_item`` 物品在背包;
         ``talk_to`` NPC 与 actor 同房间; ``craft_item`` 只做最低形状检查（actor 存在、
         mode 合法、recipe 模式 recipe_id 非空；材料/工位等深度校验留 ``CraftService``）；
+        ``attack`` NPC 存在且与 actor 同房间; ``drop_item`` 物品在背包; ``give_item`` 物品在
+        背包且 NPC 同房间; ``improvise`` actor 存在 + ``action_text`` 为 1..200 字非空文本
+        （该工具在 ``agent_assisted_tools`` 中时经 ``_allowed_for`` 自动带 ``needs_judge``）；
         未知工具 → ``NOT_ALLOWED``。
         成功返回 ``data={"allowed": True, "reason": ""}``; 失败 ``events=[]``。
         ``turn_id``/``save_seed`` 为确定性判定上下文预留 (M3 Judge/派生需要), L0 不使用。
@@ -139,6 +156,39 @@ class RuleEngine:
             item_id = args.get("item_id")
             if not isinstance(item_id, str) or item_id not in actor.inventory:
                 return Result.fail(ErrorCode.NOT_FOUND, f"item {item_id!r} is not in inventory")
+            return self._allowed_for(tool)
+        # R7 动作包（契约 §4）：只有形状/可见性 L0；命中/伤害等语义在 ActionService/reducer。
+        if tool == "attack":
+            npc_id = args.get("npc_id")
+            npc = state.npcs.get(npc_id) if isinstance(npc_id, str) else None
+            if npc is None or npc.room_id != actor.location:
+                return Result.fail(ErrorCode.NOT_FOUND, f"npc {npc_id!r} is not here")
+            return self._allowed_for(tool)
+        if tool == "drop_item":
+            item_id = args.get("item_id")
+            if not isinstance(item_id, str) or item_id not in actor.inventory:
+                return Result.fail(ErrorCode.NOT_FOUND, f"item {item_id!r} is not in inventory")
+            return self._allowed_for(tool)
+        if tool == "give_item":
+            item_id = args.get("item_id")
+            if not isinstance(item_id, str) or item_id not in actor.inventory:
+                return Result.fail(ErrorCode.NOT_FOUND, f"item {item_id!r} is not in inventory")
+            npc_id = args.get("npc_id")
+            npc = state.npcs.get(npc_id) if isinstance(npc_id, str) else None
+            if npc is None or npc.room_id != actor.location:
+                return Result.fail(ErrorCode.NOT_FOUND, f"npc {npc_id!r} is not here")
+            return self._allowed_for(tool)
+        if tool == "improvise":
+            action_text = args.get("action_text")
+            if (
+                not isinstance(action_text, str)
+                or not action_text.strip()
+                or len(action_text) > 200
+            ):
+                return Result.fail(
+                    ErrorCode.INVALID_INPUT,
+                    "action_text must be a non-empty string of 1..200 chars",
+                )
             return self._allowed_for(tool)
         # tool == "talk_to"
         npc_id = args.get("npc_id")
@@ -192,9 +242,13 @@ class RuleEngine:
         纯计算、零事件；``ctx``/``proposal``/``snapshot`` 只作签名对齐（第 11 章 §11.2）。
         M5E-2 无任何 ``agent_assisted`` 工具的确定性兜底规则可查（生产该集合为空），
         因此统一返回否定 ``Result``（``NOT_ALLOWED`` + 中文保守提示），由 ``Resolver`` 落为
-        ``rejected``；未来接入具体工具时可在本方法内按 ``Ruleset`` 扩展保守规则。
+        ``rejected``；R7：``improvise`` 使用专属中文文案（「这个临场动作没有被世界确认。」），
+        其余工具保持原文案。未来接入具体工具时可在本方法内按 ``Ruleset`` 扩展保守规则。
         """
-        del ctx, proposal, snapshot  # 纯函数签名对齐；M5E-2 保守拒绝
+        del ctx, snapshot  # 纯函数签名对齐；保守拒绝
+        tool = getattr(proposal, "tool", None)
+        if tool == "improvise":
+            return Result.fail(ErrorCode.NOT_ALLOWED, _IMPROVISE_FALLBACK_DENIED)
         return Result.fail(ErrorCode.NOT_ALLOWED, _JUDGE_FALLBACK_DENIED)
 
     def check(

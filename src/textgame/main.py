@@ -138,8 +138,8 @@ def _build_app(launcher_controller: LauncherController | None = None) -> FastAPI
     )
     registry = build_game_tool_registry()
     gate = ToolGate(registry=registry, query=query, action=action, craft=craft_service)
-    # M5E-2：needs_judge 生产点由 registry 策略派生（当前 0 个 agent_assisted 工具 → 空集；
-    # 默认 RuleEngine 行为逐字不变，裁判分支不可达）。
+    # M5E-2 needs_judge 生产点由 registry 策略派生：R7 起 `improvise` 为首个
+    # agent_assisted 工具（集合={"improvise"}），裁判分支在生产可达；其余工具仍确定性。
     rules = RuleEngine(agent_assisted_tools=registry.agent_assisted_tools())
     save_seed_default = save_seed_from_settings(settings.seed)
     actors = ActorDirectory(nonplayer_tags=M3_NONPLAYER_TAGS)
@@ -158,7 +158,8 @@ def _build_app(launcher_controller: LauncherController | None = None) -> FastAPI
         actor_id: LLMCharacterAgent(llm_client, fallback=deterministic_character_agent)
         for actor_id in M3_NPC_PLANS
     }
-    # M5E-2 裁判接线：needs_judge 生产点当前为空集 → 生产零裁判调用（机制就绪）。
+    # M5E-2 + R7 裁判接线：needs_judge 生产点现为 {"improvise"} → 仅规则空白动作调用裁判
+    # （advisory、每回合≤1、离线/失败确定性兜底）；其余动作零裁判调用。
     judge: JudgeAgentLike | None = LLMJudgeAgent(llm_client)
     audit_service = AuditService(repo)
     parser = IntentParseAgent(
