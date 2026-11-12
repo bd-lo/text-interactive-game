@@ -31,6 +31,7 @@ function makeRouter() {
     history: createMemoryHistory(),
     routes: [
       { path: '/scenarios', name: 'scenarios', component: { template: '<div>scenarios</div>' } },
+      { path: '/scenarios/editor', name: 'scenario-editor', component: { template: '<div>editor</div>' } },
       { path: '/scenarios/import', name: 'scenario-import', component: ScenarioImportView },
       {
         path: '/scenarios/:scenarioId',

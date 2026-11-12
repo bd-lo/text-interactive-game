@@ -4,8 +4,10 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import { vReveal } from '@/directives/reveal'
+import { exportScenario } from '@/api/client'
 import { useGameStore } from '@/stores/game'
 import { useScenariosStore } from '@/stores/scenarios'
+import { downloadTextFile } from '@/utils/download'
 import type { PlayerErrorInfo } from '@/utils/errors'
 import { formatDateTime } from '@/utils/labels'
 import {
@@ -23,6 +25,9 @@ const game = useGameStore()
 const scenarioId = computed<string>(() => String(route.params.scenarioId ?? ''))
 const showRetry = computed<boolean>(() => store.detailError !== null)
 const createError = ref<PlayerErrorInfo | null>(null)
+const exportBusy = ref(false)
+const exportError = ref<PlayerErrorInfo | null>(null)
+const exportNotice = ref('')
 
 const detail = computed(() => store.detail)
 const sections = computed(() =>
@@ -73,6 +78,29 @@ async function onDelete(): Promise<void> {
   }
 }
 
+/** N1-032 分享：调用导出端点 → 浏览器下载 `<slug>.json`（只读 GET，零写入）。 */
+async function onExport(): Promise<void> {
+  exportBusy.value = true
+  exportError.value = null
+  exportNotice.value = ''
+  try {
+    const file = await exportScenario(scenarioId.value)
+    if (!downloadTextFile(file.filename, file.json)) {
+      exportError.value = {
+        title: '当前浏览器不支持下载',
+        message: '请展开下方「原始 JSON」面板复制内容自行保存。',
+        detail: 'downloadTextFile 返回 false（缺少 Blob/ObjectURL 支持）',
+      }
+      return
+    }
+    exportNotice.value = `已导出 ${file.filename}（可直接在「导入场景」页再次导入）`
+  } catch (error) {
+    exportError.value = describeScenarioError(error)
+  } finally {
+    exportBusy.value = false
+  }
+}
+
 onMounted(() => {
   void load()
 })
@@ -106,6 +134,23 @@ watch(scenarioId, () => {
       >
         {{ game.busy ? '正在开局…' : '按此场景开局' }}
       </button>
+      <button
+        class="btn btn-small btn-secondary"
+        type="button"
+        data-testid="scenario-export"
+        :disabled="detail === null || exportBusy"
+        @click="onExport"
+      >
+        {{ exportBusy ? '正在导出…' : '导出 JSON' }}
+      </button>
+      <RouterLink
+        v-if="detail !== null"
+        class="btn btn-small btn-secondary"
+        data-testid="scenario-edit"
+        :to="{ name: 'scenario-editor', query: { from: scenarioId } }"
+      >
+        以此为基础编辑
+      </RouterLink>
       <button
         v-if="!store.deleteArmed"
         class="btn btn-small btn-secondary"
@@ -142,6 +187,12 @@ watch(scenarioId, () => {
       :message="store.deleteError?.message ?? ''"
       :detail="store.deleteError?.detail"
     />
+    <ErrorBanner
+      :title="exportError?.title"
+      :message="exportError?.message ?? ''"
+      :detail="exportError?.detail"
+    />
+    <p v-if="exportNotice !== ''" class="panel editor-notice" role="status">{{ exportNotice }}</p>
 
     <p v-if="store.detailLoading" class="muted" role="status">正在读取场景…</p>
     <p v-else-if="detail === null && store.detailError === null" class="muted" role="status">

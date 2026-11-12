@@ -15,10 +15,13 @@ import { defineStore } from 'pinia'
 
 import {
   ApiClientError,
+  TurnStreamBusinessError,
   createGame,
   getGame,
+  getLlmSettings,
   getPlayerView,
   getReplay,
+  streamTurn as streamTurnApi,
   submitTurn as submitTurnApi,
 } from '@/api/client'
 import type {
@@ -30,6 +33,7 @@ import type {
   GameViewResponse,
   ReplayEvent,
   TurnResult,
+  TurnStreamEvent,
 } from '@/api/types'
 import { describeError, describeTurnFailure } from '@/utils/errors'
 import {
@@ -40,12 +44,21 @@ import {
   type HistoryEntry,
 } from '@/utils/history'
 import { clear as clearIdempotencyKey, getOrCreate } from '@/utils/idempotency'
+import { shouldStreamNarrative } from '@/utils/llm'
 import { rememberRecentGame } from '@/utils/recentGames'
 
 /** replay 分页上限（服务端 `limit` 1..500）；历史重建按页拉满后继续。 */
 const HISTORY_PAGE_SIZE = 500
 /** 历史重建最多翻页数（500×10 条事件足够覆盖长时间存档，防御恶意大档）。 */
 const HISTORY_MAX_PAGES = 10
+/** 流式正文显示上限（服务端已限 150+64；防御异常长流打爆 DOM/内存）。 */
+const STREAM_TEXT_MAX = 4000
+
+/**
+ * 正在进行的流式回合取消器（模块级，不放进 Pinia state 以免 devtools 序列化异常）。
+ * 取消只停止**显示**；服务端仍会完成提交（D-N2-5：断连不撤销）。
+ */
+let activeStreamController: AbortController | null = null
 
 /** 叙事来源（与 `TurnResult.events[].result.narrative_source` 契约一致）。 */
 export type NarrativeSource = 'llm' | 'template' | ''
@@ -117,6 +130,15 @@ interface GameState {
   canRetry: boolean
   lastInput: string
   pendingKey: string | null
+  /** 流式叙事阶段 1（N2-039）：LLM 已启用时才尝试流式；失败降级 `/turns` 一次（不自动重试）。 */
+  streamingAvailable: boolean
+  streaming: boolean
+  /** 流式进行中的显示文本（delta 追加 / replace 覆盖；done 后用 done.result.text 校准并清空）。 */
+  streamText: string
+  /** 取消流式显示后的中性提示（不是错误；服务端可能已提交）。 */
+  streamNotice: string
+  /** 流式已失败并降级同步：手动重试应显式走普通 `/turns`（按钮文案「重试（同步）」）。 */
+  retrySyncOnly: boolean
 }
 
 function initialState(): GameState {
@@ -146,6 +168,11 @@ function initialState(): GameState {
     canRetry: false,
     lastInput: '',
     pendingKey: null,
+    streamingAvailable: false,
+    streaming: false,
+    streamText: '',
+    streamNotice: '',
+    retrySyncOnly: false,
   }
 }
 
@@ -215,6 +242,10 @@ export const useGameStore = defineStore('game', {
       this.lastEffects = []
       this.lastSuggestedActions = []
       this.view = null
+      this.streaming = false
+      this.streamText = ''
+      this.streamNotice = ''
+      this.retrySyncOnly = false
     },
     /** 切换/载入对局前清空派生状态：加载失败时不得继续展示上一个对局（R-22）。 */
     resetForLoad(): void {
@@ -237,6 +268,10 @@ export const useGameStore = defineStore('game', {
       this.view = null
       this.lastInput = ''
       this.pendingKey = null
+      this.streaming = false
+      this.streamText = ''
+      this.streamNotice = ''
+      this.retrySyncOnly = false
     },
     applySnapshot(snapshot: GameViewResponse): void {
       this.gameId = snapshot.game_id
@@ -388,6 +423,8 @@ export const useGameStore = defineStore('game', {
       if (serverVersion !== null) {
         this.version = Math.max(this.version, serverVersion)
       }
+      this.retrySyncOnly = false
+      this.streamNotice = ''
       this.errorCode = 'CONFLICT'
       this.canRetry = false
       try {
@@ -403,7 +440,140 @@ export const useGameStore = defineStore('game', {
       this.history = appendNotice(this.history, '（对局已在别处推进，这次指令未生效）')
       this.canRetry = true
     },
-    async submitTurn(input: string): Promise<void> {
+    /**
+     * 探测服务端是否已启用 LLM：只有 `enabled=true` 才尝试流式（ADR D-N2-6）。
+     * 读取失败/离线一律回退 false → 完全走既有 `POST /turns`（离线路径零变化）。
+     */
+    async refreshStreamingAvailability(): Promise<void> {
+      try {
+        this.streamingAvailable = shouldStreamNarrative(await getLlmSettings())
+      } catch {
+        this.streamingAvailable = false
+      }
+    },
+    /** 取消正在进行的流式显示：只停止显示，不撤销服务端提交（D-N2-5）；busy 由 submitTurn 收尾释放。 */
+    cancelStream(): void {
+      if (activeStreamController !== null) {
+        activeStreamController.abort()
+      }
+    },
+    /** 流式事件 → 显示文本：`delta` 追加、`replace` 覆盖（`done`/`error` 由调用链处理）。 */
+    applyStreamEvent(event: TurnStreamEvent): void {
+      if (event.type === 'delta') {
+        this.streamText = (this.streamText + event.text).slice(0, STREAM_TEXT_MAX)
+      } else if (event.type === 'replace') {
+        this.streamText = event.text.slice(0, STREAM_TEXT_MAX)
+      }
+    },
+    /** 成功/业务失败回合的统一收尾（流式 `done.result` 与普通 `/turns` 共用同一口径）。 */
+    async handleTurnResult(result: TurnResult, actionName: string): Promise<void> {
+      if (result.ok) {
+        clearIdempotencyKey(actionName)
+        this.pendingKey = null
+        this.canRetry = false
+        this.retrySyncOnly = false
+        this.lastText = result.text
+        this.lastEffects = result.effects
+        this.lastSuggestedActions = result.suggested_actions
+        this.version = result.version
+        const source = narrativeSourceFromResult(result)
+        if (source !== '') {
+          this.narrativeSource = source
+        }
+        // R-23：冒险记录 = 事件记录。零事件只读回合（看/背包）没有 Event，刷新后 replay
+        // 无法重建；因此不写入 history，只更新 lastText，避免刷新前后记录不一致。
+        if (result.events.length > 0) {
+          this.history = appendNarrative(this.history, {
+            text: result.text,
+            turnId: result.turn_id,
+          })
+        }
+        await this.refreshAfterTurn()
+        return
+      }
+      // 业务失败：HTTP 200 + ok=false，零写入；同一输入重提视为新逻辑动作。
+      clearIdempotencyKey(actionName)
+      this.pendingKey = null
+      this.lastEffects = result.effects
+      this.lastSuggestedActions = result.suggested_actions
+      if (result.error_code === 'CONFLICT') {
+        await this.healConflict(result.version, result.text)
+        return
+      }
+      this.retrySyncOnly = false
+      this.canRetry = false
+      this.captureTurnFailure(result.error_code, result.text)
+      this.history = appendNotice(this.history)
+    },
+    /** 传输/协议异常的统一收尾（普通 `/turns` 与流式降级后的同步请求共用）。 */
+    async handleTurnError(error: unknown, actionName: string): Promise<void> {
+      if (error instanceof ApiClientError && error.isConflict) {
+        clearIdempotencyKey(actionName)
+        this.pendingKey = null
+        await this.healConflict(null, error.message)
+      } else {
+        // 网络/超时失败：保留幂等键 → 用户手动重试时服务端可回放首次结果。
+        this.captureError(error)
+        this.canRetry = true
+      }
+    },
+    /** 流式 `error` 事件（回合未提交）：按既有业务失败口径处理，**不降级同步**（避免重复提交）。 */
+    async handleStreamBusinessFailure(
+      error: TurnStreamBusinessError,
+      actionName: string,
+    ): Promise<void> {
+      clearIdempotencyKey(actionName)
+      this.pendingKey = null
+      if (error.code === 'CONFLICT') {
+        await this.healConflict(null, error.message)
+        return
+      }
+      this.retrySyncOnly = false
+      this.canRetry = false
+      this.captureTurnFailure(error.code, error.message)
+      this.history = appendNotice(this.history)
+    },
+    /**
+     * 尝试流式一次：`true` = 已处理（成功/业务失败/用户取消）；
+     * `false` = 传输或协议失败（半截文本已清空），由调用方降级普通 `/turns` **恰好一次**。
+     */
+    async streamOnce(input: string, actionKey: string, actionName: string): Promise<boolean> {
+      this.streaming = true
+      this.streamText = ''
+      const controller = new AbortController()
+      activeStreamController = controller
+      try {
+        const result = await streamTurnApi(
+          { game_id: this.gameId, input, expected_version: this.version },
+          actionKey,
+          { signal: controller.signal, onEvent: (event) => this.applyStreamEvent(event) },
+        )
+        await this.handleTurnResult(result, actionName)
+        return true
+      } catch (error) {
+        if (error instanceof ApiClientError && error.code === 'CANCELLED') {
+          // 取消：不卡 busy、不自动降级/重试；保留幂等键，手动「重试（同步）」可安全确认结果。
+          this.streamText = ''
+          this.streamNotice =
+            '已取消流式显示。服务端可能仍会完成这一回合：可点「刷新」查看，或点「重试（同步）」确认结果。'
+          this.canRetry = true
+          this.retrySyncOnly = true
+          return true
+        }
+        if (error instanceof TurnStreamBusinessError) {
+          await this.handleStreamBusinessFailure(error, actionName)
+          return true
+        }
+        // 传输/协议/超时：丢弃半截文本；先自动降级同步一次（不提示重试、不循环）。
+        this.streamText = ''
+        this.retrySyncOnly = true
+        return false
+      } finally {
+        this.streaming = false
+        activeStreamController = null
+      }
+    },
+    async submitTurn(input: string, options: { forceSync?: boolean } = {}): Promise<void> {
       const text = input.trim()
       if (this.busy || this.gameId === '' || text === '') {
         return
@@ -413,61 +583,34 @@ export const useGameStore = defineStore('game', {
       this.lastEffects = []
       this.lastSuggestedActions = []
       this.lastInput = text
+      this.streamNotice = ''
+      this.retrySyncOnly = false
+      this.streamText = ''
       // 同一逻辑动作：手动重试复用 pendingKey；新动作由 version 派生新键。
       const actionName = `turn:${this.gameId}:${this.version}`
       const actionKey = this.pendingKey ?? getOrCreate(actionName)
       this.pendingKey = actionKey
       try {
+        const useStream = this.streamingAvailable && options.forceSync !== true
+        if (useStream) {
+          const settled = await this.streamOnce(text, actionKey, actionName)
+          if (settled) {
+            return
+          }
+          // 流式不可用/失败 → 降级普通 /turns **恰好一次**（不是自动重试；失败后由玩家手动重试）。
+          this.retrySyncOnly = true
+        }
         const result = await submitTurnApi(
           { game_id: this.gameId, input: text, expected_version: this.version },
           actionKey,
         )
-        if (result.ok) {
-          clearIdempotencyKey(actionName)
-          this.pendingKey = null
-          this.canRetry = false
-          this.lastText = result.text
-          this.lastEffects = result.effects
-          this.lastSuggestedActions = result.suggested_actions
-          this.version = result.version
-          const source = narrativeSourceFromResult(result)
-          if (source !== '') {
-            this.narrativeSource = source
-          }
-          // R-23：冒险记录 = 事件记录。零事件只读回合（看/背包）没有 Event，刷新后 replay
-          // 无法重建；因此不写入 history，只更新 lastText，避免刷新前后记录不一致。
-          if (result.events.length > 0) {
-            this.history = appendNarrative(this.history, {
-              text: result.text,
-              turnId: result.turn_id,
-            })
-          }
-          await this.refreshAfterTurn()
-          return
-        }
-        // 业务失败：HTTP 200 + ok=false，零写入；同一输入重提视为新逻辑动作。
-        clearIdempotencyKey(actionName)
-        this.pendingKey = null
-        this.lastEffects = result.effects
-        this.lastSuggestedActions = result.suggested_actions
-        if (result.error_code === 'CONFLICT') {
-          await this.healConflict(result.version, result.text)
-          return
-        }
-        this.canRetry = false
-        this.captureTurnFailure(result.error_code, result.text)
-        this.history = appendNotice(this.history)
+        await this.handleTurnResult(result, actionName)
       } catch (error) {
-        if (error instanceof ApiClientError && error.isConflict) {
-          clearIdempotencyKey(actionName)
-          this.pendingKey = null
-          await this.healConflict(null, error.message)
-        } else {
-          // 网络/超时失败：保留幂等键 → 用户手动重试时服务端可回放首次结果。
-          this.captureError(error)
-          this.canRetry = true
-        }
+        await this.handleTurnError(error, actionName)
       } finally {
+        this.streaming = false
+        this.streamText = ''
+        activeStreamController = null
         this.busy = false
       }
     },
@@ -476,7 +619,8 @@ export const useGameStore = defineStore('game', {
       if (!this.canRetry || this.lastInput === '') {
         return
       }
-      await this.submitTurn(this.lastInput)
+      const forceSync = this.retrySyncOnly
+      await this.submitTurn(this.lastInput, { forceSync })
     },
   },
 })

@@ -68,10 +68,12 @@ watch(
   <section class="panel narrative-panel" aria-label="冒险记录">
     <h3 class="panel-title">冒险记录</h3>
     <p v-if="loading" class="muted" role="status">正在载入冒险记录…</p>
+    <!-- 文本流语义：role="log"（隐式 aria-live=polite）+ 只播报追加行，读屏不会重复整段历史。 -->
     <ol
       v-else-if="entries.length > 0"
       ref="scroller"
       class="narrative-history"
+      role="log"
       aria-live="polite"
       aria-relevant="additions"
     >

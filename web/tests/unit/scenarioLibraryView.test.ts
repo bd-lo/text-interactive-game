@@ -58,6 +58,7 @@ function makeRouter() {
       { path: '/', name: 'home', component: { template: '<div>home</div>' } },
       { path: '/game/:id', name: 'game', component: { template: '<div>game</div>' } },
       { path: '/scenarios', name: 'scenarios', component: ScenarioLibraryView },
+      { path: '/scenarios/editor', name: 'scenario-editor', component: { template: '<div>editor</div>' } },
       { path: '/scenarios/import', name: 'scenario-import', component: { template: '<div>import</div>' } },
       {
         path: '/scenarios/:scenarioId',

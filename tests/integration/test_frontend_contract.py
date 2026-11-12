@@ -13,7 +13,12 @@
 - `/cards/generate` 深链由静态托管 SPA fallback 返回 `index.html`（D-M6-5①，刷新不 404）；
 - 启动器控制面（`/api/v1/app/status|heartbeat|shutdown`）：方法/路径/请求体与前端 API_PATHS 一致
   （status 永远 200；页内退出 body `{"confirm": true}`；控制面无领域副作用、不要求 Idempotency-Key）；
-- 前端源码静态禁入：禁 `v-html`/`innerHTML`/`eval`/`EventSource`/自动定时重试（第 23 章 §23.7、D-M6-6④）。
+- 场景分享（N1-032）：`GET /api/v1/scenarios/{scenario_id}/export` 只读 GET 进入前端 `API_PATHS`
+  （`exportScenario`），无 Idempotency-Key/请求体；前端 client 用 `Content-Disposition` 取 `<slug>.json`；
+- 前端源码静态禁入：禁 `v-html`/`innerHTML`/`eval`/`EventSource`/自动定时重试（第 23 章 §23.7、D-M6-6④）；
+- 流式叙事（N2-039）：`POST /api/v1/turns/stream` 的 5 个 NDJSON 事件模型 ↔ `web/src/api/types.ts`
+  的 `TurnStream*` 接口逐字段一致；前端 client 走 `fetch` + `ReadableStream`（无 SSE 客户端）；
+  离线模板路径 live 实测「单条完整 delta + done.result」且 `done.result` 字段 = `TurnResult`。
 
 契约测试以 live OpenAPI 为唯一权威：前端未接入 generate 时本文件必须失败（不允许 skip 放行）。
 """
@@ -30,6 +35,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from textgame.api.app import create_app
+from textgame.api.schemas import (
+    TurnStreamDeltaEvent,
+    TurnStreamDoneEvent,
+    TurnStreamErrorEvent,
+    TurnStreamReplaceEvent,
+    TurnStreamStartEvent,
+)
 from textgame.persistence.card_repository import SqliteCardRepository
 from textgame.persistence.database import init_schema, prepare_db
 from textgame.persistence.world_book_repository import SqliteWorldBookRepository
@@ -61,10 +73,11 @@ EXPECTED_FRONTEND_PATHS = {
     "/api/v1/world-books/import",
     "/api/v1/world-books/validate",
     "/api/v1/world-books/{world_book_id}",
-    # 用户自上传场景 JSON（design/user-scenario-modules.md §3.4）
+    # 用户自上传场景 JSON（design/user-scenario-modules.md §3.4；N1-032 增加 export 分享端点）
     "/api/v1/scenarios",
     "/api/v1/scenarios/validate",
     "/api/v1/scenarios/{scenario_id}",
+    "/api/v1/scenarios/{scenario_id}/export",
     # LLM 运行期设置（DeepSeek API Key 输入/测试/清除）
     "/api/v1/settings/llm",
     "/api/v1/settings/llm/test",
@@ -74,6 +87,8 @@ EXPECTED_FRONTEND_PATHS = {
     "/api/v1/app/status",
     "/api/v1/app/heartbeat",
     "/api/v1/app/shutdown",
+    # 流式叙事阶段 1（N2-039；独立 NDJSON 端点；禁 SSE 客户端）
+    "/api/v1/turns/stream",
 }
 
 # TS 接口 → OpenAPI schema（响应；字段集合必须一致）
@@ -762,7 +777,7 @@ def test_live_world_book_lifecycle_fields_match_frontend_types(
 
 
 def test_scenario_endpoints_consistency() -> None:
-    """用户上传场景 5 端点的方法/路径/分页与前端 API_PATHS 一致（design §3.4）。"""
+    """用户上传场景 6 端点的方法/路径/分页与前端 API_PATHS 一致（design §3.4/§6.2）。"""
     api_paths = _frontend_api_paths()
     expected = {
         "listScenarios": "/api/v1/scenarios",
@@ -770,6 +785,7 @@ def test_scenario_endpoints_consistency() -> None:
         "validateScenario": "/api/v1/scenarios/validate",
         "getScenario": "/api/v1/scenarios/{scenario_id}",
         "deleteScenario": "/api/v1/scenarios/{scenario_id}",
+        "exportScenario": "/api/v1/scenarios/{scenario_id}/export",
     }
     for name, path in expected.items():
         assert api_paths[name] == path, f"前端 API_PATHS.{name} 未指向 {path}"
@@ -778,6 +794,21 @@ def test_scenario_endpoints_consistency() -> None:
     assert set(paths["/api/v1/scenarios"]) == {"get", "post"}
     assert set(paths["/api/v1/scenarios/validate"]) == {"post"}
     assert set(paths["/api/v1/scenarios/{scenario_id}"]) == {"get", "delete"}
+
+    # N1-032 场景分享：单文件导出是只读 GET（无请求体/无 Idempotency-Key），响应 JSON 附件。
+    export_operation = paths["/api/v1/scenarios/{scenario_id}/export"]["get"]
+    assert "200" in export_operation["responses"]
+    assert "application/json" in export_operation["responses"]["200"]["content"]
+    export_headers = {
+        parameter["name"]
+        for parameter in export_operation.get("parameters", [])
+        if parameter.get("in") == "header"
+    }
+    assert "Idempotency-Key" not in export_headers
+    assert export_operation.get("requestBody") is None
+    client_source = (WEB_ROOT / "src" / "api" / "client.ts").read_text(encoding="utf-8")
+    assert "export async function exportScenario" in client_source
+    assert "Content-Disposition" in client_source
 
     # 导入：前端现状走 multipart file（后端同时接受 JSON 原文，见设计文档 §3.4）。
     import_schema = paths["/api/v1/scenarios"]["post"]["requestBody"]["content"][
@@ -964,3 +995,161 @@ def test_frontend_source_has_no_forbidden_patterns() -> None:
             if pattern.search(content):
                 violations.append(f"{path.relative_to(WEB_ROOT)}: {name}")
     assert violations == []
+
+
+# ---------------------------------------------------------------------------
+# N2-039 流式叙事前端契约（NDJSON 5 事件 ↔ web types/client ↔ 离线 live 实测）
+# ---------------------------------------------------------------------------
+
+_STREAM_PATH = "/api/v1/turns/stream"
+
+#: NDJSON `type` → types.ts 接口名（前端按 type 判别后再逐字段校验）。
+_STREAM_EVENT_TS_INTERFACES = {
+    "start": "TurnStreamStartEvent",
+    "delta": "TurnStreamDeltaEvent",
+    "replace": "TurnStreamReplaceEvent",
+    "done": "TurnStreamDoneEvent",
+    "error": "TurnStreamErrorEvent",
+}
+
+#: 后端 Pydantic 事件模型（`api/schemas.py`，`extra="forbid"`）。
+_STREAM_EVENT_MODELS = {
+    "TurnStreamStartEvent": TurnStreamStartEvent,
+    "TurnStreamDeltaEvent": TurnStreamDeltaEvent,
+    "TurnStreamReplaceEvent": TurnStreamReplaceEvent,
+    "TurnStreamDoneEvent": TurnStreamDoneEvent,
+    "TurnStreamErrorEvent": TurnStreamErrorEvent,
+}
+
+
+def test_turn_stream_event_interfaces_match_backend_models() -> None:
+    """types.ts `TurnStream*` 接口 ↔ `api/schemas.py` Pydantic 事件模型逐字段一致。"""
+    ts = _ts_interfaces()
+    for ts_name, model in _STREAM_EVENT_MODELS.items():
+        ts_fields = ts[ts_name]
+        py_fields = model.model_fields
+        assert set(ts_fields) == set(py_fields), f"{ts_name} 字段与 Pydantic 模型漂移"
+        for field_name, field in py_fields.items():
+            assert ts_fields[field_name] is False, f"{ts_name}.{field_name} 在 TS 侧不应可选"
+            if field_name == "type":
+                # 判别字段：后端有默认值，前端联合类型用字面量（必填）表达。
+                continue
+            assert field.is_required(), f"{ts_name}.{field_name} 后端应为必填"
+
+    source = TYPES_TS.read_text(encoding="utf-8")
+    assert (
+        "export type TurnStreamEventType = 'start' | 'delta' | 'replace' | 'done' | 'error'"
+        in source
+    )
+    union = re.search(r"export type TurnStreamEvent\s*=\s*(.*?)(?:\n\n|\Z)", source, re.DOTALL)
+    assert union is not None, "types.ts 缺少 TurnStreamEvent 联合类型"
+    for ts_name in _STREAM_EVENT_MODELS:
+        assert ts_name in union.group(1), f"TurnStreamEvent 联合类型缺少 {ts_name}"
+    # `done.result` 必须是既有 TurnResult（前端不新造权威结构）。
+    assert ts["TurnStreamDoneEvent"]["result"] is False
+
+
+def test_turn_stream_endpoint_contract_and_frontend_client() -> None:
+    """流式端点 OpenAPI + 前端 API_PATHS + client 静态口径（fetch/ReadableStream，无 SSE 客户端）。"""
+    openapi = _openapi()
+    assert _STREAM_PATH in openapi["paths"], "live OpenAPI 缺少 POST /api/v1/turns/stream"
+    assert set(openapi["paths"][_STREAM_PATH]) == {"post"}
+
+    operation = openapi["paths"][_STREAM_PATH]["post"]
+    body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert body_schema["$ref"] == "#/components/schemas/TurnRequestBody"
+    header_names = {
+        parameter["name"]
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "header"
+    }
+    assert "Idempotency-Key" in header_names, "流式端点必须与 /turns 同口径要求 Idempotency-Key"
+    content_types = operation["responses"]["200"]["content"]
+    assert any("application/x-ndjson" in media_type for media_type in content_types), content_types
+
+    api_paths = _frontend_api_paths()
+    assert api_paths["streamTurn"] == _STREAM_PATH
+    assert _STREAM_PATH in _frontend_paths()
+
+    client_source = (WEB_ROOT / "src" / "api" / "client.ts").read_text(encoding="utf-8")
+    assert "export async function streamTurn" in client_source
+    assert "getReader()" in client_source
+    assert "TextDecoder" in client_source
+    assert "text/event-stream" not in client_source
+
+
+def test_live_turn_stream_offline_template_contract(
+    game_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """离线（LLM 未配置）实测 NDJSON：start → 单条完整 delta → done.result=TurnResult。"""
+    from textgame.config.settings import get_settings
+
+    monkeypatch.setenv("TEXTGAME_STREAM_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        ts = _ts_interfaces()
+        client: TestClient = game_harness.client
+        created = client.post(
+            "/api/v1/games",
+            headers={"Idempotency-Key": "frontend-contract-stream-game-0001"},
+            json={"seed": 42, "scenario": "story"},
+        ).json()
+        response = client.post(
+            _STREAM_PATH,
+            headers={"Idempotency-Key": "frontend-contract-stream-turn-0001"},
+            json={
+                "game_id": created["game_id"],
+                "input": "向东走",
+                "expected_version": created["version"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "application/x-ndjson" in response.headers["content-type"]
+        events = [json.loads(line) for line in response.text.splitlines() if line.strip() != ""]
+    finally:
+        get_settings.cache_clear()
+
+    assert events, "流式响应必须至少包含 start + done"
+    assert events[0]["type"] == "start"
+    assert events[-1]["type"] == "done"
+    for event in events:
+        ts_name = _STREAM_EVENT_TS_INTERFACES[event["type"]]
+        assert set(event) == set(ts[ts_name]), f"{event['type']} 事件字段与 {ts_name} 漂移"
+
+    done = events[-1]
+    assert set(done["result"]) == set(ts["TurnResult"])
+    assert done["result"]["ok"] is True
+    # 离线模板叙事：单条完整 delta（不逐 chunk、无 replace），正文 = done.result.text
+    delta_events = [event for event in events if event["type"] == "delta"]
+    assert len(delta_events) == 1, [event["type"] for event in events]
+    assert delta_events[0]["text"] == done["result"]["text"]
+    assert not any(event["type"] == "replace" for event in events)
+
+    # 缺 Idempotency-Key → 流开始前 422（与 /turns 同口径，前端不旁路幂等）。
+    missing_key = game_harness.client.post(
+        _STREAM_PATH,
+        json={
+            "game_id": created["game_id"],
+            "input": "向东走",
+            "expected_version": created["version"],
+        },
+    )
+    assert missing_key.status_code == 422
+
+
+def test_scenario_editor_route_and_web_contract() -> None:
+    """N1-031 编辑器：`/scenarios/editor` 必须先于 `/scenarios/:scenarioId` 注册（否则被详情吞掉）。"""
+    router_source = (WEB_ROOT / "src" / "router" / "index.ts").read_text(encoding="utf-8")
+    editor_index = router_source.find("'/scenarios/editor'")
+    detail_index = router_source.find("'/scenarios/:scenarioId'")
+    assert editor_index >= 0, "router 缺少 /scenarios/editor"
+    assert detail_index >= 0, "router 缺少 /scenarios/:scenarioId"
+    assert editor_index < detail_index, "编辑器路由必须在详情路由之前注册"
+
+    view = WEB_ROOT / "src" / "views" / "ScenarioEditorView.vue"
+    assert view.is_file(), "缺少场景编辑器视图"
+    view_source = view.read_text(encoding="utf-8")
+    # 编辑器只产出 JSON：保存走 store.importText（POST /scenarios 复用），校验走 store.validate。
+    assert "store.validate(" in view_source
+    assert "store.importText(" in view_source
+    assert "scenarioEditorSaveAction(" in view_source

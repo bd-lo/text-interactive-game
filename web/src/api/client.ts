@@ -44,6 +44,8 @@ import type {
   ScenarioWarning,
   TurnRequest,
   TurnResult,
+  TurnStreamEvent,
+  TurnStreamEventType,
   WorldBookDeleteResponse,
   WorldBookDetailResponse,
   WorldBookImportResponse,
@@ -370,6 +372,17 @@ export async function getReplay(
 }
 
 /** `POST /api/v1/turns`：提交回合（写，必带幂等键）；业务失败返回 `ok=false` 不抛异常。 */
+const TURN_RESULT_PAYLOAD_LABEL = 'TurnResult'
+
+/** `TurnResult` 运行时字段校验（`POST /turns` 与流式 `done.result` 共用同一契约）。 */
+function assertTurnResultPayload(record: Record<string, unknown>): TurnResult {
+  assertKeys(record, TURN_RESULT_PAYLOAD_LABEL, TURN_RESULT_KEYS)
+  if (typeof record.ok !== 'boolean' || typeof record.version !== 'number' || !Array.isArray(record.events)) {
+    throw contractError(TURN_RESULT_PAYLOAD_LABEL, 'ok/version/events 类型不符')
+  }
+  return record as unknown as TurnResult
+}
+
 export async function submitTurn(
   body: TurnRequest,
   actionKey: string,
@@ -380,12 +393,249 @@ export async function submitTurn(
     { method: 'POST', body: JSON.stringify(body) },
     { idempotent: true, actionKey, signal },
   )
-  const record = assertRecord(payload, 'TurnResult')
-  assertKeys(record, 'TurnResult', TURN_RESULT_KEYS)
-  if (typeof record.ok !== 'boolean' || typeof record.version !== 'number' || !Array.isArray(record.events)) {
-    throw contractError('TurnResult', 'ok/version/events 类型不符')
+  return assertTurnResultPayload(assertRecord(payload, 'TurnResult'))
+}
+
+// ---------------------------------------------------------------------------
+// 流式叙事阶段 1（N2-039；ADR D-N2-1/D-N2-2/D-N2-6）
+// ---------------------------------------------------------------------------
+
+/** 流式回合整体超时（与普通回合一致：LLM 叙事可能较慢；超时后由 store 降级同步一次）。 */
+export const TURN_STREAM_TIMEOUT_MS = DEFAULT_TIMEOUT_MS
+
+/**
+ * 流内 `error` 事件（业务失败，HTTP 仍 200）：回合**未提交**。
+ * 与传输/协议错误区分开，避免 store 对业务失败做「降级同步」重复提交。
+ */
+export class TurnStreamBusinessError extends ApiClientError {
+  constructor(code: string, message: string) {
+    super(200, code, message)
+    this.name = 'TurnStreamBusinessError'
   }
-  return record as unknown as TurnResult
+}
+
+/** `streamTurn` 选项：外部取消信号、整体超时、逐事件回调（不自动重试）。 */
+export interface StreamTurnOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+  onEvent?: (event: TurnStreamEvent) => void
+}
+
+const TURN_STREAM_EVENT_KEYS: Readonly<Record<TurnStreamEventType, readonly string[]>> = {
+  start: ['type', 'turn_id', 'expected_version'],
+  delta: ['type', 'text'],
+  replace: ['type', 'text', 'reason'],
+  done: ['type', 'result'],
+  error: ['type', 'error_code', 'message'],
+}
+
+function streamContractError(label: string, detail: string): ApiClientError {
+  return new ApiClientError(200, 'INTERNAL', `${label} 与前端契约不符：${detail}`)
+}
+
+/** 单条 NDJSON 事件运行时校验；未知 `type` 返回 null（向前兼容：忽略不崩，ADR D-N2-2）。 */
+function assertStreamEvent(value: unknown): TurnStreamEvent | null {
+  const record = assertRecord(value, 'TurnStreamEvent')
+  const type = record.type
+  if (typeof type !== 'string') {
+    throw streamContractError('TurnStreamEvent', 'type 不是字符串')
+  }
+  if (!(type in TURN_STREAM_EVENT_KEYS)) {
+    return null
+  }
+  const eventType = type as TurnStreamEventType
+  const label = `TurnStream${eventType[0]?.toUpperCase() ?? ''}${eventType.slice(1)}Event`
+  assertKeys(record, label, TURN_STREAM_EVENT_KEYS[eventType])
+  switch (eventType) {
+    case 'start':
+      if (typeof record.turn_id !== 'number' || typeof record.expected_version !== 'number') {
+        throw streamContractError(label, 'turn_id/expected_version 类型不符')
+      }
+      return record as unknown as TurnStreamEvent
+    case 'delta':
+      if (typeof record.text !== 'string') {
+        throw streamContractError(label, 'text 类型不符')
+      }
+      return record as unknown as TurnStreamEvent
+    case 'replace':
+      if (typeof record.text !== 'string' || typeof record.reason !== 'string') {
+        throw streamContractError(label, 'text/reason 类型不符')
+      }
+      return record as unknown as TurnStreamEvent
+    case 'done':
+      assertTurnResultPayload(assertRecord(record.result, `${label}.result`))
+      return record as unknown as TurnStreamEvent
+    case 'error':
+      if (typeof record.error_code !== 'string' || typeof record.message !== 'string') {
+        throw streamContractError(label, 'error_code/message 类型不符')
+      }
+      return record as unknown as TurnStreamEvent
+  }
+}
+
+/** 把 Abort 相关异常归一为 CANCELLED/TIMEOUT（供 store 区分「用户取消」与「网络失败降级」）。 */
+function toStreamRequestError(
+  error: unknown,
+  timedOut: boolean,
+  cancelled: boolean,
+): ApiClientError {
+  if (timedOut) {
+    return new ApiClientError(0, 'TIMEOUT', '流式回合超时，请改用普通重试')
+  }
+  if (cancelled) {
+    return new ApiClientError(0, 'CANCELLED', '已取消流式显示')
+  }
+  if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return new ApiClientError(0, 'TIMEOUT', '流式回合超时或已取消，请重试')
+  }
+  return error instanceof ApiClientError
+    ? error
+    : new ApiClientError(0, 'INTERNAL', '流式回合网络异常，请重试')
+}
+
+/**
+ * `POST /api/v1/turns/stream`：流式执行一个回合（`fetch` + `ReadableStream`，**禁用 SSE 客户端**）。
+ *
+ * - 请求头与 `/turns` 同口径：JSON body + `Idempotency-Key`（手动重试复用同一个键）；
+ * - 按 `\\n` 分帧解析 NDJSON，5 种事件逐条运行时校验后经 `onEvent` 回调；
+ * - 返回 `done.result`（与 `/turns` 的 `TurnResult` 相同，权威文本/版本）；
+ * - 业务失败（`error` 事件）抛 `TurnStreamBusinessError`；协议/传输失败抛 `ApiClientError`
+ *   （由 store 决定是否降级同步一次；本函数**无自动重试**）；
+ * - 外部 `signal` 取消 → `ApiClientError(0,'CANCELLED')`；整体超时 → `TIMEOUT`。
+ */
+export async function streamTurn(
+  body: TurnRequest,
+  actionKey: string,
+  options: StreamTurnOptions = {},
+): Promise<TurnResult> {
+  if (actionKey.trim() === '') {
+    throw new ApiClientError(0, 'INVALID_INPUT', '缺少幂等键，不能发起流式回合')
+  }
+  const controller = new AbortController()
+  const timeoutMs = options.timeoutMs ?? TURN_STREAM_TIMEOUT_MS
+  let timedOut = false
+  let cancelled = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const forwardAbort = (): void => {
+    cancelled = true
+    controller.abort()
+  }
+  options.signal?.addEventListener('abort', forwardAbort, { once: true })
+  const headers = new Headers()
+  headers.set('Content-Type', 'application/json')
+  headers.set('Accept', 'application/x-ndjson')
+  headers.set('Idempotency-Key', actionKey)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/turns/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      let payload: unknown = null
+      try {
+        payload = await response.json()
+      } catch {
+        payload = null
+      }
+      throw parseErrorEnvelope(
+        payload,
+        response.status,
+        parseRetryAfter(response.headers.get('Retry-After')),
+      )
+    }
+    const contentType = (response.headers.get('Content-Type') ?? '').toLowerCase()
+    if (!contentType.includes('application/x-ndjson')) {
+      throw streamContractError('TurnStreamResponse', `响应不是 NDJSON（Content-Type=${contentType || '缺失'}）`)
+    }
+    const streamBody = response.body
+    if (streamBody === null) {
+      throw new ApiClientError(0, 'INTERNAL', '流式响应没有可读取的 body')
+    }
+    reader = streamBody.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    let doneResult: TurnResult | null = null
+
+    const dispatchLine = (line: string): void => {
+      const trimmed = line.trim()
+      if (trimmed === '') {
+        return
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(trimmed)
+      } catch {
+        throw streamContractError('TurnStreamEvent', '事件行不是合法 JSON')
+      }
+      const event = assertStreamEvent(parsed)
+      if (event === null) {
+        return
+      }
+      if (event.type === 'done') {
+        doneResult = event.result
+      }
+      if (event.type === 'error') {
+        throw new TurnStreamBusinessError(event.error_code, event.message)
+      }
+      try {
+        options.onEvent?.(event)
+      } catch {
+        // 回调异常不影响协议解析/回合结果
+      }
+    }
+
+    while (true) {
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch (error) {
+        throw toStreamRequestError(error, timedOut, cancelled)
+      }
+      if (chunk.done) {
+        break
+      }
+      buffer += decoder.decode(chunk.value, { stream: true })
+      let newline = buffer.indexOf('\n')
+      while (newline >= 0) {
+        dispatchLine(buffer.slice(0, newline))
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf('\n')
+      }
+    }
+    buffer += decoder.decode()
+    if (buffer !== '') {
+      dispatchLine(buffer)
+    }
+    if (doneResult === null) {
+      throw new ApiClientError(
+        200,
+        'STREAM_INCOMPLETE',
+        '流式连接提前结束，没有收到权威回合结果；请刷新对局或手动重试',
+      )
+    }
+    return doneResult
+  } catch (error) {
+    if (error instanceof DOMException) {
+      throw toStreamRequestError(error, timedOut, cancelled)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', forwardAbort)
+    if (reader !== null) {
+      try {
+        await reader.cancel()
+      } catch {
+        // 已结束/已取消的流：忽略
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,6 +1381,105 @@ export async function deleteScenario(
     { method: 'DELETE' },
     { idempotent: true, actionKey, signal },
   )
+}
+
+// ---------------------------------------------------------------------------
+// N1-032 场景分享：导出单文件 JSON（只读 GET；浏览器下载由视图负责）
+// ---------------------------------------------------------------------------
+
+export interface ScenarioExportFile {
+  /** 服务端 `Content-Disposition` 里的 `<slug>.json`（缺失时回退 `<scenario_id>.json`）。 */
+  filename: string
+  /** 场景定义 JSON 原文（可直接作为 `POST /scenarios` 的文件再次导入）。 */
+  json: string
+}
+
+const EXPORT_FILENAME_RE = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i
+
+function parseExportFilename(header: string | null, fallback: string): string {
+  if (header === null) {
+    return fallback
+  }
+  const match = EXPORT_FILENAME_RE.exec(header)
+  const raw = (match?.[1] ?? '').trim()
+  if (raw === '') {
+    return fallback
+  }
+  try {
+    const decoded = decodeURIComponent(raw)
+    return decoded === '' ? fallback : decoded
+  } catch {
+    return raw
+  }
+}
+
+/**
+ * `GET /api/v1/scenarios/{scenario_id}/export`：下载可直接再导入的单文件场景 JSON。
+ *
+ * - 只读 GET、零写入、无 `Idempotency-Key`（后端契约）；
+ * - 响应体就是场景定义原文（v1/v2 均保留 `schema_version` 与全部字段）；
+ * - 文件名取 `Content-Disposition: attachment; filename="<slug>.json"`（ASCII 安全），
+ *   缺失时回退 `<scenario_id>.json`；
+ * - 非 2xx 复用统一失败信封解析；响应体不是 JSON 对象 → 契约错误（不裸返回）。
+ */
+export async function exportScenario(
+  scenarioId: string,
+  signal?: AbortSignal,
+): Promise<ScenarioExportFile> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+  const forwardAbort = (): void => controller.abort()
+  signal?.addEventListener('abort', forwardAbort, { once: true })
+  try {
+    let response: Response
+    try {
+      response = await fetch(
+        `${API_BASE}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/export`,
+        { method: 'GET', signal: controller.signal },
+      )
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        (error.name === 'AbortError' || error.name === 'TimeoutError')
+      ) {
+        throw new ApiClientError(0, 'TIMEOUT', '请求超时或已取消，请重试')
+      }
+      throw error
+    }
+    if (!response.ok) {
+      let payload: unknown = null
+      try {
+        payload = await response.json()
+      } catch {
+        payload = null
+      }
+      throw parseErrorEnvelope(
+        payload,
+        response.status,
+        parseRetryAfter(response.headers.get('Retry-After')),
+      )
+    }
+    const text = await response.text()
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw contractError('ScenarioExport', '导出内容不是合法 JSON')
+    }
+    if (!isRecord(parsed)) {
+      throw contractError('ScenarioExport', '导出内容不是 JSON 对象')
+    }
+    return {
+      filename: parseExportFilename(
+        response.headers.get('Content-Disposition'),
+        `${scenarioId}.json`,
+      ),
+      json: text,
+    }
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', forwardAbort)
+  }
 }
 
 // ---------------------------------------------------------------------------

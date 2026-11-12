@@ -43,7 +43,8 @@ const QuitGameControl = defineAsyncComponent(() => import('@/components/QuitGame
         <QuitGameControl />
       </div>
     </header>
-    <main id="main-content" class="app-main">
+    <!-- tabindex="-1"：跳过链接与路由切换后聚焦主区域（键盘/读屏落点），不进入 Tab 序列。 -->
+    <main id="main-content" class="app-main" tabindex="-1">
       <RouterView v-slot="{ Component }">
         <Transition name="page" mode="out-in">
           <component :is="Component" />

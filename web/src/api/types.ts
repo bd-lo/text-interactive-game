@@ -16,6 +16,8 @@ export const API_PATHS = {
   getPlayerView: '/api/v1/games/{game_id}/view',
   getReplay: '/api/v1/games/{game_id}/replay',
   submitTurn: '/api/v1/turns',
+  // 流式叙事阶段 1（N2-039；独立端点，NDJSON；统一 fetch 流式，不用 SSE 客户端）
+  streamTurn: '/api/v1/turns/stream',
   listCards: '/api/v1/character-cards',
   saveCard: '/api/v1/character-cards',
   cardSchema: '/api/v1/character-cards/schema',
@@ -35,6 +37,8 @@ export const API_PATHS = {
   validateScenario: '/api/v1/scenarios/validate',
   getScenario: '/api/v1/scenarios/{scenario_id}',
   deleteScenario: '/api/v1/scenarios/{scenario_id}',
+  // N1-032 场景分享：单文件 JSON 导出（只读 GET；可直接再导入）
+  exportScenario: '/api/v1/scenarios/{scenario_id}/export',
   // LLM 运行期设置（玩家在网页里输入/测试/清除自己的 DeepSeek API Key）
   getLlmSettings: '/api/v1/settings/llm',
   saveLlmSettings: '/api/v1/settings/llm',
@@ -273,6 +277,55 @@ export interface TurnRequest {
   input: string
   expected_version: number
 }
+
+/**
+ * `POST /api/v1/turns/stream` NDJSON 事件（N2-038/N2-039；ADR D-N2-2，恰好 5 种）。
+ *
+ * 协议：每行一个 JSON 对象，`type` 为判别字段；服务端在回合完整结束后才提交。
+ * - `start`：回合开始（`turn_id` 是预告值，权威值以 `done.result.turn_id` 为准）；
+ * - `delta`：叙事增量（未校验，仅用于显示，客户端追加）；
+ * - `replace`：丢弃已显示增量并替换为权威文本（校验失败/修复/模板回退）；
+ * - `done`：`result` 与 `POST /turns` 的 `TurnResult` 完全相同（权威文本/版本/事件）；
+ * - `error`：回合未提交的业务失败（HTTP 仍 200；无 `done`）。
+ */
+export type TurnStreamEventType = 'start' | 'delta' | 'replace' | 'done' | 'error'
+
+export interface TurnStreamStartEvent {
+  type: 'start'
+  turn_id: number
+  expected_version: number
+}
+
+export interface TurnStreamDeltaEvent {
+  type: 'delta'
+  text: string
+}
+
+export interface TurnStreamReplaceEvent {
+  type: 'replace'
+  text: string
+  /** 机器可读原因：`TEMPLATE_FALLBACK` / `NARRATIVE_REVISED`（前端只消费 `text`）。 */
+  reason: string
+}
+
+export interface TurnStreamDoneEvent {
+  type: 'done'
+  result: TurnResult
+}
+
+export interface TurnStreamErrorEvent {
+  type: 'error'
+  error_code: ErrorCode
+  message: string
+}
+
+/** NDJSON 流式事件联合类型（客户端按 `type` 判别后逐事件回调）。 */
+export type TurnStreamEvent =
+  | TurnStreamStartEvent
+  | TurnStreamDeltaEvent
+  | TurnStreamReplaceEvent
+  | TurnStreamDoneEvent
+  | TurnStreamErrorEvent
 
 /** 人物卡 JSON 契约（`CharacterCard`，第 5 章 §5.7 / 第 23 章 §23.5；恰好 9 字段，不得增删）。 */
 export interface CharacterCard {

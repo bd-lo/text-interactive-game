@@ -79,6 +79,14 @@ export function shouldShowLlmBanner(
   return status !== null && !status.configured && !status.enabled && !dismissed
 }
 
+/**
+ * 是否启用流式叙事（N2-039 / D-N2-6）：只有服务端 `enabled=true`（运行时已配置并启用）才尝试；
+ * 未配置/离线/读取失败一律走既有 `POST /turns`（模板叙事单段没有流式收益，且保证离线路径零变化）。
+ */
+export function shouldStreamNarrative(status: LlmSettingsStatus | null): boolean {
+  return status?.enabled === true
+}
+
 /** 读取「横幅已关闭」标记（存储不可用 → false）。 */
 export function isLlmBannerDismissed(store: StorageLike | null = storage()): boolean {
   if (store === null) {

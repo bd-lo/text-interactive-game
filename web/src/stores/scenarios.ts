@@ -187,10 +187,15 @@ export const useScenariosStore = defineStore('scenarios', {
         this.validateBusy = false
       }
     },
-    /** 导入：客户端预检 → multipart + 幂等键 → 成功返回 scenario_id（由视图跳详情）。 */
+    /**
+     * 导入：客户端预检 → multipart + 幂等键 → 成功返回 scenario_id（由视图跳详情）。
+     *
+     * `actionName` 可选：默认 `scenario-import`（导入页）；场景编辑器按 JSON 内容哈希传入，
+     * 让「同一份内容手动重试复用同键、内容变化自动换新键」（避免同键异参 409）。
+     */
     async importText(
       text: string,
-      options: { filename?: string } = {},
+      options: { filename?: string; actionName?: string } = {},
     ): Promise<string | null> {
       this.importError = null
       this.importWarnings = []
@@ -200,7 +205,7 @@ export const useScenariosStore = defineStore('scenarios', {
         this.importError = { title: '内容不对', message: check.error, detail: check.error }
         return null
       }
-      const actionName = 'scenario-import'
+      const actionName = options.actionName ?? 'scenario-import'
       const actionKey = this.pendingImportKey ?? getOrCreate(actionName)
       this.pendingImportKey = actionKey
       this.importBusy = true

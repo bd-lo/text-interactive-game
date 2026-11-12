@@ -9,7 +9,7 @@
  * 约定：status 请求失败时整个控件静默隐藏（不在全局 header 弹错误，不打扰离线游玩）。
  */
 
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { getAppStatus, sendLauncherHeartbeat, shutdownGame } from '@/api/client'
 import type { LauncherStatus } from '@/api/types'
@@ -34,6 +34,12 @@ const status = ref<LauncherStatus | null>(null)
 const phase = ref<QuitPhase>('idle')
 const busy = ref(false)
 const error = ref<PlayerErrorInfo | null>(null)
+
+/** 焦点管理（041 a11y 批次）：确认/说明面板打开即聚焦、Esc 关闭、关闭后焦点归还触发按钮。 */
+const quitButtonEl = ref<HTMLButtonElement | null>(null)
+const confirmButtonEl = ref<HTMLButtonElement | null>(null)
+const infoCloseEl = ref<HTMLButtonElement | null>(null)
+const exitOverlayEl = ref<HTMLElement | null>(null)
 
 const errorText = computed<string>(() => {
   const info = error.value
@@ -135,6 +141,30 @@ function onInfoClose(): void {
   phase.value = 'idle'
 }
 
+/** Esc：确认面板 → 取消；说明面板 → 关闭（焦点都由 phase watcher 归还给「退出游戏」按钮）。 */
+function onEscape(): void {
+  if (phase.value === 'confirm') {
+    onCancel()
+  } else if (phase.value === 'info') {
+    onInfoClose()
+  }
+}
+
+/** 面板打开即聚焦可操作控件；关闭后焦点回到触发按钮；已退出覆盖层接管焦点（终态）。 */
+watch(phase, (next, previous) => {
+  void nextTick(() => {
+    if (next === 'confirm') {
+      confirmButtonEl.value?.focus()
+    } else if (next === 'info') {
+      infoCloseEl.value?.focus()
+    } else if (next === 'exited') {
+      exitOverlayEl.value?.focus()
+    } else if (next === 'idle' && (previous === 'confirm' || previous === 'info')) {
+      quitButtonEl.value?.focus()
+    }
+  })
+})
+
 onMounted(() => {
   document.addEventListener('visibilitychange', onVisibilityChange)
   void loadStatus()
@@ -148,9 +178,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="status !== null" class="quit-game-control">
+  <div v-if="status !== null" class="quit-game-control" @keydown.esc="onEscape">
     <button
       v-if="phase === 'idle'"
+      ref="quitButtonEl"
       class="btn btn-small btn-secondary quit-game-button"
       type="button"
       data-testid="quit-game-button"
@@ -161,6 +192,7 @@ onUnmounted(() => {
 
     <template v-else-if="phase === 'confirm'">
       <button
+        ref="confirmButtonEl"
         class="btn btn-small quit-confirm-button"
         type="button"
         data-testid="quit-confirm-button"
@@ -188,6 +220,7 @@ onUnmounted(() => {
     >
       <p class="quit-info-text">{{ QUIT_INFO_TEXT }}</p>
       <button
+        ref="infoCloseEl"
         class="btn btn-small btn-secondary"
         type="button"
         data-testid="quit-info-close"
@@ -202,12 +235,15 @@ onUnmounted(() => {
 
   <div
     v-if="phase === 'exited'"
+    ref="exitOverlayEl"
     class="exit-overlay"
     data-testid="exit-overlay"
     role="status"
     aria-live="polite"
+    aria-labelledby="exit-overlay-title"
+    tabindex="-1"
   >
-    <h2 class="exit-overlay-title">{{ EXIT_OVERLAY_TITLE }}</h2>
+    <h2 id="exit-overlay-title" class="exit-overlay-title">{{ EXIT_OVERLAY_TITLE }}</h2>
     <p class="exit-overlay-body">{{ EXIT_OVERLAY_BODY }}</p>
   </div>
 </template>

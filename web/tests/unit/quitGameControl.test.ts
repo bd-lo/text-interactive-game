@@ -56,6 +56,7 @@ beforeEach(() => {
 afterEach(() => {
   mounted?.unmount()
   mounted = null
+  document.body.innerHTML = ''
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -189,5 +190,74 @@ describe('QuitGameControl（全局「退出游戏」交互状态机）', () => {
     expect(statusCalls).toHaveLength(1)
     // 普通状态下按钮文案固定
     expect(quitButton(wrapper).text()).toBe('退出游戏')
+  })
+})
+
+describe('QuitGameControl（041 a11y：确认面板焦点管理）', () => {
+  /** 焦点断言需要真实挂到 document 上（jsdom 对游离节点不更新 activeElement）。 */
+  async function mountAttached(handler: Handler) {
+    stubFetch(handler)
+    const wrapper = mount(QuitGameControl, { attachTo: document.body })
+    mounted = wrapper
+    await flushPromises()
+    return wrapper
+  }
+
+  it('打开确认面板即聚焦「确认退出」；Esc 取消后焦点归还「退出游戏」按钮', async () => {
+    const wrapper = await mountAttached((url) =>
+      url === '/api/v1/app/status'
+        ? jsonResponse(200, LAUNCHER_STATUS)
+        : jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' }),
+    )
+
+    await quitButton(wrapper).trigger('click')
+    await flushPromises()
+    const confirm = wrapper.find('[data-testid="quit-confirm-button"]')
+    expect(document.activeElement).toBe(confirm.element)
+
+    await wrapper.find('.quit-game-control').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="quit-confirm-button"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(quitButton(wrapper).element)
+  })
+
+  it('非启动器说明面板：打开聚焦「知道了」，Esc 关闭后焦点归还', async () => {
+    const wrapper = await mountAttached((url) =>
+      url === '/api/v1/app/status'
+        ? jsonResponse(200, PLAIN_STATUS)
+        : jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' }),
+    )
+
+    await quitButton(wrapper).trigger('click')
+    await flushPromises()
+    const close = wrapper.find('[data-testid="quit-info-close"]')
+    expect(document.activeElement).toBe(close.element)
+
+    await wrapper.find('.quit-game-control').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="quit-info-panel"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(quitButton(wrapper).element)
+  })
+
+  it('已退出覆盖层：tabindex=-1 接管焦点，标题用 aria-labelledby 关联', async () => {
+    const wrapper = await mountAttached((url, init) => {
+      if (url === '/api/v1/app/status') {
+        return jsonResponse(200, LAUNCHER_STATUS)
+      }
+      if (url === '/api/v1/app/shutdown' && init?.method === 'POST') {
+        return jsonResponse(200, { ok: true, message: '游戏正在退出' })
+      }
+      return jsonResponse(500, { ok: false, error_code: 'INTERNAL', message: 'unexpected' })
+    })
+
+    await quitButton(wrapper).trigger('click')
+    await wrapper.find('[data-testid="quit-confirm-button"]').trigger('click')
+    await flushPromises()
+
+    const overlay = wrapper.find('[data-testid="exit-overlay"]')
+    const title = overlay.find('h2')
+    expect(overlay.attributes('tabindex')).toBe('-1')
+    expect(overlay.attributes('aria-labelledby')).toBe(title.attributes('id'))
+    expect(document.activeElement).toBe(overlay.element)
   })
 })

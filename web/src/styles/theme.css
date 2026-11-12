@@ -3,8 +3,12 @@
    - 两套皮肤：`:root` = 日间（默认）、`:root[data-theme='dark']` = 夜间；
    - 三层 token：语义色 → 面/描边/阴影 → 特效（极光/颗粒/聚光/粒子）；
    - 结构规则只读 token，换肤不需要改任何组件；
-   - 对比度实测（WCAG AA，正文 ≥4.5:1）：日间 fg/bg 16.63、dim/bg 6.20、
-     accent/bg 5.87、按钮文字 6.29；夜间 fg/bg 17.71、dim/bg 9.30、accent/bg 9.87。
+   - 对比度实测（WCAG 2.1 AA，正文 ≥4.5:1、UI 边界/焦点 ≥3:1；明细见
+     docs/design/a11y-checklist.md，041–042 a11y 批次重新实测）：
+     日间 fg/bg 16.63、dim/bg 6.20、accent/bg 5.87、按钮文字 6.29、
+     输入框/按钮边界（--border-strong）3.38、焦点环 4.76–5.12；
+     夜间 fg/bg 17.71、dim/bg 9.30、accent/bg 9.87、按钮 5.67、
+     输入框/按钮边界 3.23、焦点环 5.64–8.12。
    ========================================================================== */
 
 :root {
@@ -30,7 +34,9 @@
   --input-bg: rgba(255, 255, 255, 0.9);
   --overlay: rgba(246, 247, 251, 0.88);
   --border: rgba(20, 22, 43, 0.12);
-  --border-strong: rgba(20, 22, 43, 0.22);
+  /* 041–042：输入框/次要按钮/胶囊的可见边界（WCAG 2.1 1.4.11 非文本对比 ≥3:1）。
+     合成后 #8a8b95，对面板/页面底 3.38:1（原 0.22 → 1.60:1 不达标）。 */
+  --border-strong: rgba(20, 22, 43, 0.5);
   --accent-soft: rgba(79, 70, 229, 0.1);
   --danger-soft: rgba(176, 42, 55, 0.09);
   --warn-soft: rgba(138, 90, 0, 0.1);
@@ -46,7 +52,7 @@
   /* —— 阴影与焦点 —— */
   --shadow-1: 0 1px 2px rgba(20, 22, 43, 0.06), 0 14px 36px -22px rgba(20, 22, 43, 0.42);
   --shadow-pop: 0 32px 72px -28px rgba(31, 41, 90, 0.44), 0 2px 10px rgba(20, 22, 43, 0.08);
-  --ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(79, 70, 229, 0.55);
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(79, 70, 229, 0.9);
   --glow-card: 0 22px 50px -30px rgba(79, 70, 229, 0.45);
 
   /* —— 特效层（日间：柔和粉彩极光） —— */
@@ -102,7 +108,8 @@
   --input-bg: rgba(255, 255, 255, 0.06);
   --overlay: rgba(7, 8, 20, 0.9);
   --border: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
+  /* 041–042：合成后 #73737a，对输入框底/面板底 3.23:1（原 0.2 → 1.93:1 不达标）。 */
+  --border-strong: rgba(255, 255, 255, 0.36);
   --accent-soft: rgba(157, 180, 255, 0.14);
   --danger-soft: rgba(255, 138, 155, 0.12);
   --warn-soft: rgba(255, 212, 121, 0.12);
@@ -117,7 +124,7 @@
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45), 0 16px 40px -20px rgba(0, 0, 0, 0.8);
   --shadow-pop: 0 34px 80px -24px rgba(0, 0, 0, 0.95), 0 2px 12px rgba(0, 0, 0, 0.6);
-  --ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(157, 180, 255, 0.7);
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(157, 180, 255, 0.9);
   --glow-card: 0 20px 60px -26px rgba(157, 180, 255, 0.45);
 
   --ambient-1: rgba(99, 102, 241, 0.55);
@@ -255,7 +262,8 @@ samp {
   box-shadow: var(--btn-shadow);
 }
 
-.skip-link:focus {
+.skip-link:focus,
+.skip-link:focus-visible {
   left: 16px;
 }
 
@@ -477,6 +485,13 @@ samp {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 键盘焦点：叠加全局 --ring（≥3:1），鼠标聚焦保留柔和光晕，两者都能看见落点。 */
+.input:focus-visible,
+.command-text:focus-visible,
+select.input:focus-visible {
+  box-shadow: var(--ring);
 }
 
 textarea.input {
@@ -750,9 +765,10 @@ textarea.input {
   background: var(--accent-soft);
 }
 
+/* 世界书 key 徽章：旧 color: var(--accent-3) 在日间仅 2.59:1；改用强调色（日间 5.87 / 夜间 9.87）。 */
 .world-key {
   padding: 1px 8px;
-  color: var(--accent-3);
+  color: var(--accent);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
@@ -912,6 +928,63 @@ textarea.input {
   margin: 8px 0 0;
   color: var(--fg-dim);
   font-size: 0.8rem;
+}
+
+/* —— N2-039 流式叙事（LLM 已启用时的增量显示；与既有面板同皮肤） —— */
+.stream-panel {
+  border-color: var(--accent);
+  box-shadow:
+    var(--shadow-1),
+    var(--glow-card);
+}
+
+.stream-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.stream-head .panel-title {
+  margin: 0;
+}
+
+.stream-status {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+}
+
+.stream-notice {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.turn-text-streaming {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.turn-text-streaming .turn-text-body {
+  min-height: 3em;
+}
+
+.turn-text-streaming .turn-text-body::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--accent);
+  animation: caret-blink 1.1s steps(2) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-text-streaming .turn-text-body::after {
+    animation: none;
+  }
 }
 
 .history-notice-text {
@@ -1693,6 +1766,149 @@ textarea.input {
 }
 
 /* ==========================================================================
+   N1-031 场景编辑器（表单 ↔ JSON；沿用 Aurora Glass 面板/描边 token）
+   ========================================================================== */
+
+.editor-notice {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.editor-section {
+  margin: 16px 0;
+}
+
+.editor-section-head,
+.editor-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.editor-section-head .panel-title,
+.editor-card-head .panel-subtitle {
+  margin: 0 0 6px;
+}
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+
+.editor-span-2 {
+  grid-column: 1 / -1;
+}
+
+.editor-card {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.editor-card .editor-card {
+  background: var(--panel-solid);
+}
+
+.editor-exits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 12px;
+}
+
+.editor-exit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+}
+
+.editor-checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0 12px;
+  cursor: pointer;
+}
+
+.editor-inline-actions {
+  align-items: flex-end;
+}
+
+.editor-json-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.editor-json-panel summary,
+.editor-json-panel .field {
+  margin-top: 10px;
+}
+
+.condition-editor {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.condition-editor legend {
+  padding: 0 6px;
+  color: var(--fg-dim);
+  font-size: 0.82rem;
+}
+
+.condition-json {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.condition-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+}
+
+.condition-combo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.condition-child {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.condition-child > .condition-editor {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 760px) {
+  .editor-grid,
+  .condition-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor-card {
+    padding: 10px;
+  }
+}
+
+/* ==========================================================================
    AI 设置（/settings）
    ========================================================================== */
 
@@ -1948,8 +2164,14 @@ textarea.input {
   transform: translateY(-1px);
 }
 
+/* 太阳/月亮图标是状态信息（非纯装饰）：日间皮肤用深琥珀 #b45309（4.56:1），
+   夜间皮肤换亮琥珀 #fbbf24（7.93:1），旧 #d97706 在日间仅 2.89:1。 */
 .theme-toggle[aria-pressed='true'] .theme-toggle-icon {
-  color: #d97706;
+  color: #b45309;
+}
+
+:root[data-theme='dark'] .theme-toggle[aria-pressed='true'] .theme-toggle-icon {
+  color: #fbbf24;
 }
 
 .theme-toggle[aria-pressed='false'] .theme-toggle-icon {
@@ -2446,5 +2668,170 @@ html[data-visual='off'] .reveal {
 
   .scenario-raw-json {
     max-height: 300px;
+  }
+}
+
+
+
+/* ==========================================================================
+   N2-043/044 移动端 375px 与触控目标
+   - 仅在窄屏（≤760px）放大可交互元素到 ≥44×44 CSS px；1280px 视觉密度不变；
+   - 长标题/长文本/长 JSON 在窄屏强制换行或进滚动容器，绝不撑破视口；
+   - 不隐藏/不移除任何功能（a11y 降级链仍由 data-* 属性驱动）。
+   ========================================================================== */
+
+@media (max-width: 760px) {
+  /* —— 触控目标（WCAG 2.5.5 AAA 尺寸；任务 044 口径 ≥44×44） —— */
+  .btn,
+  .btn-small,
+  .chip,
+  .typewriter-skip,
+  .theme-toggle,
+  .visual-toggle,
+  .timeline-range {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .btn {
+    padding: 10px 18px;
+  }
+
+  .btn-small {
+    padding: 9px 14px;
+  }
+
+  .chip {
+    padding: 9px 14px;
+  }
+
+  .app-nav a,
+  .app-brand a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .input,
+  select.input,
+  textarea.input,
+  .command-text {
+    min-height: 44px;
+  }
+
+  summary {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .visual-option,
+  .tone-option {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .editor-checkbox,
+  .tone-field label {
+    min-height: 44px;
+  }
+
+  /* 开关类控件放大到可单手点击（宽度/位移同步缩放） */
+  .free-craft-switch {
+    width: 58px;
+    height: 44px;
+    padding: 4px;
+  }
+
+  .free-craft-thumb {
+    width: 34px;
+    height: 34px;
+  }
+
+  .free-craft-switch[aria-checked='true'] .free-craft-thumb {
+    transform: translateX(14px);
+  }
+
+  /* —— 长文本/长标题换行（窄屏才加，桌面不受影响） —— */
+  .app-main h2,
+  .app-main h3,
+  .app-main h4,
+  .app-main p,
+  .app-main li,
+  .app-main dd,
+  .app-main dt,
+  .app-main a,
+  .app-main summary,
+  .app-main .panel-title,
+  .app-main .scenario-title,
+  .app-main .card-name,
+  .app-main .world-book-name,
+  .app-main .save-title {
+    overflow-wrap: anywhere;
+  }
+
+  .history-text,
+  .turn-text-body,
+  .last-response-text,
+  .pre-text,
+  .error-text,
+  .error-detail-text,
+  .scenario-desc,
+  .world-book-desc,
+  .world-entry-content,
+  .llm-status-detail,
+  .save-preview {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* —— 窄屏布局守卫：网格/条件编辑器不因内容撑宽 —— */
+  .condition-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .condition-child {
+    flex-wrap: wrap;
+  }
+
+  .condition-child > .condition-editor {
+    min-width: 0;
+  }
+
+  .game-columns,
+  .editor-grid,
+  .status-grid {
+    min-width: 0;
+  }
+
+  .stream-head {
+    align-items: flex-start;
+  }
+
+  /* 弹层（视觉设置/详情折叠/退出说明）不超出视口 */
+  .visual-menu[open] {
+    max-width: calc(100vw - 28px);
+    overflow-y: auto;
+  }
+
+  .quit-info-panel,
+  .quit-error {
+    max-width: calc(100vw - 28px);
+  }
+}
+
+/* 375px 视口下主流程（开局→回合→退出）按钮保持整行可达 */
+@media (max-width: 400px) {
+  .command-actions .btn,
+  .game-tools .btn,
+  .scenario-actions .btn,
+  .save-item .btn {
+    flex: 1 1 auto;
+  }
+
+  .game-tools,
+  .command-actions {
+    gap: 8px;
   }
 }

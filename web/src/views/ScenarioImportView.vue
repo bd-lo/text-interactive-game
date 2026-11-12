@@ -127,8 +127,16 @@ watch(jsonText, () => {
       <RouterLink class="btn btn-small btn-secondary" :to="{ name: 'scenarios' }">
         ← 返回场景库
       </RouterLink>
+      <RouterLink class="btn btn-small btn-secondary" :to="{ name: 'scenario-editor' }">
+        用编辑器新建场景
+      </RouterLink>
       <span class="muted">场景格式见「场景设计」：schema_version / meta / rooms / items / npcs / goal / endings。</span>
     </div>
+
+    <p class="panel editor-notice">
+      分享提示：在场景详情点「导出 JSON」会下载 <code>&lt;slug&gt;.json</code>；把该文件拖到下面或粘贴其内容即可
+      再次导入（同一份文件 = 同一份场景定义）。
+    </p>
 
     <ErrorBanner :message="localError" />
 

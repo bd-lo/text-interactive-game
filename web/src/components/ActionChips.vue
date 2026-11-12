@@ -19,8 +19,8 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div v-if="actions.length > 0" class="action-chips">
-    <span v-if="label !== ''" class="action-chips-label">{{ label }}</span>
+  <div v-if="actions.length > 0" class="action-chips" role="group" :aria-label="label === '' ? '可选动作' : label">
+    <span v-if="label !== ''" class="action-chips-label" aria-hidden="true">{{ label }}</span>
     <ul class="chip-list">
       <li v-for="action in actions" :key="action">
         <button

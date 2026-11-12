@@ -250,4 +250,61 @@ describe('GameView（玩家视角：目标/建议/结局/诊断折叠）', () =>
     expect(sameAsOpening.wrapper.find('.history-opening').text()).toContain('墙上的信标还暗着。')
     expect(sameAsOpening.wrapper.find('.last-response').exists()).toBe(false)
   })
+
+  it('041 a11y：结局屏不是 live region（正文由冒险记录 role=log 播报，避免重复播报）', async () => {
+    const endingText = '信标在风里亮起，余烬哨站重新有了光。'
+    const endedView: GamePlayerViewResponse = { ...VIEW, status: 'ended', ending_text: endingText }
+    const { wrapper } = await mountGame(
+      {
+        status: 'ended',
+        history: [{ id: 'turn:2', kind: 'narrative', text: '你点亮了信标。', turnId: 2 }],
+      },
+      { view: endedView },
+    )
+
+    const ending = wrapper.find('.ending-panel')
+    expect(ending.attributes('aria-live')).toBeUndefined()
+    expect(ending.attributes('role')).toBe('region')
+    const titleId = ending.find('h3').attributes('id')
+    expect(titleId).toBe('ending-title')
+    expect(ending.attributes('aria-labelledby')).toBe(titleId)
+    // 结局行在冒险记录（role=log）里只出现一次，读屏只播报一次
+    expect(wrapper.find('.narrative-history').attributes('role')).toBe('log')
+    expect(wrapper.findAll('.history-ending')).toHaveLength(1)
+  })
+
+  it('N2-039 流式生成中：显示增量文本 + 取消按钮，点击取消调用 store.cancelStream', async () => {
+    const { wrapper, store } = await mountGame({
+      streaming: true,
+      streamText: '你沿着北边的通道动身',
+    })
+
+    const panel = wrapper.find('[data-testid="stream-panel"]')
+    expect(panel.exists()).toBe(true)
+    expect(panel.attributes('aria-busy')).toBe('true')
+    expect(panel.text()).toContain('你沿着北边的通道动身')
+    expect(panel.find('[data-testid="stream-cancel"]').text()).toContain('取消')
+
+    const cancel = vi.spyOn(store, 'cancelStream')
+    await panel.find('[data-testid="stream-cancel"]').trigger('click')
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('N2-039 取消/降级后的提示与「重试（同步）」按钮（不再次尝试流式）', async () => {
+    const { wrapper } = await mountGame({
+      streamNotice: '已取消流式显示。服务端可能仍会完成这一回合。',
+      retrySyncOnly: true,
+      canRetry: true,
+      errorTitle: '网络有点慢',
+      error: '流式回合网络异常，请重试',
+      errorCode: 'INTERNAL',
+    })
+
+    const notice = wrapper.find('.stream-notice')
+    expect(notice.exists()).toBe(true)
+    expect(notice.attributes('role')).toBe('status')
+    expect(notice.text()).toContain('已取消流式显示')
+    expect(wrapper.find('[data-testid="stream-panel"]').exists()).toBe(false)
+    expect(wrapper.find('.error-banner button').text()).toBe('重试（同步）')
+  })
 })

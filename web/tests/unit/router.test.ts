@@ -44,4 +44,13 @@ describe('路由表（懒加载 + 404 兜底）', () => {
     expect(router.hasRoute('settings')).toBe(true)
     expect(router.resolve('/settings').name).toBe('settings')
   })
+
+  it('N1-031 场景编辑器 /scenarios/editor 命中编辑器，而不是被 /scenarios/:scenarioId 吞掉', () => {
+    expect(router.hasRoute('scenario-editor')).toBe(true)
+    expect(router.resolve('/scenarios/editor').name).toBe('scenario-editor')
+    expect(router.resolve('/scenarios/editor').meta.title).toBe('场景编辑器')
+    expect(router.resolve('/scenarios/scn_01J9Z3K4Q7X8Y9Z0ABCDEFGHJK').name).toBe(
+      'scenario-detail',
+    )
+  })
 })

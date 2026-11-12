@@ -111,8 +111,11 @@ onMounted(() => {
 
     <div class="game-tools">
       <RouterLink class="btn btn-small" :to="{ name: 'scenario-import' }">导入场景</RouterLink>
+      <RouterLink class="btn btn-small btn-secondary" :to="{ name: 'scenario-editor' }">
+        新建场景（编辑器）
+      </RouterLink>
       <span class="muted">
-        上传一份自己写的场景/剧情 JSON，导入后就能按它开新局（内置 4 个场景不受影响）。
+        用编辑器写一份新场景，或上传从详情导出的 &lt;slug&gt;.json；导入后就能按它开新局（内置 4 个场景不受影响）。
       </span>
     </div>
 
@@ -149,7 +152,9 @@ onMounted(() => {
 
     <p v-if="store.loading" class="muted" role="status">正在读取场景库…</p>
     <p v-else-if="store.items.length === 0 && store.error === null" class="muted" role="status">
-      还没有导入的场景。可以先
+      还没有导入的场景。可以
+      <RouterLink :to="{ name: 'scenario-editor' }">用编辑器新建一份</RouterLink>
+      、
       <RouterLink :to="{ name: 'scenario-import' }">导入一份场景 JSON</RouterLink>
       ，或直接回
       <RouterLink :to="{ name: 'home' }">首页</RouterLink>

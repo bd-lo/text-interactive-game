@@ -29,7 +29,13 @@ const busy = computed<boolean>(() => store.busy)
 const canSubmit = computed<boolean>(() => store.canSubmit)
 const ended = computed<boolean>(() => store.status === 'ended')
 const showRetry = computed<boolean>(() => store.canRetry)
-const retryLabel = computed<string>(() => (store.errorCode === 'CONFLICT' ? '重新发送' : '重试'))
+const retryLabel = computed<string>(() => {
+  if (store.errorCode === 'CONFLICT') {
+    return '重新发送'
+  }
+  // 流式失败/取消后的手动重试显式走普通 /turns（不再次尝试流式，避免重复请求）。
+  return store.retrySyncOnly ? '重试（同步）' : '重试'
+})
 const roomTitle = computed<string>(() => store.view?.room.title ?? '冒险')
 const goal = computed(() => store.view?.goal ?? null)
 const endingText = computed<string>(() => store.view?.ending_text ?? '')
@@ -198,8 +204,15 @@ async function onRetry(): Promise<void> {
   await store.retry()
 }
 
+/** 取消流式显示（不撤销服务端已/将提交的回合；busy 由 store 收尾释放）。 */
+function onCancelStream(): void {
+  store.cancelStream()
+}
+
 onMounted(() => {
   void ensureLoaded()
+  // 流式叙事阶段 1（N2-039）：只有服务端 LLM 已启用才尝试流式；失败静默走同步（离线路径零变化）。
+  void store.refreshStreamingAvailability()
 })
 
 watch(gameId, () => {
@@ -239,8 +252,9 @@ watch(
       @retry="onRetry"
     />
 
-    <section v-if="ended" v-reveal class="panel ending-panel" aria-live="polite">
-      <h3 class="panel-title ending-title" data-text="故事结束">故事结束</h3>
+    <!-- 结局屏不再做 live region：结局正文已由「冒险记录」（role=log）追加播报，避免同一段文本被播报两次。 -->
+    <section v-if="ended" v-reveal class="panel ending-panel" role="region" aria-labelledby="ending-title">
+      <h3 id="ending-title" class="panel-title ending-title" data-text="故事结束">故事结束</h3>
       <p v-if="endingSummary !== ''" class="ending-summary">{{ endingSummary }}</p>
       <p class="ending-text">{{ endingText === '' ? '这一局已经走到结局。' : endingText }}</p>
       <RouterLink class="btn btn-small" :to="{ name: 'home' }">开始新的冒险</RouterLink>
@@ -268,6 +282,34 @@ watch(
 
     <div v-reveal class="game-columns">
       <div class="game-main">
+        <!-- N2-039 流式叙事：仅 LLM 已启用时出现；取消/失败后不残留半截文本（文本区在 store 侧清空）。 -->
+        <section
+          v-if="store.streaming"
+          class="panel stream-panel"
+          aria-label="正在生成的叙事"
+          aria-busy="true"
+          data-testid="stream-panel"
+        >
+          <div class="stream-head">
+            <h3 class="panel-title">正在生成</h3>
+            <button
+              class="btn btn-small btn-secondary"
+              type="button"
+              data-testid="stream-cancel"
+              @click="onCancelStream"
+            >
+              取消流式显示
+            </button>
+          </div>
+          <p class="muted stream-status" role="status">
+            叙事正在流式生成，可随时取消；取消不撤销本回合（服务端可能已完成）。
+          </p>
+          <TurnTextStream :text="store.streamText" streaming />
+        </section>
+        <p v-if="store.streamNotice !== ''" class="muted stream-notice" role="status">
+          {{ store.streamNotice }}
+        </p>
+
         <section v-if="showOnboarding" class="panel guide-panel" aria-label="新手引导">
           <h3 class="panel-title">从这里开始</h3>
           <p>

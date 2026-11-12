@@ -1,5 +1,6 @@
 import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AtmosphereOverlay from '@/components/AtmosphereOverlay.vue'
@@ -49,6 +50,7 @@ afterEach(() => {
   useThemeStore().dispose()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  document.body.innerHTML = ''
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: undefined })
 })
 
@@ -151,6 +153,46 @@ describe('VisualSettings（外观与视觉设置）', () => {
     visual.$patch({ systemReducedMotion: true })
 
     expect(wrapper.find('.visual-note').text()).toContain('减少动态效果')
+  })
+})
+
+describe('VisualSettings（041 a11y：菜单焦点管理）', () => {
+  it('展开后聚焦第一个选项；Esc 关闭菜单并把焦点归还给摘要按钮', async () => {
+    stubMatchMedia(false)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(VisualSettings, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    try {
+      const details = wrapper.find('details')
+      const element = details.element as HTMLDetailsElement
+      element.open = true
+      await details.trigger('toggle')
+      await nextTick()
+      await nextTick()
+
+      expect(document.activeElement).toBe(wrapper.find('input[value="light"]').element)
+
+      await details.trigger('keydown', { key: 'Escape' })
+      expect(element.open).toBe(false)
+      expect(document.activeElement).toBe(wrapper.find('summary').element)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('系统减少动态效果说明用 role=status 暴露（可被读屏感知）', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(VisualSettings, { global: { plugins: [pinia] } })
+    const visual = useVisualStore()
+    visual.$patch({ systemReducedMotion: true })
+
+    const note = wrapper.find('.visual-note')
+    expect(note.attributes('role')).toBe('status')
+    expect(note.attributes('id')).toBe('visual-reduced-note')
   })
 })
 

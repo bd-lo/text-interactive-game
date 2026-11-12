@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
@@ -26,6 +26,53 @@ const provider = ref(LLM_DEFAULT_PROVIDER)
 const model = ref(LLM_DEFAULT_MODEL)
 const apiBase = ref(LLM_DEFAULT_API_BASE)
 const localError = ref('')
+
+/**
+ * 焦点管理（041 a11y 批次）：二次确认面板（自由制造风险 / 清除本机 key）打开即聚焦到确认按钮，
+ * `Esc` 取消，取消后焦点归还触发开关/按钮；两个确认面板互不抢焦点。
+ */
+const freeCraftSwitchEl = ref<HTMLButtonElement | null>(null)
+const freeCraftConfirmEl = ref<HTMLButtonElement | null>(null)
+const clearButtonEl = ref<HTMLButtonElement | null>(null)
+const clearConfirmEl = ref<HTMLButtonElement | null>(null)
+
+watch(
+  () => freeCraft.confirmArmed,
+  (armed, wasArmed) => {
+    void nextTick(() => {
+      if (armed) {
+        freeCraftConfirmEl.value?.focus()
+      } else if (wasArmed) {
+        freeCraftSwitchEl.value?.focus()
+      }
+    })
+  },
+)
+
+watch(
+  () => store.clearArmed,
+  (armed, wasArmed) => {
+    void nextTick(() => {
+      if (armed) {
+        clearConfirmEl.value?.focus()
+      } else if (wasArmed) {
+        clearButtonEl.value?.focus()
+      }
+    })
+  },
+)
+
+function onFreeCraftEscape(): void {
+  if (freeCraft.confirmArmed) {
+    freeCraft.disarmEnable()
+  }
+}
+
+function onClearEscape(): void {
+  if (store.clearArmed) {
+    store.disarmClear()
+  }
+}
 
 const status = computed(() => store.status)
 const showRetry = computed<boolean>(() => store.loadError !== null)
@@ -204,6 +251,7 @@ onMounted(() => {
           </p>
         </div>
         <button
+          ref="freeCraftSwitchEl"
           type="button"
           class="free-craft-switch"
           role="switch"
@@ -216,13 +264,26 @@ onMounted(() => {
         </button>
       </div>
 
-      <div v-if="freeCraft.confirmArmed" class="panel free-craft-warning" role="alertdialog" aria-label="自由制造风险确认">
-        <p>
+      <div
+        v-if="freeCraft.confirmArmed"
+        class="panel free-craft-warning"
+        role="alertdialog"
+        aria-label="自由制造风险确认"
+        aria-describedby="free-craft-risk-text"
+        @keydown.esc="onFreeCraftEscape"
+      >
+        <p id="free-craft-risk-text">
           <strong>开启前确认：</strong>
           自由制造会在裁决/重试链路内调用大模型，可能重复计费；它不属于纯确定性裁决。
         </p>
         <div class="game-tools">
-          <button class="btn" type="button" :disabled="freeCraft.saveBusy" @click="onConfirmFreeCraft">
+          <button
+            ref="freeCraftConfirmEl"
+            class="btn"
+            type="button"
+            :disabled="freeCraft.saveBusy"
+            @click="onConfirmFreeCraft"
+          >
             {{ freeCraft.saveBusy ? '开启中…' : '确认开启' }}
           </button>
           <button
@@ -305,7 +366,7 @@ onMounted(() => {
         </label>
       </details>
 
-      <div class="game-tools llm-actions">
+      <div class="game-tools llm-actions" @keydown.esc="onClearEscape">
         <button class="btn" type="submit" :disabled="store.saveBusy || store.clearBusy">
           {{ store.saveBusy ? '保存中…' : '保存并启用' }}
         </button>
@@ -319,6 +380,7 @@ onMounted(() => {
         </button>
         <button
           v-if="!store.clearArmed"
+          ref="clearButtonEl"
           class="btn btn-small btn-secondary"
           type="button"
           :disabled="!store.canClear || store.clearBusy || store.saveBusy"
@@ -327,7 +389,13 @@ onMounted(() => {
           清除本机 key
         </button>
         <template v-else>
-          <button class="btn btn-small" type="button" :disabled="store.clearBusy" @click="onClear">
+          <button
+            ref="clearConfirmEl"
+            class="btn btn-small"
+            type="button"
+            :disabled="store.clearBusy"
+            @click="onClear"
+          >
             {{ store.clearBusy ? '清除中…' : '确认清除（不可恢复）' }}
           </button>
           <button class="btn btn-small btn-secondary" type="button" @click="store.disarmClear()">

@@ -13,6 +13,12 @@
  * - 提交 1 回合后服务端回合数 +1、页面叙事更新；卡库列表/详情/详情页按卡开局可用；
  * - 375px 视口无横向溢出；**全程无 console 错误/未捕获异常**；
  * - 玩家可见文本无内部 ID（R3 AC-17）：生成页/保存成功区/对局页/冒险记录/卡库列表/卡详情/回放页；
+ * - 041–042 a11y：键盘走查（Tab 跳过链接→main#main-content、landmark、视觉设置 Esc 焦点归还、
+ *   Enter 键盘提交回合）与 `prefers-reduced-motion` 模拟（粒子/极光/打字机静态降级但页面可用）；
+ * - N2-039 流式叙事：`POST /api/v1/turns/stream` 离线模板单 chunk（NDJSON start/delta/done）HTTP 实测
+ *   + 浏览器在「LLM 未配置」时仍只走普通 `/turns`（网络请求断言，不请求流式端点）；
+ * - N1-031 场景编辑器：粘贴 v2 JSON → 实时 `/scenarios/validate` 通过 → 表单改标题 → 保存 → 按此开局；
+ * - N1-032 场景分享：导出端点返回 attachment 单文件 JSON（可再导入）+ 详情页下载入口 + 导入页分享引导。
  * - S2 体验打磨：新局开场历史（P2-2）、结局通关总结与结局入冒险记录（AC-34/AC-10d）、
  *   只读回合提示（P2-3）、来源徽章中性化（P2-6）、物品中文名（P1-8）、生产不渲染诊断面板（P2-1）。
  *
@@ -144,6 +150,8 @@ const steps = []
 const assertions = []
 const screenshots = []
 const consoleEvents = []
+/** 浏览器网络请求流水（供「LLM 未配置时不请求流式端点」等断言；只记 URL/方法）。 */
+const networkRequests = []
 
 function log(line) {
   process.stdout.write(`${line}\n`)
@@ -650,6 +658,45 @@ async function clearViewport() {
   await sleep(150)
 }
 
+// ---------------------------------------------------------------------------
+// 键盘 / 系统偏好模拟（041–042 a11y 批次）
+// ---------------------------------------------------------------------------
+
+/** CDP 键盘事件参数（key/code/虚拟键码/文本；Tab/Esc 用 rawKeyDown 才会触发浏览器默认焦点导航）。 */
+const KEY_INFO = {
+  Tab: { code: 'Tab', vk: 9 },
+  Escape: { code: 'Escape', vk: 27 },
+  Enter: { code: 'Enter', vk: 13, text: '\r' },
+  '/': { code: 'Slash', vk: 191, text: '/' },
+}
+
+/** 向当前焦点元素派发一次真实按键（keyDown + keyUp，含 100ms 让 Vue/浏览器落定）。 */
+async function dispatchKey(key) {
+  const info = KEY_INFO[key] ?? { code: key, vk: 0 }
+  const base = {
+    key,
+    code: info.code,
+    windowsVirtualKeyCode: info.vk,
+    nativeVirtualKeyCode: info.vk,
+  }
+  await requireCdp().send('Input.dispatchKeyEvent', {
+    type: info.text === undefined ? 'rawKeyDown' : 'keyDown',
+    ...base,
+    ...(info.text === undefined ? {} : { text: info.text }),
+  })
+  await requireCdp().send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+  await sleep(100)
+}
+
+/** 模拟系统「减少动态效果」偏好（空数组 = 恢复默认）。 */
+async function emulateReducedMotion(enabled) {
+  await requireCdp().send('Emulation.setEmulatedMedia', {
+    media: '',
+    features: [{ name: 'prefers-reduced-motion', value: enabled ? 'reduce' : 'no-preference' }],
+  })
+  await sleep(80)
+}
+
 async function screenshot(name) {
   mkdirSync(state.screenshotsDir, { recursive: true })
   const result = await requireCdp().send('Page.captureScreenshot', { format: 'png', fromSurface: true })
@@ -676,6 +723,105 @@ async function checkNoHorizontalOverflow(label) {
   const clientWidth = Math.min(metrics.docClientWidth, metrics.innerWidth)
   check(`${label}：无横向溢出`, scrollWidth <= clientWidth + 1, JSON.stringify(metrics))
   return metrics
+}
+
+// ---------------------------------------------------------------------------
+// N2-043/044 移动端审计：触控目标 ≥44×44 / 长文本换行 / 弹层不超视口
+// ---------------------------------------------------------------------------
+
+/** 在 375px 下抽样可见交互控件，返回 <44×44 的项（内联文本链接按 WCAG 2.5.5 inline 例外不计）。 */
+async function touchTargetViolations() {
+  return await evaluate(`(() => {
+    const selector = [
+      '.app-nav a', '.app-brand a', 'a.btn', 'button.btn', 'button.chip',
+      '.theme-toggle', '.visual-toggle', '.typewriter-skip', 'summary',
+      '.free-craft-switch', '.timeline-range',
+      '.visual-option', '.tone-option', 'label.editor-checkbox',
+    ].join(',');
+    const small = [];
+    let checked = 0;
+    for (const el of document.querySelectorAll(selector)) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      checked += 1;
+      if (rect.width >= 43.5 && rect.height >= 43.5) continue;
+      small.push({
+        tag: el.tagName,
+        cls: String(el.className ?? '').slice(0, 60),
+        text: String(el.innerText ?? '').trim().slice(0, 20),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+      });
+    }
+    return { checked, small };
+  })()`)
+}
+
+async function checkTouchTargets(label) {
+  const result = await touchTargetViolations()
+  check(
+    `${label}：可见交互控件均 ≥44×44`,
+    result.small.length === 0,
+    JSON.stringify(result.small.slice(0, 8)),
+  )
+  return result
+}
+
+/** 长文本换行审计：这些文本容器不得出现横向溢出（宽 > 容器宽即失败）。 */
+async function checkLongTextWraps(label) {
+  const selectors = [
+    '.history-text',
+    '.turn-text-body',
+    '.last-response-text',
+    '.pre-text',
+    '.error-text',
+    '.scenario-desc',
+    '.world-book-desc',
+    '.world-entry-content',
+    '.llm-status-detail',
+    '.save-preview',
+    '.app-main h2',
+    '.app-main h3',
+  ]
+  const bad = await evaluate(`(() => {
+    const selectors = ${JSON.stringify(selectors)};
+    const bad = [];
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        if (el.clientWidth <= 0) continue;
+        if (el.scrollWidth > el.clientWidth + 1) {
+          bad.push({
+            selector,
+            text: String(el.innerText ?? '').slice(0, 40),
+            scrollWidth: el.scrollWidth,
+            clientWidth: el.clientWidth,
+          });
+        }
+      }
+    }
+    return bad;
+  })()`)
+  check(`${label}：长文本换行不溢出`, bad.length === 0, JSON.stringify(bad.slice(0, 5)))
+  return bad
+}
+
+/** 弹层矩形是否完全在 375px 视口内。 */
+async function popupRect(selector) {
+  return await evaluate(`(() => {
+    const el = document.querySelector(${expr(selector)});
+    if (el === null) return null;
+    const rect = el.getBoundingClientRect();
+    return {
+      left: Math.round(rect.left),
+      right: Math.round(rect.right),
+      width: Math.round(rect.width),
+      innerWidth: window.innerWidth,
+    };
+  })()`)
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,6 +1766,37 @@ async function runFlow() {
   }
   let e2eScenarioId = ''
 
+  // N1-031 编辑器 e2e 用的 v2 最小场景（flags + v2 谓词 + priority 多结局；校验应通过）。
+  const EDITOR_SCENARIO = {
+    schema_version: 2,
+    slug: 'e2e-editor-scene',
+    meta: { title: 'E2E 编辑器场景', author: 'e2e', description: '编辑器 e2e 用最小 v2 场景' },
+    player: { name: '旅人', hp: 10, max_hp: 10, location: 'gate', inventory: [] },
+    rooms: [
+      { key: 'gate', name: '塔门', description: '一扇虚掩的木门。', exits: { north: 'hall' } },
+      { key: 'hall', name: '塔厅', description: '墙上挂着一盏没点亮的灯。', items: ['flint'] },
+    ],
+    items: [{ key: 'flint', name: '火石', description: '一块干燥的火石。', tags: ['quest'] }],
+    flags: [{ key: 'arrived', when: { in_room: 'hall' } }],
+    goal: {
+      title: '点亮灯',
+      objectives: [{ key: 'reach', text: '进入塔厅', when: { flag: 'arrived' } }],
+    },
+    endings: [
+      {
+        key: 'win',
+        kind: 'win',
+        title: '灯亮了',
+        text: '塔顶的风很大，但灯终于亮了。',
+        priority: 10,
+        when: { all: [{ in_room: 'hall' }, { has_item: 'flint' }] },
+      },
+    ],
+    suggestions: [{ when: { in_room: 'gate' }, text: '向北走进塔厅' }],
+  }
+  const EDITOR_TITLE_EDITED = 'E2E 编辑器场景（表单改）'
+  let editorScenarioId = ''
+
   await step('scenario.import-and-list', '场景库：上传场景 JSON → 列表出现条目', async () => {
     const imported = await postJson('/api/v1/scenarios', SCENARIO_PAYLOAD, '导入场景 JSON')
     e2eScenarioId = String(imported?.scenario_id ?? '')
@@ -1651,6 +1828,11 @@ async function runFlow() {
     await clickButtonByText('.scenario-detail-view button', '按此场景开局', '按此场景开局')
     await waitFor(`location.pathname.startsWith('/game/')`, '进入对局页（上传场景）')
     await waitVisible('.scenario-badge', '对局页场景徽章')
+    // 场景标题是建局后异步 GET 详情补上的：等徽章真的补全再断言（避免「自定义场景」瞬时态竞态）。
+    await waitFor(
+      `(document.querySelector('.scenario-badge')?.innerText ?? '').includes(${JSON.stringify(SCENARIO_PAYLOAD.meta.title)})`,
+      '对局页场景徽章加载上传场景标题',
+    )
     const badgeText = String(await textOf('.scenario-badge'))
     check(
       '徽章显示上传场景标题',
@@ -1667,6 +1849,135 @@ async function runFlow() {
     await checkNoInternalIdsVisible('上传场景对局页')
     await screenshot('21-scenario-game-1280.png')
     return `badge=${truncate(badgeText, 40)}`
+  })
+
+  // ---- N1-031 场景编辑器：JSON 粘贴 → 实时校验 → 表单改标题 → 保存 → 按此开局 ----
+  await step('scenario.editor', '场景编辑器：粘贴 JSON → 实时校验通过 → 改标题保存 → 按此开局', async () => {
+    await navigate('/scenarios/editor', '场景编辑器', '[data-testid="editor-root"]')
+    await waitVisible('[data-testid="editor-title"]', '编辑器标题输入框')
+    // 打开「JSON 原文」折叠面板后粘贴 v2 场景
+    await evaluate(`(() => {
+      const panel = document.querySelector('.editor-json-panel');
+      if (panel !== null) panel.open = true;
+    })()`)
+    await setValue('[data-testid="editor-json"]', JSON.stringify(EDITOR_SCENARIO), '编辑器 JSON 粘贴')
+    await click('[data-testid="editor-apply-json"]', '应用到表单')
+    await waitFor(
+      `document.querySelector('[data-testid="editor-save"]')?.disabled === false`,
+      '实时服务端校验通过（保存按钮可用）',
+    )
+    const validateStatus = String(await textOf('[data-testid="editor-validate-status"]'))
+    check('实时校验状态为「校验通过」', validateStatus.includes('校验通过'), truncate(validateStatus, 120))
+
+    // 表单改标题 → JSON 原文同步 → 重新校验通过
+    await setValue('[data-testid="editor-title"]', EDITOR_TITLE_EDITED, '编辑器表单标题')
+    await waitFor(
+      `(document.querySelector('[data-testid="editor-json"]')?.value ?? '').includes(${JSON.stringify(EDITOR_TITLE_EDITED)})`,
+      '表单改动同步到 JSON 原文',
+    )
+    await waitFor(
+      `document.querySelector('[data-testid="editor-save"]')?.disabled === false`,
+      '改动后重新校验通过',
+    )
+
+    // 375px 基础（为 043/044 移动端批次留好可用性基线）
+    await setViewport(MOBILE_VIEWPORT.width, MOBILE_VIEWPORT.height, true)
+    const editorMetrics = await checkNoHorizontalOverflow('场景编辑器 375px')
+    await screenshot('28a-scenario-editor-375.png')
+    await clearViewport()
+    check('场景编辑器 375px 无横向溢出', editorMetrics !== null, JSON.stringify(editorMetrics))
+
+    await click('[data-testid="editor-save"]', '保存场景到场景库')
+    await waitFor(`location.pathname.startsWith('/scenarios/scn_')`, '保存后进入场景详情页')
+    editorScenarioId = new URL(await currentUrl()).pathname.split('/').filter(Boolean)[1] ?? ''
+    check('保存生成新场景 id', /^scn_/.test(editorScenarioId), editorScenarioId)
+    await waitFor(
+      `document.body.innerText.includes(${JSON.stringify(EDITOR_TITLE_EDITED)})`,
+      '详情页显示编辑后的标题',
+    )
+
+    await clickButtonByText('.scenario-detail-view button', '按此场景开局', '按此场景开局')
+    await waitFor(`location.pathname.startsWith('/game/')`, '进入编辑器场景对局页')
+    await waitVisible('.scenario-badge', '对局页场景徽章')
+    await waitFor(
+      `(document.querySelector('.scenario-badge')?.innerText ?? '').includes(${JSON.stringify(EDITOR_TITLE_EDITED)})`,
+      '对局徽章显示编辑器场景标题',
+    )
+    await waitVisible('.goal-panel', '编辑器场景目标面板')
+    await checkNoInternalIdsVisible('编辑器场景对局页')
+    await screenshot('28-scenario-editor-1280.png')
+    return `editor→validate→save→start；scenario_id=${editorScenarioId}`
+  })
+
+  // ---- N1-032 场景分享：导出端点附件 + 浏览器下载入口 + 导入页分享引导 ----
+  await step('scenario.export', '场景导出：attachment JSON（可直接再导入）+ 详情页下载入口', async () => {
+    check('编辑器保存的场景 id 可用', editorScenarioId.startsWith('scn_'), editorScenarioId)
+    const exportResponse = await fetch(
+      `${state.baseUrl}/api/v1/scenarios/${encodeURIComponent(editorScenarioId)}/export`,
+      { signal: AbortSignal.timeout(15000) },
+    )
+    check('导出端点 HTTP 200', exportResponse.status === 200, `status=${exportResponse.status}`)
+    const exportContentType = exportResponse.headers.get('content-type') ?? ''
+    check(
+      '导出 Content-Type 为 application/json',
+      exportContentType.includes('application/json'),
+      exportContentType,
+    )
+    const disposition = exportResponse.headers.get('content-disposition') ?? ''
+    check(
+      '导出为附件并给出 <slug>.json 文件名',
+      /attachment/i.test(disposition) && /filename="[^"]+\.json"/.test(disposition),
+      disposition,
+    )
+    const exported = JSON.parse(await exportResponse.text())
+    check(
+      '导出体保留 v2 定义与编辑后的标题',
+      exported.schema_version === 2 && exported.meta?.title === EDITOR_TITLE_EDITED,
+      `schema_version=${exported.schema_version} title=${exported.meta?.title}`,
+    )
+    check(
+      '导出体是定义原文（不含库内 summary/created_at/scenario_id）',
+      !('summary' in exported) && !('created_at' in exported) && !('scenario_id' in exported),
+      Object.keys(exported).join(','),
+    )
+
+    // 浏览器入口：详情页「导出 JSON」触发 GET /export 并显示提示（无头浏览器不等待落盘）
+    await navigate(
+      `/scenarios/${encodeURIComponent(editorScenarioId)}`,
+      '场景详情（导出）',
+      '.scenario-detail-view',
+    )
+    await waitFor(
+      `document.querySelector('[data-testid="scenario-export"]') !== null`,
+      '详情页导出按钮存在',
+    )
+    const marker = networkRequests.length
+    await click('[data-testid="scenario-export"]', '导出 JSON')
+    await waitFor(`document.body.innerText.includes('已导出')`, '导出成功提示')
+    const exportRequests = networkRequests.slice(marker)
+    check(
+      '浏览器导出请求命中 GET /scenarios/{id}/export',
+      exportRequests.some(
+        (entry) =>
+          entry.method === 'GET' &&
+          entry.url.includes('/api/v1/scenarios/') &&
+          entry.url.includes('/export'),
+      ),
+      exportRequests.map((entry) => `${entry.method} ${entry.url}`).slice(-4).join(' | '),
+    )
+    const exportErrorVisible = await evaluate(visibleExpr('.error-banner'))
+    check('导出过程无错误横幅', exportErrorVisible === false, '')
+
+    // 导入页分享引导：从详情导出的 <slug>.json 可直接再导入
+    await navigate('/scenarios/import', '导入页（分享引导）', '.scenario-import-view')
+    const importPageText = await pageText()
+    check(
+      '导入页给出「导出 JSON → 可直接再导入」的分享引导',
+      importPageText.includes('导出 JSON') && importPageText.includes('slug'),
+      truncate(importPageText, 200),
+    )
+    await screenshot('29-scenario-export-1280.png')
+    return `attachment=${disposition}`
   })
 
   await step('settings.llm', '设置页：AI 状态卡 + API Key 表单可用（不提交真实密钥）', async () => {
@@ -1688,6 +1999,455 @@ async function runFlow() {
     await screenshot('23-settings-375.png')
     await clearViewport()
     return 'settings-viewed'
+  })
+
+  // ---- 041–042 a11y：键盘可达性 + reduced-motion（新增步骤，不改既有步骤口径） ----
+  await step('a11y.keyboard', '键盘走查：跳过链接→主区域、焦点可见、菜单 Esc 归还、指令 Enter 提交', async () => {
+    await navigate('/', '首页（键盘走查）', '.home-form')
+    await evaluate('(() => { const el = document.activeElement; if (el instanceof HTMLElement) el.blur(); })()')
+    await dispatchKey('Tab')
+    const firstFocus = await evaluate(`(() => {
+      const el = document.activeElement;
+      if (el === null) return null;
+      return { tag: el.tagName, cls: String(el.className ?? ''), text: String(el.innerText ?? '').trim().slice(0, 40) };
+    })()`)
+    check(
+      'Tab 第一站是跳过链接（a.skip-link）',
+      firstFocus !== null && String(firstFocus.cls).includes('skip-link'),
+      JSON.stringify(firstFocus),
+    )
+    const skipVisible = await evaluate(`(() => {
+      const el = document.querySelector('a.skip-link');
+      if (el === null) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.left >= 0;
+    })()`)
+    check('跳过链接获得焦点时可见（没有被移到屏幕外）', skipVisible === true, '')
+
+    await dispatchKey('Enter')
+    await waitFor(
+      `document.activeElement !== null && document.activeElement.id === 'main-content'`,
+      '跳过链接把焦点交给 main#main-content',
+    )
+    const landmarks = await evaluate(`(() => ({
+      main: document.querySelectorAll('main#main-content').length,
+      header: document.querySelectorAll('header.app-header').length,
+      nav: document.querySelectorAll('nav[aria-label="主导航"]').length,
+      footer: document.querySelectorAll('footer.app-footer').length,
+    }))()`)
+    check(
+      'landmark 齐全：main / header / nav / footer 各 1',
+      landmarks.main === 1 && landmarks.header === 1 && landmarks.nav === 1 && landmarks.footer === 1,
+      JSON.stringify(landmarks),
+    )
+    check('跳过链接 href 指向 #main-content', (await attrOf('a.skip-link', 'href')) === '#main-content')
+
+    // 视觉设置菜单：展开焦点进入选项；Esc 关闭并把焦点归还摘要按钮（键盘不丢落点）。
+    await evaluate(`document.querySelector('.visual-menu summary')?.click()`)
+    await waitFor(`document.querySelector('.visual-menu')?.open === true`, '视觉设置菜单展开')
+    await sleep(120)
+    const optionFocused = await evaluate(`(() => {
+      const menu = document.querySelector('.visual-menu');
+      return menu !== null && menu.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement;
+    })()`)
+    check('视觉设置展开后焦点进入菜单选项', optionFocused === true, '')
+    await dispatchKey('Escape')
+    await waitFor(`document.querySelector('.visual-menu')?.open === false`, '视觉设置菜单关闭')
+    await sleep(120)
+    const focusReturned = await evaluate(`(() => {
+      const menu = document.querySelector('.visual-menu');
+      return menu !== null && document.activeElement === menu.querySelector('summary');
+    })()`)
+    check('Esc 关闭视觉设置后焦点归还摘要按钮', focusReturned === true, '')
+
+    // 对局页：键盘 Enter 提交一个有事件回合（HTTP 新建对局，避免依赖既有对局状态）。
+    const keyboardGame = await createGameHttp('story')
+    const initialKeyboardView = await getJson(
+      `/api/v1/games/${encodeURIComponent(keyboardGame.gameId)}/view`,
+    )
+    const expectedKeyboardTurn = Number(initialKeyboardView.turn) + 1
+    await openGamePage(keyboardGame.gameId, '键盘提交对局页')
+    const labels = await evaluate(`(() => {
+      const el = document.querySelector('#command-input');
+      return el === null ? 0 : el.labels.length;
+    })()`)
+    check('指令输入框有关联 label（键盘/读屏可识别）', Number(labels) >= 1, `labels=${labels}`)
+    await setValue('#command-input', '向东走', '键盘提交指令')
+    // 等页面把 /view 载入完成（输入框从 readonly 释放）再按 Enter：避免「载入中按键无效」竞态。
+    await waitFor(
+      `document.querySelector('form.command-input button[type="submit"]')?.disabled === false`,
+      '键盘提交前发送按钮可用',
+    )
+    await dispatchKey('Enter')
+    const turnView = await waitForApiTurn(keyboardGame.gameId, expectedKeyboardTurn)
+    await waitFor(
+      `(() => { const el = document.querySelector('#command-input'); return el !== null && el.readOnly === false; })()`,
+      '键盘回合完成（输入框恢复可编辑）',
+    )
+    await sleep(150)
+    check(
+      `键盘 Enter 提交成功（服务端回合 ${expectedKeyboardTurn - 1}→${expectedKeyboardTurn}）`,
+      Number(turnView.turn) === expectedKeyboardTurn,
+      `turn=${turnView.turn}`,
+    )
+    const inputFocused = await evaluate(
+      `document.activeElement !== null && document.activeElement.id === 'command-input'`,
+    )
+    check('回合完成后焦点回到指令输入框（不必重新 Tab）', inputFocused === true, '')
+    await screenshot('25-a11y-keyboard-1280.png')
+    return `skip→main；菜单 Esc 归还；Enter 提交 turn=${turnView.turn}`
+  })
+
+  await step('a11y.reduced-motion', '系统 prefers-reduced-motion：静态降级且页面仍完整可用', async () => {
+    await emulateReducedMotion(true)
+    await navigate('/game/' + encodeURIComponent(state.gameId), '对局页（reduced-motion）', '#command-input')
+    await waitFor(`document.querySelector('.game-meta') !== null`, '对局页状态加载')
+    await waitFor(
+      `document.querySelectorAll('.narrative-history li').length >= 1`,
+      '对局页冒险记录就绪',
+    )
+
+    const prefs = await evaluate(`(() => ({
+      media: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      dataset: document.documentElement.dataset.reducedMotion,
+    }))()`)
+    check(
+      '系统偏好被识别（matchMedia=true 且 data-reduced-motion=true）',
+      prefs.media === true && prefs.dataset === 'true',
+      JSON.stringify(prefs),
+    )
+    const decoration = await evaluate(`(() => ({
+      mote: document.querySelector('.mote-field') === null,
+      auroraAnimation: (() => {
+        const blob = document.querySelector('.aurora-blob');
+        return blob === null ? 'no-blob' : getComputedStyle(blob).animationName;
+      })(),
+      spotlight: (() => {
+        const spot = document.querySelector('.atmosphere-spotlight');
+        return spot === null ? 'no-spot' : getComputedStyle(spot).display;
+      })(),
+    }))()`)
+    check('减少动态：不渲染粒子层（.mote-field 不存在）', decoration.mote === true, '')
+    check('减少动态：极光动画停止（animation-name=none）', decoration.auroraAnimation === 'none', String(decoration.auroraAnimation))
+    check('减少动态：聚光层隐藏（display=none）', decoration.spotlight === 'none', String(decoration.spotlight))
+
+    const content = await evaluate(`(() => ({
+      history: (document.querySelector('.narrative-history')?.innerText ?? '').trim().length,
+      typewriterSkip: document.querySelectorAll('.typewriter-skip').length,
+      typewriterAnimating: document.querySelectorAll('.typewriter-animating').length,
+      submitButton: document.querySelector('form.command-input button[type="submit"]') !== null,
+    }))()`)
+    check('减少动态：正文仍完整显示（冒险记录非空）', Number(content.history) > 0, `chars=${content.history}`)
+    check(
+      '减少动态：打字机不启动（无跳过按钮/无动画标记）',
+      content.typewriterSkip === 0 && content.typewriterAnimating === 0,
+      JSON.stringify(content),
+    )
+    check('减少动态：回合提交按钮仍在（页面可用）', content.submitButton === true, '')
+
+    await evaluate('(() => { const el = document.activeElement; if (el instanceof HTMLElement) el.blur(); })()')
+    await dispatchKey('/')
+    const shortcutFocused = await evaluate(
+      `document.activeElement !== null && document.activeElement.id === 'command-input'`,
+    )
+    check('键盘 `/` 在减少动态模式下仍能聚焦指令框', shortcutFocused === true, '')
+    await setValue('#command-input', '环顾四周', '减少动态下输入指令')
+    const submitEnabled = await evaluate(
+      `document.querySelector('form.command-input button[type="submit"]')?.disabled === false`,
+    )
+    check('减少动态下输入后发送按钮可用（功能不打折）', submitEnabled === true, '')
+    await screenshot('26-a11y-reduced-motion-1280.png')
+
+    await emulateReducedMotion(false)
+    await navigate('/', '首页（恢复动态偏好）', '.home-form')
+    const restored = await evaluate(
+      `window.matchMedia('(prefers-reduced-motion: reduce)').matches === false`,
+    )
+    check('恢复默认动态偏好后 matchMedia 归位', restored === true, '')
+    return '静态降级（无粒子/极光/打字机）+ 键盘仍可用'
+  })
+
+  // ---- N2-039 流式叙事：离线模板单 chunk + 浏览器「LLM 未配置仍走 /turns」 ----
+  await step('stream.offline', '流式叙事：NDJSON 端点离线单 chunk；前端未配置 LLM 时不请求流式端点', async () => {
+    const llmStatus = await getJson('/api/v1/settings/llm')
+    check(
+      '默认离线：LLM 未配置且未启用（前端条件不满足 → 走同步）',
+      llmStatus.enabled === false,
+      `enabled=${llmStatus.enabled} configured=${llmStatus.configured}`,
+    )
+
+    // A) HTTP 直连 NDJSON：start → 单条完整 delta → done.result（离线模板叙事）
+    const streamGame = await createGameHttp('story')
+    const streamGameView = await getJson(
+      `/api/v1/games/${encodeURIComponent(streamGame.gameId)}/view`,
+    )
+    const streamResponse = await fetch(`${state.baseUrl}/api/v1/turns/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': `e2e-stream-${crypto.randomUUID()}`,
+      },
+      body: JSON.stringify({
+        game_id: streamGame.gameId,
+        input: '向东走',
+        expected_version: streamGameView.version,
+      }),
+      signal: AbortSignal.timeout(30000),
+    })
+    check('流式端点 HTTP 200', streamResponse.status === 200, `status=${streamResponse.status}`)
+    const streamContentType = streamResponse.headers.get('content-type') ?? ''
+    check(
+      '流式响应 Content-Type 为 application/x-ndjson',
+      streamContentType.includes('application/x-ndjson'),
+      streamContentType,
+    )
+    const rawLines = (await streamResponse.text()).split('\n').filter((line) => line.trim() !== '')
+    const streamEvents = rawLines.map((line) => JSON.parse(line))
+    const eventTypes = streamEvents.map((event) => event.type)
+    check(
+      'NDJSON 事件顺序：start 开头、done 结尾',
+      streamEvents[0]?.type === 'start' && streamEvents[streamEvents.length - 1]?.type === 'done',
+      eventTypes.join('→'),
+    )
+    const deltaEvents = streamEvents.filter((event) => event.type === 'delta')
+    check('离线模板叙事：恰好 1 条完整 delta（单 chunk）', deltaEvents.length === 1, `delta=${deltaEvents.length}`)
+    const doneEvent = streamEvents[streamEvents.length - 1]
+    check(
+      'done.result 为权威 TurnResult（text/version/ok）',
+      doneEvent?.type === 'done' &&
+        typeof doneEvent.result?.text === 'string' &&
+        typeof doneEvent.result?.version === 'number' &&
+        doneEvent.result?.ok === true,
+      truncate(JSON.stringify(doneEvent?.result ?? {}), 160),
+    )
+    check(
+      'delta 文本 = done.result.text（无半截/重复）',
+      deltaEvents[0]?.text === doneEvent?.result?.text,
+      `delta=${truncate(String(deltaEvents[0]?.text ?? ''), 60)}`,
+    )
+    check(
+      '事件字段集合与协议一致（start/delta/done）',
+      JSON.stringify(Object.keys(streamEvents[0] ?? {}).sort()) ===
+        JSON.stringify(['expected_version', 'turn_id', 'type'].sort()) &&
+        JSON.stringify(Object.keys(deltaEvents[0] ?? {}).sort()) ===
+          JSON.stringify(['text', 'type'].sort()) &&
+        JSON.stringify(Object.keys(doneEvent ?? {}).sort()) ===
+          JSON.stringify(['result', 'type'].sort()),
+      '',
+    )
+
+    // B) 浏览器侧：LLM 未配置 → 页面提交只走 POST /turns，不请求 /turns/stream。
+    const browserGame = await createGameHttp('story')
+    const browserGameView = await getJson(
+      `/api/v1/games/${encodeURIComponent(browserGame.gameId)}/view`,
+    )
+    const expectedTurn = Number(browserGameView.turn) + 1
+    await openGamePage(browserGame.gameId, '对局页（流式离线降级）')
+    const detectDeadline = Date.now() + 8000
+    while (
+      Date.now() < detectDeadline &&
+      !networkRequests.some((entry) => entry.url.includes('/api/v1/settings/llm'))
+    ) {
+      await sleep(100)
+    }
+    check(
+      '前端启动时探测 LLM 状态（GET /api/v1/settings/llm）',
+      networkRequests.some((entry) => entry.url.includes('/api/v1/settings/llm')),
+      '',
+    )
+    const marker = networkRequests.length
+    await submitTurnInBrowser('向东走', browserGame.gameId, expectedTurn)
+    const stepRequests = networkRequests.slice(marker)
+    check(
+      'LLM 未配置时浏览器提交走 POST /api/v1/turns',
+      stepRequests.some(
+        (entry) => entry.method === 'POST' && /\/api\/v1\/turns$/.test(entry.url),
+      ),
+      stepRequests.map((entry) => `${entry.method} ${entry.url}`).slice(-6).join(' | '),
+    )
+    check(
+      'LLM 未配置时浏览器不请求 /api/v1/turns/stream（离线路径零变化）',
+      !stepRequests.some((entry) => entry.url.includes('/api/v1/turns/stream')),
+      '',
+    )
+    await checkNoInternalIdsVisible('流式离线降级对局页')
+    await screenshot('27-stream-offline-sync-1280.png')
+    return `NDJSON 事件=${eventTypes.join('→')}；浏览器同步 POST /turns（无流式请求）`
+  })
+
+  // ---- N2-043/044 移动端 375px 与触控目标（收口 N2 8/8） ----
+  await step('mobile.375', '375px 全站回归：无横向溢出 + 触控 ≥44 + 长文本换行 + 弹层可关（≥4 页）', async () => {
+    // 0) 1280px 视觉密度不回归：触控放大只在窄屏媒体查询生效，桌面按钮仍紧凑。
+    await clearViewport()
+    await navigate('/', '首页（桌面密度基线）', '.home-form')
+    const desktopButton = await evaluate(`(() => {
+      const el = document.querySelector('form.home-form button[type="submit"]');
+      if (el === null) return null;
+      const rect = el.getBoundingClientRect();
+      return { width: Math.round(rect.width), height: Math.round(rect.height) };
+    })()`)
+    check(
+      '1280px 桌面按钮保持紧凑（触控放大仅窄屏生效）',
+      desktopButton !== null && desktopButton.height < 44,
+      JSON.stringify(desktopButton),
+    )
+
+    // 1) 长标题/长描述/长 token 场景（用于 375px 详情页长文本换行审计）
+    const longScenario = {
+      schema_version: 2,
+      slug: `mobile-long-${Date.now().toString(36)}`,
+      meta: { title: `移动端长标题${'测'.repeat(38)}`, description: '长简介'.repeat(60) },
+      player: { location: 'room_a' },
+      rooms: [
+        {
+          key: 'room_a',
+          name: '长走廊',
+          description: `长描述${'词'.repeat(200)} ${'A'.repeat(120)}`,
+        },
+      ],
+    }
+    const importedLong = await postJson('/api/v1/scenarios', longScenario, '导入移动端长文本场景')
+    const longScenarioId = String(importedLong?.scenario_id ?? '')
+    check('长文本场景导入成功', longScenarioId.startsWith('scn_'), longScenarioId)
+
+    await setViewport(MOBILE_VIEWPORT.width, MOBILE_VIEWPORT.height, true)
+    const pages = [
+      {
+        label: '首页',
+        path: '/',
+        ready: '.home-form',
+        shot: '30-mobile-home-375.png',
+      },
+      {
+        label: '对局页（含输入区/目标/冒险记录）',
+        path: `/game/${encodeURIComponent(state.gameId)}`,
+        ready: '#command-input',
+        wait: `document.querySelector('.history-text') !== null`,
+        shot: '31-mobile-game-375.png',
+      },
+      {
+        label: '场景详情（长标题/长描述）',
+        path: `/scenarios/${encodeURIComponent(longScenarioId)}`,
+        ready: '.scenario-detail-view',
+        wait: `document.querySelector('.scenario-detail-view .pre-text') !== null`,
+        shot: '32-mobile-scenario-detail-375.png',
+      },
+      {
+        label: '设置页',
+        path: '/settings',
+        ready: '.settings-view',
+        shot: '33-mobile-settings-375.png',
+      },
+      {
+        label: '卡库列表',
+        path: '/cards',
+        ready: '.cards-view',
+        shot: '34-mobile-cards-375.png',
+      },
+      {
+        label: '场景编辑器',
+        path: '/scenarios/editor',
+        ready: '[data-testid="editor-root"]',
+        shot: '35-mobile-editor-375.png',
+      },
+      { label: '场景库', path: '/scenarios', ready: '.scenario-library-view' },
+      { label: '世界书列表', path: '/world-books', ready: '.world-books-view' },
+      {
+        label: '回放页',
+        path: `/game/${encodeURIComponent(state.gameId)}/replay`,
+        ready: '.replay-view',
+      },
+    ]
+    const overflowSummary = []
+    for (const page of pages) {
+      await navigate(page.path, `${page.label}（375px）`, page.ready)
+      if (page.wait !== undefined) {
+        await waitFor(page.wait, `${page.label} 内容就绪（375px）`)
+      }
+      await sleep(200)
+      const metrics = await checkNoHorizontalOverflow(`${page.label} 375px`)
+      overflowSummary.push(`${page.label}:${metrics.docScrollWidth}/${metrics.docClientWidth}`)
+      await checkLongTextWraps(`${page.label} 375px`)
+      await checkTouchTargets(`${page.label} 375px`)
+      if (page.shot !== undefined) {
+        await screenshot(page.shot)
+      }
+    }
+    check(
+      '375px 覆盖页面数 ≥4 且全部无横向溢出',
+      overflowSummary.length >= 4,
+      `pages=${overflowSummary.length}`,
+    )
+
+    // 2) 对局输入区在 375px 可用：输入框宽度足/可聚焦；发送按钮在视口内且 ≥44 高
+    await navigate(`/game/${encodeURIComponent(state.gameId)}`, '对局页（输入区 375）', '#command-input')
+    await sleep(200)
+    const inputUsable = await evaluate(`(() => {
+      const input = document.querySelector('#command-input');
+      const button = document.querySelector('form.command-input button[type="submit"]');
+      if (input === null || button === null) return { ok: false };
+      // 输入区在长页下方：模拟玩家滚动到输入区，再测「可达且可点」。
+      input.scrollIntoView({ block: 'center' });
+      input.focus();
+      const inputRect = input.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        Math.round(inputRect.left + inputRect.width / 2),
+        Math.round(inputRect.top + inputRect.height / 2),
+      );
+      return {
+        ok: true,
+        inputWidth: Math.round(inputRect.width),
+        buttonHeight: Math.round(buttonRect.height),
+        buttonInViewport:
+          buttonRect.bottom <= window.innerHeight + 1 && buttonRect.right <= window.innerWidth + 1,
+        focused: document.activeElement === input,
+        hitIsInput: hit === input,
+      };
+    })()`)
+    check(
+      '375px 指令输入框可用（宽度足、可聚焦、无遮挡）',
+      inputUsable.ok === true && inputUsable.inputWidth >= 200 && inputUsable.focused === true,
+      JSON.stringify(inputUsable),
+    )
+    check(
+      '375px 发送按钮在视口内可点且高度 ≥44',
+      inputUsable.buttonInViewport === true && inputUsable.buttonHeight >= 44,
+      JSON.stringify(inputUsable),
+    )
+
+    // 3) 弹层可关：视觉设置菜单（Esc 关闭）+ 退出说明面板（按钮关闭）均不超出视口
+    await navigate('/', '首页（弹层 375）', '.home-form')
+    await evaluate(`document.querySelector('.visual-menu summary')?.click()`)
+    await waitFor(`document.querySelector('.visual-menu')?.open === true`, '视觉设置菜单展开（375）')
+    const menuRect = await popupRect('.visual-menu')
+    check(
+      '375px 视觉设置弹层不超出视口',
+      menuRect !== null && menuRect.left >= -1 && menuRect.right <= menuRect.innerWidth + 1,
+      JSON.stringify(menuRect),
+    )
+    await dispatchKey('Escape')
+    await waitFor(`document.querySelector('.visual-menu')?.open === false`, '视觉设置菜单可关闭（Esc）')
+    await waitFor(
+      `document.querySelector('[data-testid="quit-game-button"]') !== null`,
+      '退出游戏按钮存在（375）',
+    )
+    await click('[data-testid="quit-game-button"]', '退出游戏（375）')
+    await waitVisible('[data-testid="quit-info-panel"]', '退出说明面板（375）')
+    const quitRect = await popupRect('[data-testid="quit-info-panel"]')
+    check(
+      '375px 退出说明面板不超出视口',
+      quitRect !== null && quitRect.left >= -1 && quitRect.right <= quitRect.innerWidth + 1,
+      JSON.stringify(quitRect),
+    )
+    await click('[data-testid="quit-info-close"]', '知道了（375）')
+    await waitFor(
+      `document.querySelector('[data-testid="quit-info-panel"]') === null`,
+      '退出说明面板可关闭（375）',
+    )
+    await screenshot('36-mobile-popups-375.png')
+    await clearViewport()
+    return `375px 页面=${pages.length}（截图 6 张）；触控/长文本/输入区/弹层全部通过`
   })
 
   await step('console.no-errors', '全程无 console 错误 / 未捕获异常', async () => {
@@ -1899,6 +2659,14 @@ async function main() {
     await cdp.send('Log.enable')
     await cdp.send('Network.enable')
     installConsoleCapture(cdp)
+    cdp.on('Network.requestWillBeSent', (params) => {
+      const request = params?.request ?? {}
+      networkRequests.push({
+        url: String(request.url ?? ''),
+        method: String(request.method ?? ''),
+        ts: Date.now(),
+      })
+    })
     log(`▶ CDP 已连接：${truncate(state.browserVersion, 120)}`)
 
     await runFlow()
