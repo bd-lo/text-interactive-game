@@ -95,6 +95,14 @@
 - **前端**：夜间暗色 token 提亮（`--fg-dim`→`#c6cce2`、`--accent`→`#c8d3ff`、`--ambient-1..4` 不透明度下调；CDP 字形像素实测最差 accent **2.66→4.89**、fg-dim **2.93→5.34**、渐变标题 **5.82→7.48**，夜间全部 ≥4.5；新 token 纯底 dim/bg **12.47**、accent/bg **13.49**；日间 token 未改）；375/320px「视觉设置」菜单改全宽下拉；e2e 新增 `mobile.visual-menu`。
 - **文档**：新增 ADR D-R6-1/2/3 并登记 `docs/decisions/README.md` 索引；第 12 章 §12.11、第 13 章 §13.4、第 16 章、第 18 章、第 23 章回写；R5 §4 20 条最终状态、N 系列 QA P2 状态与文档漂移（e2e 接入 CI、第 18 章 Playwright/axe 结论、RELEASE 031/058、流式 `start.turn_id`、分享导出重序列化、8MB 精确匹配）见 [R6 进度文档](docs/progress/R6-2026-11-12-leftovers.md)。
 - **验证**：后端 **2521 passed**（replay **69**、mypy 119 files、ruff format 281 files/ruff check 全过、lint-imports 2 kept）；web **69 files / 481 tests**（typecheck/build、dist 38 文件连续两次 build SHA256 一致）；e2e **33/33 步、211/211 断言**；demo/console `--check` exit 0；`check_docs` PASS；新增测试 **+65**。本批**不 bump 版本**（`0.4.0` 待发布、RELEASE.md checklist 未执行）。
+### R7 行动自由度（2026-11-12，D-N6 用户批准新增 EventType）
+
+- **新增 4 个动作工具（工具数 8 → 12）**：`attack`（同房间一次判定，命中则目标退出场景）、`drop_item`（背包→当前房间）、`give_item`（背包→同房间 NPC）、`improvise`（规则未覆盖的临场动作，由裁判确认）；`build_m2_tool_registry()` 保持 7 工具不变、旧场景不产生新事件。
+- **新增 4 个 EventType + reducer（纯加法）**：`ITEM_DROPPED` / `ITEM_GIVEN` / `COMBAT_RESOLVED` / `IMPROVISED_ACTION`（严格类型校验、非法 `ValueError`）；目标**旧 m2/m3/m4 golden 逐字不变、不重基线**（D-N6 批准新增 EventType；若出现漂移停止并报告，禁止 `--snapshot-update`）。
+- **`improvise` 首次让裁判生产可达**：声明 `AGENT_ASSISTED` → `agent_assisted_tools={"improvise"}` → `needs_judge` 生效（每回合 ≤1 次、advisory only、证据须在私有感知切片内）；离线/裁判缺失确定性兜底拒绝、零事件；`judge@v1` 契约不变（payload 增 `action_text`）。
+- **解析与执行**：删除单一 0.6 阈值 → 分工具 `CONFIDENCE_FLOORS`（未知回退 0.6）；低置信澄清文案不变、补可点击 `suggested_actions`（候选不自动执行、零写入）；实体名→ID 映射（未知仍 `NOT_FOUND`）；`parse@v2` 支持 ≤3 步（白名单/长度/字符校验，不合法降级单步），多步**原子执行**（全部成功才提交、任一步失败整回合零写入、审计 aborted）。
+- **文档**：ADR [D-R7-1..5](docs/decisions/2026-11-12-r7-action-freedom.md) + `docs/decisions/README.md` 索引、[R7 进度文档](docs/progress/R7-2026-11-12-action-freedom.md)、开发文档第 07/08/09/12/17 章回写。
+- **验证（最终门禁实测，2026-11-12）**：全量 **2696 passed**（R6 基线 2521 → **+175**；含 T1 动作包 39 / T3 编排 11 / T4 裁判 8 / T7 安全红队 51）、replay **69 passed**（m2/m3/m4 golden 逐字不变、零重基线）、`ruff format` **288 files** / `ruff check` 全过、`mypy` **120 files**、`lint-imports` **2 kept / 0 broken**、`check_docs` PASS、demo **7/7**、console **4/4**；T7 红队零真实缺陷（1 条低危加固已修：`ReducerRegistry.get` 非 `EventType` 输入统一 `ValueError`）。六维自由度复评 **3.0→3.8/5**（行动 2→**4**），11/11 探针 PASS、零真实 LLM/零网络，审计见 [2026-11-12-r7-action-freedom-verification](docs/audits/2026-11-12-r7-action-freedom-verification.md)。本批**不 bump 版本**（`0.4.0` 待发布）。
 ## [0.3.0] - 2026-11-11（玩家启动器与退出体验，N5 057）
 
 ### 新增

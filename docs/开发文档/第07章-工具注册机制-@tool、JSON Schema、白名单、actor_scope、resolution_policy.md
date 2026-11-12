@@ -176,7 +176,7 @@ class ToolRegistry:
                 if actor_id in spec.actor_scope or not spec.actor_scope.isdisjoint(actor_tags)]
 ```
 
-可见性矩阵（M2 初始值 + M3 细标签 + M4 `craft_item`；新增工具必须同步第 22 章进度文档）：
+可见性矩阵（M2 初始值 + M3 细标签 + M4 `craft_item` + R7 动作包；新增工具必须同步第 22 章进度文档）：
 
 | 工具 | side_effect | resolution_policy | player | npc | npc:blacksmith | system |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -184,13 +184,16 @@ class ToolRegistry:
 | `get_inventory`（M2） | READ_ONLY | deterministic | ✅ | ✅ | ✅ | ✅ |
 | `move_to`（M2） | DESTRUCTIVE | deterministic | ✅ | ✅ | ✅ | ✅ |
 | `take_item`（M2） | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
-| `attack_target`（后续，未实现） | DESTRUCTIVE | deterministic | ✅ | ✅ | ❌ | ✅ |
-| `transfer_item`（后续，未实现） | DESTRUCTIVE | agent_assisted | ❌ | ❌ | ✅ | ✅ |
+| `attack`（R7） | DESTRUCTIVE | deterministic | ✅ | ✅ | ❌ | ✅ |
+| `drop_item`（R7） | DESTRUCTIVE | deterministic | ✅ | ✅ | ❌ | ✅ |
+| `give_item`（R7） | DESTRUCTIVE | deterministic | ✅ | ✅ | ❌ | ✅ |
+| `improvise`（R7） | DESTRUCTIVE | **agent_assisted** | ✅ | ✅ | ❌ | ✅ |
+
 | `craft_item`（M4） | DESTRUCTIVE | deterministic | ✅ | ❌ | ✅ | ✅ |
 | `use_item`（M2） | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
 | `talk_to`（M2） | DESTRUCTIVE | deterministic | ✅ | ❌ | ❌ | ✅ |
 
-**里程碑标注（A-09 回写）**：上表 9 个工具中，M2 已实现 6 个（`get_room_view`/`get_inventory`/`move_to`/`take_item`/`use_item`/`talk_to`，见 `tools/builtin/m2.py`）；`craft_item` 由 M4 落地（`tools/builtin/crafting.py`，新增 `build_game_tool_registry()`，不改 `build_m2_tool_registry`）；`attack_target`/`transfer_item` 为后续里程碑计划、当前未注册。`use_item` 为 M2 新增动作，矩阵行本次回写补齐（player/system ✅、npc 系列 ❌），不放宽既有授权。
+**里程碑标注（A-09 回写 + R7 回写）**：上表 11 个工具中，M2 已实现 7 个（`get_room_view`/`get_inventory`/`inspect_item`/`move_to`/`take_item`/`use_item`/`talk_to`，见 `tools/builtin/m2.py`）；`craft_item` 由 M4 落地，R7（2026-11-12，D-R7-1）新增 `attack`/`drop_item`/`give_item`/`improvise` 四工具——`build_game_tool_registry()` 共 **12** 个已注册工具（M2 七工具 + `craft_item` + 四新工具），`build_m2_tool_registry()` 仍为 **7** 工具不变；旧 m2/m3/m4 场景不产生新事件、golden 零重基线。`use_item` 为 M2 新增动作，矩阵行本次回写补齐（player/system ✅、npc 系列 ❌），不放宽既有授权。
 
 **`craft_item` 的 M4 执行链（D-M4-13）**：M4 制造作为普通 DESTRUCTIVE 工具复用 M3 编排链路——玩家 Proposal → `ProposalQueue` → 确定性 `Resolver`（m4 无 NPC Agent → 无跨角色冲突、无 Judge 覆盖）→ `ToolGate.dispatch` → `CraftService.craft`（第 6 章 §6.3，服务层只产草稿事件）→ `GameEngine.submit`；失败提案由编排层照常写 `audit_events`。D-M4-3 仅指自由制造草案不入队（`CraftProposal` 仅 M5 契约保留，M5 接线前须迁 pre-queue）；`rng_seed` 由服务层用 `CraftStateSlice.next_seq` 派生（D-M4-4），事件语义按 D-M4-5（成功 `CRAFT_DETERMINISTIC`/`CRAFT_GENERATED`，`CRAFT_REJECTED` M4 不产生）。
 
