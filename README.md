@@ -6,10 +6,10 @@
 
 **默认离线可玩**：不需要 API Key、不需要 Node/pnpm、不需要联网（仅首次安装依赖需联网）。
 
-> **当前状态**：`0.3.0`（2026-11-11，玩家启动器/退出体验批次）。M1–M6 已完成；**UC 批次**已交付——**玩家自上传场景 JSON**（网页场景库导入即玩/终端 `--scenario-id`）、**酒馆级世界书**（正则键/定时效果/包含组/position-depth 排序，兼容 SillyTavern World Info 与 Character Card V2 `character_book`）、**自己的 DeepSeek API Key**（网页设置页输入，本地开发默认用 `.env` 开发 key，干净克隆引导输入，保存即生效；默认离线仍可玩）。**WB2** 补齐世界书详情字段可见性；**M6 后计划表**已定案（第 17 章 §17.9：N1 内容 / N2 体验 / N3 功能 / N4 技术发布 / N5 发布体验 五轨道，编号 029–060）；**057 玩家启动器**——Windows 双击 `启动游戏.bat` 启动（启动器窗口 + 浏览器），游戏内「退出游戏」优雅退出，关浏览器 5 分钟空闲自动退出，`退出游戏.bat` 兜底。
-> 里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md)、[057 启动器进度文档](docs/progress/057-2026-11-11-player-launcher.md)、[WB2 进度文档](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 进度文档](docs/progress/UC-2026-11-11-user-content-and-llm.md)（当前实测：pytest **2186 passed** / replay 68 / web **56 files/347 tests** / 浏览器 e2e **26 步/125 断言**（+启动器模式 26/126）；数字以 CI 与实际输出为准）。
-> 发布与分发：[CHANGELOG](CHANGELOG.md)、[RELEASE.md](RELEASE.md)（版本号/checklist/tag 流程）、[部署与分发评估](docs/design/deployment-and-distribution.md)（双击启动器 / wheel 为主，Docker 暂不提供）。
-> 本批设计文档：[用户场景 JSON 格式与设计](docs/design/user-scenario-modules.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[ADR D-UC/D-LLM/D-WB](docs/decisions/2026-11-11-user-content-and-llm-runtime.md)、[M6 后计划表 ADR](docs/decisions/2026-11-11-post-m6-roadmap.md)、[Aurora Glass 双皮肤 ADR（D-UI-3）](docs/decisions/2026-11-11-aurora-glass-theme.md)、[视觉参考与许可证](docs/design/frontend-visual-refs.md)、[技术风险审查与修复记录（R-01～R-25）](docs/audits/2026-11-11-technical-pitfalls-review.md)、[跑团式世界模组（设计）](docs/design/trpg-world-module.md)、[LLM 参与与自由度评估审计（2026-11-12）](docs/audits/2026-11-12-llm-participation-freedom.md)。
+> **当前状态**：`0.3.0`（2026-11-11，玩家启动器/退出体验批次）为当前快照；**M6 后 N 系列批次（2026-11-12）已交付**：**N1 内容轨**——场景 JSON **v2 条件 DSL**（白名单原子 + flags 派生命题 + 多结局优先级，v1 完全兼容、无脚本/表达式）、场景**单文件分享导出**（`GET /api/v1/scenarios/{id}/export`，可直接再导入）、**网页场景编辑器**（`/scenarios/editor`：表单+JSON 双视图/实时校验/保存开局/详情导出下载）、**示例内容包**（2 个 v2 场景 + 1 世界书 + 1 人物卡 + 一键体验脚本）；**N2 体验轨**——**流式叙事阶段 1**（`POST /api/v1/turns/stream` NDJSON 5 事件 + 网页对局页增量显示/失败降级一次/可回滚）、**网页可访问性**（键盘可达/焦点管理/aria live region/`reduced-motion`/双主题对比度按 WCAG 2.1 AA 修正）、**移动端打磨**（9 页 375px 无横向溢出 + 窄屏触控目标 ≥44×44）；**N3 功能轨**——终端**卡库浏览**（`--list-cards` 过滤/`--card-detail`）、**场景包批量导入导出**（`--import-scenarios`/`--export-scenarios`）、**存档导出/导入**（`GET /api/v1/games/{id}/export` + `POST /api/v1/saves/import`，哈希校验/幂等/上限）；**N4/N5 评估与工具**——m3 受控重基线工具（dry-run 默认）、长会话性能基线、Playwright 复评结论「继续零依赖 CDP」（D-N4-2）、便携包评估结论「本轮不实现」（D-N5-1）、玩家启动器（057）。
+> 版本仍为 **`0.3.0`**，`0.4.0` 发布（tag/Release/PyPI）待维护者拍板；里程碑与逐切片证据见 [docs/PROGRESS.md](docs/PROGRESS.md) 与 [单次进度文档](docs/progress/)（最近一次集成验收 2026-11-12：全量 pytest **2456 passed**（含 replay **69**、security **172**）、web **69 files / 481 tests**、e2e **32 步 / 205 断言**、四门与 `check_docs` 全绿；以 CI 实际输出为准）。
+> 发布与分发：[CHANGELOG](CHANGELOG.md)、[RELEASE.md](RELEASE.md)（版本号/checklist/tag 流程）、[部署与分发评估](docs/design/deployment-and-distribution.md)（双击启动器 / wheel 为主，Docker 暂不提供、便携包本轮不实现）。
+> 相关设计文档：[用户场景 JSON 格式](docs/design/user-scenario-modules.md)、[场景 DSL v2 设计](docs/design/scenario-dsl-v2.md)、[流式叙事阶段 1](docs/design/narrative-streaming.md)、[网页可访问性清单](docs/design/a11y-checklist.md)、[场景包批量导入导出](docs/design/scenario-pack-batch.md)、[存档导出/导入](docs/design/save-export-import.md)、[世界书格式兼容](docs/design/world-book-format-compat.md)、[M6 后计划表 ADR](docs/decisions/2026-11-11-post-m6-roadmap.md)。
 
 ![网页版首页：存档续玩 + 场景/世界书选择](docs/assets/web-home.png)
 
@@ -114,14 +114,21 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 
 - **当前版本 `0.3.0`**（2026-11-11，玩家启动器/退出体验 = N5 057）。版本号唯一来源：
   `pyproject.toml` 与 `src/textgame/__init__.py::__version__`；玩家可见变更见 [CHANGELOG.md](CHANGELOG.md)。
+- **下一版 `0.4.0` 待发布**：M6 后 N 系列批次（N1 内容 / N2 体验 / N3 功能 / N4 技术发布评估与工具）已合入 `main`
+  但**尚未 bump 版本、未打 tag、未发布**——版本号仍为 `0.3.0`；tag `v0.3.0` / GitHub Release / PyPI 均由维护者拍板。
+  发布前按 [RELEASE.md](RELEASE.md) §2.3 复跑 N 系列增量门禁（全量测试/replay/四门/web 构建/e2e/`check_docs`）。
 - **怎么发**：[RELEASE.md](RELEASE.md) 给出发布 checklist（测试/四门/e2e/构建冒烟/启动器冒烟/许可证/安全/文档）、
   wheel 干净环境冒烟命令与 `git tag` / Release notes 流程。上一发布快照 **`v0.2.0`** 已打注记 tag
   （2026-11-11，CI run `43032265398` 全绿）；`0.3.0` 已 push main，tag 与 GitHub Release 待维护者决定。
 - **分发形态**：Windows 普通玩家默认「双击 `启动游戏.bat` 启动器」（底层 `scripts/play.ps1 -Launcher`）；开发者可「仓库克隆 + `play` 脚本」（已含 `web/dist`，无需 Node）或 wheel（内嵌网页版）；
   Docker 评估结论是**暂不提供镜像**（草案与复评条件见[部署与分发评估](docs/design/deployment-and-distribution.md)）；
   PyPI 正式发布暂缓（由维护者拍板）。
-- **版本路线**：后续能力按 [第 17 章 §17.9 M6 后计划表](docs/开发文档/第17章-里程碑与进度文档编号规划.md)
-  的五条轨道推进（N1 内容 / N2 体验 / N3 功能 / N4 技术发布 / N5 发布体验，编号 029–060）。
+- **版本路线**：M6 后按 [第 17 章 §17.9 M6 后计划表](docs/开发文档/第17章-里程碑与进度文档编号规划.md)
+  的五条轨道推进（N1 内容 / N2 体验 / N3 功能 / N4 技术发布 / N5 发布体验，编号 029–060）；
+  本轮已交付：029/030（场景 DSL v2）、032（场景分享导出）、035–036（示例内容包）、037–040（流式叙事阶段 1）、
+  041–042（可访问性）、045/047/048（终端批量/卡库/存档导出导入）、049–053/057（发布就绪与启动器）、
+  054–056/058（重基线工具、性能基线、两项评估）；未交付/待排期：031 场景编辑器、033–034 揭示类条件（需用户拍板）、
+  046 世界书条目编辑（可选，待前端批次评估）。
 
 ## 世界书（World Book / Lorebook）
 
@@ -157,35 +164,63 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **限制**：不执行任何来自导入内容的脚本/命令；`vectorized` 向量检索、`outlet` 宏插入、`characterFilter`
   仍不支持（见兼容文档 §5）；世界书详情页只展示配置值，「本回合是否激活」看对局内「世界设定」面板。
 
-## 玩家自上传场景（Scenario JSON）
+## 玩家自上传场景（Scenario JSON v1 / v2）
 
 剧情不再固定：**玩家自己上传一份场景 JSON 就能开新局**（不需要改代码、也不需要等我们更新内容）。
 
 - **怎么玩**：网页「场景库」(`/scenarios`) → 导入/粘贴 JSON → 校验预览（错误逐条给 JSON 路径）→ 导入 →
   「按此场景开局」；首页「新建对局」的场景下拉同时列出内置 4 个场景与已上传场景。
-  终端：`--list-scenarios` 查看已上传场景、`--scenario-id <ID>` 直接开局。
-- **格式**：`schema_version/slug/meta/player/rooms/items/npcs/goal/endings/suggestions`，条件 DSL 只认白名单谓词
-  （`in_room/has_item/has_item_tag/npc_state/hp_lte/hp_gte` + `all/any/not/always`，禁 eval）。完整字段、限额、
-  作者向最小示例见 [docs/design/user-scenario-modules.md](docs/design/user-scenario-modules.md) §2。
-- **示例**（可直接导入试玩）：
-  [examples/scenarios/tiny-tower.json](examples/scenarios/tiny-tower.json)（两房间最小场景）、
-  [examples/scenarios/ember-watch.json](examples/scenarios/ember-watch.json)（5 房间/守夜人对话/枯井进入伤害/胜利+倒下双结局）。
+  终端：`--list-scenarios` 查看已上传场景、`--scenario-id <ID>` 直接开局；批量见下方「场景包批量导入/导出」。
+- **格式（v1 与 v2）**：`schema_version/slug/meta/player/rooms/items/npcs/goal/endings/suggestions`；
+  **v1 场景完全兼容**，`schema_version: 2` 追加白名单条件扩展（flag 派生命题 + `objective_done` /
+  `has_item_tag_count` / `item_in_room` / `npc_in_room` / `turn_gte` / `world_time_gte` / `hp_lte` 等原子，
+  `all/any/not` 组合）与**多结局优先级**语义；条件只走服务端白名单求值，**禁 eval、不执行用户脚本/表达式**。
+  完整字段与 v1→v2 兼容矩阵见 [docs/design/scenario-dsl-v2.md](docs/design/scenario-dsl-v2.md)、
+  [docs/design/user-scenario-modules.md](docs/design/user-scenario-modules.md)。
+- **示例**（可直接导入试玩）：[examples/scenarios/](examples/scenarios/) 共 4 个——v1 的
+  [tiny-tower.json](examples/scenarios/tiny-tower.json)（两房间最小场景）、
+  [ember-watch.json](examples/scenarios/ember-watch.json)（5 房间/对话/伤害/双结局），v2 的
+  [lantern-vigil.json](examples/scenarios/lantern-vigil.json)（flag/目标进度/多结局）与
+  [moonlit-market.json](examples/scenarios/moonlit-market.json)（可分享 v2 示例）。
+- **示例内容包（一键体验）**：[examples/content-pack/](examples/content-pack/) 提供 2 个可玩 v2 场景
+  （灰烬灯塔/镜井）+ 1 本世界书 + 1 张人物卡；Windows `.\scripts\quickstart-content-pack.ps1`、
+  Linux/macOS `./scripts/quickstart-content-pack.sh`（`-Check`/`--check` headless 自检，临时库 + 离线）。
 - **支持的内容**：房间与出口、物品（`heal`/`hp_delta` 等既有道具效果）、NPC 关键词对话（可写 `dialogue_state` 供目标判定）、
   目标链（条件满足即完成）、显式结局（按 `priority` 取第一个满足项，未写时按「目标全完成=胜利 / HP≤0=倒下」兜底）、
-  进入房间伤害、建议文案。**不支持**自定义配方/制造链、战斗系统、脚本表达式、GM 层/多人——边界见设计文档 §4。
+  进入房间伤害、建议文案。**不支持**自定义配方/制造链、战斗系统、脚本表达式、场景编辑器、揭示/历史类条件
+  （033–034，未排期）、GM 层/多人——边界见设计文档 §4/§5。
 - **确定性**：场景实体内 ID 由 `sha256(scenario_id|kind|key)` 派生（同 JSON 同存档状态可复算），
   目标/结局读时纯求值，不新增 `EventType`、不写 `GameState` 字段；旧 4 场景 golden/回放零影响。
+- **分享 = 文件交换**：`GET /api/v1/scenarios/{scenario_id}/export` 返回可直接再导入的场景 JSON 原文
+  （`Content-Disposition: attachment; filename="<slug>.json"`，只读、零写入、不含库内字段）；
+  导入沿用 `POST /api/v1/scenarios`（无云端/账号/市场，D-N5）。
 - **API**（写操作带 `Idempotency-Key`；导入 ≤256KB，非法 JSON/字段给结构化 errors，过大 413，未知 id 404）：
   ```bash
   curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/scenarios/validate \
-    -H 'Content-Type: application/json' --data-binary @examples/scenarios/ember-watch.json   # 只读预检
+    -H 'Content-Type: application/json' --data-binary @examples/scenarios/lantern-vigil.json   # 只读预检（v1/v2 通用）
   curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/scenarios \
     -H 'Idempotency-Key: demo-scn-0001' -H 'Content-Type: application/json' \
-    --data-binary @examples/scenarios/ember-watch.json                                        # → 201 {scenario_id,...}
+    --data-binary @examples/scenarios/tiny-tower.json                                          # → 201 {scenario_id,...}
   curl --noproxy '*' -X POST http://127.0.0.1:8000/api/v1/games \
     -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-scn-game-0001' \
-    -d '{"scenario_id":"scn_..."}'                                                           # 按上传场景开局
+    -d '{"scenario_id":"scn_..."}'                                                             # 按上传场景开局
+  curl --noproxy '*' -o tiny-tower.json http://127.0.0.1:8000/api/v1/scenarios/scn_.../export  # 单文件分享导出
   ```
+
+## 场景包批量导入/导出（终端）
+
+不想在网页里一个个点？终端支持整目录批量操作（复用同一批场景端点，只读导出/幂等导入）：
+
+```bash
+uv run --no-dev python -m textgame.console --export-scenarios .work/scenario-pack          # 导出场景库 → <slug>.json（默认 50、上限 100）
+uv run --no-dev python -m textgame.console --import-scenarios .work/scenario-pack          # 批量导入；逐文件 [ok]/[skip]/[error] 中文报告
+uv run --no-dev python -m textgame.console --import-scenarios ./inbox --import-limit 100   # 单次上限 100（默认 50）
+```
+
+- 导入幂等键由文件内容 sha256 派生：**同一目录重跑只回放、不重复建档**；逐文件 ≤256KB/UTF-8/JSON 对象预检；
+  有失败退出码 1，全部成功/跳过退出码 0（网页多文件 UI 由后续 web 批次补，见
+  [docs/design/scenario-pack-batch.md](docs/design/scenario-pack-batch.md)）。
+- 导出的 `<slug>.json` 可直接再导入（分享 = 文件交换）；slug 重名会在文件名追加场景 ID 后 8 位。
 
 ## 自己的 DeepSeek API Key（设置页）
 
@@ -200,6 +235,33 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
   开启前需确认“裁决/重试链路内调 LLM、可能重复计费”；确认后立即生效，偏好保存在 `data/free_craft.json`
   （`TEXTGAME_FREE_CRAFT_SETTINGS_FILE` 可改路径），重启保留。只建议单人本地使用。
 
+## 流式叙事（可选，配置 LLM 后）
+
+配置 LLM 后，网页对局页会尝试**流式叙事**：叙事边说边显示，首字更早可见；默认离线模板叙事仍走普通同步回合。
+
+- **协议**：`POST /api/v1/turns/stream`（NDJSON，一行一个事件：`start`/`delta`/`replace`/`done`/`error`）；
+  `done.result` 与普通 `POST /api/v1/turns` 的 `TurnResult` **完全一致**，回合在完整结束后照常提交（断连不撤销）。
+- **前端行为**：增量显示 → `done` 用权威结果校准；失败/服务端不支持时**自动降级普通 `/turns` 一次**
+  （手动重试，无自动重试循环）；可取消，取消后不残留半截文本。
+- **回滚开关**：`TEXTGAME_STREAM_ENABLED=false` 时流式端点返回 404 统一失败信封，前端自动走同步回合；
+  默认离线/模板叙事不需要该端点。
+- **阶段 1 边界**：不做流式重连补增量/自动重试/全量默认流式（见
+  [docs/design/narrative-streaming.md](docs/design/narrative-streaming.md)、进度文档 037–040）；旧 `/turns` 契约零改动。
+
+## 存档导出/导入（单文件备份与迁移）
+
+想把一局游戏存档带走/备份/换机继续？后端提供只读导出 + 幂等导入端点（终端/脚本可用，网页 UI 由后续 web 批次接）：
+
+- `GET /api/v1/games/{game_id}/export` → 200 单文件 JSON 存档包
+  `{export_version, exported_at, game{...}, events[...], snapshot{state_hash, version, last_event_seq,...}, checksum}`；
+  只读（不写库/事件/快照），未知存档 404。
+- `POST /api/v1/saves/import`（必带 `Idempotency-Key`，body = 上面导出的包）→ 201
+  `{game_id, turn, version, snapshot_version}`：先校验包结构/checksum/事件模型/**全量事件回放得到的 `state_hash`
+  与包内声明一致**（失败零写入，422 结构化 `violations`），通过后经唯一写入者重放为**新的一局**；
+  同键同包幂等回放、同键异包 409；上限 8MB/20000 事件。
+- 安全：导出包**不含 API Key/凭据/日志**；`checksum` 只是完整性校验、**不是数字签名**（分享给他人前请自行评估，
+  本功能面向本机备份/迁移）。设计见 [docs/design/save-export-import.md](docs/design/save-export-import.md)。
+
 ## 常见问题（FAQ）
 
 - **PowerShell 报「无法加载文件 … 未对文件进行数字签名」/ 执行策略**：用 `powershell -ExecutionPolicy Bypass -File .\scripts\play.ps1` 或 `pwsh -File .\scripts\play.ps1`。仓库脚本已按 **UTF-8 with BOM** 保存，Windows PowerShell 5.1 与 PowerShell 7 都能正确解析中文。
@@ -207,12 +269,19 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **第一次运行为什么慢**：`uv sync` 会下载 CPython 3.12 与 `uv.lock` 锁定依赖（运行时约 98 个包、数百 MB 磁盘）；已同步过的环境之后秒级启动。只玩终端/网页用 `--no-dev` 更快；跑测试/质量门才需要 dev 依赖。
 - **怎么退出游戏？** 推荐在游戏页面点 **「退出游戏」**（正常退出，进度已保存）；也可以关闭启动器小窗口，或双击根目录 **`退出游戏.bat`** 兜底（按端口精确结束后台进程，可带端口 `退出游戏.bat 8001`；没运行时提示「游戏没有在运行」）。只关掉浏览器不算退出：5 分钟没有页面心跳后启动器会自动退出（`TEXTGAME_IDLE_EXIT_SECONDS` 默认 300；0=关闭自动退出）。命令行方式直接按 Ctrl+C 停止服务。
 - **双击 `启动游戏.bat` 后一直显示「正在准备…（首次运行需几分钟）」？** 首次运行要先下载 CPython 3.12 与运行时依赖（数百 MB，取决于网络），请耐心等窗口状态变为「游戏运行中」；进度/失败原因看 `data/logs/launcher-server.log`。缺少 uv 时启动器会弹窗直接给出安装网址，安装后重新双击即可（不会自动安装任何东西）。
-- **有安装包 / 免安装 exe 吗？** 暂不提供（2026-11-11 评估：需新增构建链与发布流水线、包体较大且有杀软误报/签名成本，当前「双击 `启动游戏.bat` + uv」已满足单机试玩；如后续有需求再单独立项评估）。
+- **有安装包 / 免安装 exe 吗？** 本轮仍不提供（N5-058 已评估并定案：**本轮不实现**便携包/PyInstaller/安装器，
+  维持「仓库/zip + uv + 启动器 + wheel」分发，决策 D-N5-1；原因是需新增构建链与发布流水线、包体较大且有杀软误报/签名成本，
+  当前「双击 `启动游戏.bat` + uv」已满足单机试玩；复评触发条件见 [便携包评估 ADR](docs/decisions/2026-11-12-portable-package-eval.md)）。
 - **存档在哪里**：默认 `data/textgame.db`（已 gitignore，不会误提交）；终端版默认自动继续同库最近存档，`--new` 强制新开、`--continue` 强制继续；`--db <路径>` 或 `--db sqlite:///…` 可指定别处。
 - **怎么开真实 LLM 叙事（可选）**：本地开发机把 [.env.example](.env.example) 复制为 `.env` 并填 `TEXTGAME_LLM_API_KEY`
   即可自动启用（或用 `.\scripts\play.ps1 -Llm`）；干净克隆的玩家在自己浏览器里打开「设置」页填入 DeepSeek API Key，
   保存后当回合生效。连通性自检：`uv run python -m textgame.llm.smoke`（缺 Key 退出码 2，API 失败退出码 1）。
   **默认离线可玩**，不配置就一直离线且零联网。
+- **流式叙事怎么开启/关闭？** 配置 LLM 后网页对局页自动尝试流式（`POST /api/v1/turns/stream`），失败自动降级普通回合一次；
+  想强制回滚旧同步路径：设置环境变量 `TEXTGAME_STREAM_ENABLED=false`（流式端点 404，前端走 `/turns`）。默认离线模板叙事不需要流式。
+- **怎么批量导入/导出场景，或备份一局游戏？** 终端：`--import-scenarios <目录>` / `--export-scenarios <目录>`（场景包，重跑幂等跳过）；
+  存档：`GET /api/v1/games/{game_id}/export` 下载单文件、`POST /api/v1/saves/import`（带 `Idempotency-Key`）导入为新局。
+  两者都不含密钥；存档包 `checksum` 只做完整性校验（非签名），分享前请自行评估。
 - **上传的场景 JSON 报错了怎么看？** 导入页会先调 `POST /api/v1/scenarios/validate` 做只读预检：`errors` 逐条给
   JSON 路径（如 `rooms[2].exits.east`）与中文原因；`warnings` 只提示不阻断（例如物品永远拿不到、NPC 没写对话）。
   先用 [examples/scenarios/tiny-tower.json](examples/scenarios/tiny-tower.json) 验证格式，再逐步加内容。
@@ -223,6 +292,17 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **端口被占用 / 网页打不开**：`play` 脚本会提示换端口（`-Port 8001` / `--port 8001`）。若 `/` 返回 JSON 404，通常是 `web/dist` 缺失（源码裁剪或未构建）：启动日志会有 WARNING，按 README「网页版」里的构建命令重建即可；终端版始终可用。
 - **浏览器要求**：现代 Chromium/Firefox/Safari（支持 CSS 自定义属性、`prefers-reduced-motion`）；无 JS 时不可用（SPA）。在线文档：服务启动后 `/api/docs`。
 - **数据与隐私**：默认离线路径不联网；`.env`、`data/`、`*.db` 均被 gitignore，不提交密钥与存档；世界书内容仅本机存储。
+
+## 已知限制（本版）
+
+- 默认离线模式是模板叙事；真实 LLM 叙事可选且需自己的 Key。配置 LLM 后网页会先尝试流式叙事、失败自动降级同步回合**一次**；
+  流式阶段 1 不做断线续传/重连补增量/自动重试（回滚开关 `TEXTGAME_STREAM_ENABLED=false`）。
+- 场景 JSON（v1/v2）仍不支持：自定义配方/制造链、战斗系统、脚本/表达式、**场景编辑器**（031 未交付）、
+  揭示/历史类条件（033–034 未排期，需新增事件类型并由用户拍板）、场景分享市场；v2 条件以设计文档白名单为限。
+- 世界书：`vectorized` 向量检索、`outlet` 宏插入、`characterFilter`、`useGroupScoring` 按现状不支持。
+- 存档导出/导入是**本机备份/迁移**工具：包内 `checksum` 只做完整性校验、**不是数字签名**，分享给他人前请自行评估。
+- 单机本地：没有账号体系/云存档/在线市场，不要让服务端口暴露到公网；API Key 只存本机。
+- 启动器窗口仅 Windows（WinForms）；暂无安装包/免安装 exe（N5-058 已评估：本轮不实现，D-N5-1），仍需 [uv](https://github.com/astral-sh/uv)。
 
 ## 玩法与场景
 
@@ -239,7 +319,10 @@ uv run --no-dev uvicorn textgame.main:app --port 8000   # 网页版（仓库根�
 - **剧情失败结局**：枯井「寒气」每次进入 -6 HP——连续两次进井即 HP→0 触发「倒下」结局；先找药水/烈酒回血可以再挑战（失败结局同样有专属文案，不是卡死）。
 - **视觉风格**：自建 **Aurora Glass** 双皮肤——日间（默认）/ 夜间，顶栏「外观」按钮一键切换（视觉设置菜单可选「跟随系统」）；极光渐变氛围 + 玻璃拟态面板 + 微光粒子 + 打字机叙事 + 面板/目标/结局动效。首帧脚本防刷新闪色，`reduced-motion`/减少透明度/无 `backdrop-filter` 均有降级，三档视觉设置（全特效/低功耗/关闭）可关；375px 可用、正文对比度 ≥4.5:1。来源与许可证见 [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)（仅 MIT 技法参考，零新增运行时依赖）。
 - 网页版卡库支持**导入 JSON 人物卡**（`/cards/import`）与**生成人物卡**（`/cards/generate`：写一句人物设定 → 草稿预览 → 保存 → 按此卡开局）；**默认离线时生成结果=确定性模板草稿**（页面有显著提示），配置 LLM 后才是 LLM 生成（可选，见 FAQ）。
-- HTTP API 也可以直接玩/集成：`POST /api/v1/games`（写操作必带 `Idempotency-Key`）→ `POST /api/v1/turns` → `GET /api/v1/games` / `{id}` / `/view` / `/replay`；交互式文档在服务启动后的 `/api/docs`。
+- **终端卡库浏览**：`--list-cards` 可直接浏览卡库（`--card-query <关键词>` 按标题/来源过滤、`--card-limit <n>` 1..100 默认 20、`--card-all` 上限内全量），显示标题/来源标签/更新时间/卡 ID 与按卡开局提示；`--card-detail <卡ID>` 只读查看单卡详情（来源/属性摘要/背包提示/警告）。只读浏览不建局。
+- **存档导出/导入**：`GET /api/v1/games/{game_id}/export` 单文件导出、`POST /api/v1/saves/import`（带 `Idempotency-Key`）导入为新的一局（校验和 + 事件回放 `state_hash` 一致才写库；失败零写入）。详见上文「存档导出/导入」。
+- **可访问性**：网页版补齐全局跳过链接/主区域 landmark、路由与面板焦点管理、指令框完整键盘操作、读屏 live region（`aria-live`）、`prefers-reduced-motion` 静态降级与双主题（日/夜）对比度按 **WCAG 2.1 AA** 修正（明暗主题均有人工清单与自动对比度断言；`a11y` 自动化不作为 CI 门禁）。清单见 [docs/design/a11y-checklist.md](docs/design/a11y-checklist.md)。
+- HTTP API 也可以直接玩/集成：`POST /api/v1/games`（写操作必带 `Idempotency-Key`）→ `POST /api/v1/turns`（或在 LLM 已配置时用 `POST /api/v1/turns/stream` 流式）→ `GET /api/v1/games` / `{id}` / `/view` / `/replay`；场景分享 `GET /api/v1/scenarios/{id}/export`、存档导出 `GET /api/v1/games/{id}/export`、存档导入 `POST /api/v1/saves/import`；交互式文档在服务启动后的 `/api/docs`。
 
 <details>
 <summary>HTTP 示例（创建存档 → 提交回合 → 刷新重连）</summary>
@@ -320,6 +403,19 @@ uv run --no-dev uvicorn textgame.main:app --port 8794 &   # 或仓库根另开�
 node scripts/e2e-web.mjs --base-url http://127.0.0.1:8794 --out artifacts/e2e-web
 ```
 
+> N4-055 已复评 e2e 工具口径并定案（D-N4-2）：**继续零依赖 CDP，不引入 Playwright 长期 CI 浏览器矩阵**；
+> a11y 自动化（axe 类）不设为门禁，以人工清单 + vitest 断言 + e2e 两步（键盘/reduced-motion）兜底。
+> 见 [评估 ADR](docs/decisions/2026-11-12-playwright-a11y-eval.md) 与 [a11y 清单](docs/design/a11y-checklist.md)。
+
+维护者工具（发布/回归前按需跑，都只读或写 `.work/`，不碰生产库）：
+
+```bash
+# m3 叙事受控重基线：默认 dry-run（只读重生成 + 逐字段 diff，0 diff 即当前基线未漂移）
+uv run python scripts/rebaseline_golden.py --golden m3 --dry-run --diff-report --out .work/n-batch/rebase-054.json
+# 长会话性能基线：120 回合 / 601 事件，输出 JSON 指标（退出码 0 = 阈值内）
+uv run python scripts/perf-long-session.py --turns 120 --out .work/n-batch/perf-056.json
+```
+
 环境变量见 [.env.example](.env.example)（前缀 `TEXTGAME_`）；`.env` 不入库，禁止提交真实密钥。静态目录可用 `TEXTGAME_STATIC_DIR` 覆盖（默认自动解析 `web/dist` / 包内 `textgame/web_dist`）。
 
 ## 质量门与 CI
@@ -354,20 +450,22 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 ├── docs/                       # 开发文档（23 章）、PROGRESS.md、decisions/（ADR）、design/（视觉/世界书/跑团设计）、progress/
 ├── docs/assets/                # README 截图（网页版首页/对局/结局/世界书/移动端）
 ├── examples/m2-demo.md         # seed=42 七回合终端演示（由 demo --markdown 实跑生成）
+├── examples/scenarios/         # 4 个可导入场景：tiny-tower/ember-watch(v1) + lantern-vigil/moonlit-market(v2)
+├── examples/content-pack/      # 示例内容包（N1-035–036）：2 个 v2 场景 + 1 世界书 + 1 人物卡 + 一键体验说明
 ├── examples/world-books/       # 示例世界书：tavern 29 条 + 角色卡 V2 内嵌 character_book + 说明
-├── src/textgame/               # 包根：main.py（组合根/uvicorn 入口）、console.py（终端入口）、demo.py
-│   ├── api/                    # /healthz、/api/v1/games、/turns、/character-cards、/world-books、/scenarios、/settings、静态托管
+├── src/textgame/               # 包根：main.py（组合根/uvicorn 入口）、console.py（终端入口）、demo.py、scenario_pack.py
+│   ├── api/                    # /healthz、/api/v1/games(+export)、/turns(+stream)、/character-cards、/world-books、/scenarios(+export)、/saves/import、/settings、静态托管
 │   ├── orchestration/          # TurnOrchestrator、ProposalQueue、Resolver、关键词解析、模板叙事（含世界设定注入与用户场景钩子）
 │   ├── agents/                 # IntentParseAgent、DeterministicCharacterAgent、CraftAgent、Narrator/Character/Judge Agent
 │   ├── tools/                  # @tool JSON Schema、ToolRegistry 白名单/actor_scope、ToolGate
-│   ├── services/               # GameEngine（唯一写入者）、Query/Action/Audit/Card/WorldBook/Scenario Service、TurnResult
+│   ├── services/               # GameEngine（唯一写入者）、Query/Action/Audit/Card/WorldBook/Scenario/Save Service、TurnResult
 │   ├── persistence/            # SQLAlchemy SQLite：events/snapshots/current/idempotency/audit_events/character_cards/world_books/scenarios
 │   ├── domain/                 # 领域层（零框架依赖）：types/results/events/models/reducers/scenario*/world_book/rules/perception
-│   ├── llm/                    # LLMClient 接口与治理、JSON 分级配置、Schema 修复、litellm 唯一 import 点
+│   ├── llm/                    # LLMClient 接口与治理、流式增量提取、JSON 分级配置、Schema 修复、litellm 唯一 import 点
 │   └── config/                 # pydantic-settings 配置与种子派生
 ├── tests/                      # unit/、integration/、replay/、security/、fixtures/golden/
 ├── web/                        # Vue 3 SPA 源码；web/dist 为已入库的预构建产物（运行期零 Node）
-├── scripts/                    # play.ps1/.sh（一键入口）、quickstart.ps1/.sh（终端别名）、e2e-web.mjs、check_*.py（门禁）
+├── scripts/                    # play/quickstart（一键入口）、quickstart-content-pack、e2e-web.mjs、perf-long-session.py、rebaseline_golden.py、check_*.py（门禁）
 ├── pyproject.toml              # 三层依赖分组 + hatch 打包（wheel 内嵌 web/dist）+ ruff/mypy/pytest/import-linter
 ├── uv.lock                     # 依赖锁定（验收一律 uv sync --frozen）
 ├── .env.example                # 环境变量样例（复制为 .env；.env 已被忽略、不入库）
@@ -380,8 +478,13 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 
 - [《文字交互游戏》开发文档 v0.3](docs/开发文档.md)：23 章，覆盖产品愿景、MVP 范围、总体架构、领域模型、服务层 API、工具注册、智能体设计、单回合调用链、判定机制、多角色并发、API 调用治理、制造系统、状态管理与事件溯源、安全防护、目录结构、vibe coding 开发计划、测试策略、依赖与许可证、风险与开放问题、轻量进度制度，以及 Vue 3 前端设计。
 - [按章拆分版](docs/开发文档/) ｜ [开发进度总览](docs/PROGRESS.md)（含 [WB2 世界书详情字段](docs/progress/WB2-2026-11-11-worldbook-detail-fields.md) 与 [UC 用户内容批次](docs/progress/UC-2026-11-11-user-content-and-llm.md)） ｜ [单次进度文档](docs/progress/) ｜ [决策记录（ADR-lite）](docs/decisions/)（含 [M6 后计划表 D-N1..N7](docs/decisions/2026-11-11-post-m6-roadmap.md)）
-- [docs/design/deployment-and-distribution.md](docs/design/deployment-and-distribution.md)：部署/分发形态对比、Docker 评估（暂不提供镜像）与发布冒烟清单。
-- [docs/design/narrative-streaming.md](docs/design/narrative-streaming.md)：流式叙事阶段 1 设计与可行性评估（JSON 增量提取 + NDJSON；实现排 N2 038–040）。
+- [docs/design/deployment-and-distribution.md](docs/design/deployment-and-distribution.md)：部署/分发形态对比、Docker 评估（暂不提供镜像）、便携包/安装包评估（D-N5-1：本轮不实现）与发布冒烟清单。
+- [docs/design/narrative-streaming.md](docs/design/narrative-streaming.md)：流式叙事阶段 1 设计与实施结果（NDJSON `POST /api/v1/turns/stream` + 前端增量显示/降级一次；已交付 037–040）。
+- [docs/design/scenario-dsl-v2.md](docs/design/scenario-dsl-v2.md)：场景 JSON v2 条件 DSL（白名单原子、flags 派生命题、多结局优先级、v1→v2 兼容矩阵；无脚本/表达式）。
+- [docs/design/scenario-pack-batch.md](docs/design/scenario-pack-batch.md)：终端场景包批量导入/导出（逐文件报告、稳定幂等键、上限；网页多文件 UI 待前端批次）。
+- [docs/design/save-export-import.md](docs/design/save-export-import.md)：存档单文件导出/导入（包 schema、回放哈希校验、幂等、上限与安全边界）。
+- [docs/design/a11y-checklist.md](docs/design/a11y-checklist.md)：网页可访问性审计清单（键盘/焦点/aria/reduced-motion/双主题对比度，WCAG 2.1 AA 依据）。
+- [docs/design/long-session-perf.md](docs/design/long-session-perf.md)：长会话性能基线（120 回合/601 事件、回放一致性与回归阈值）。
 - [docs/design/frontend-visual-refs.md](docs/design/frontend-visual-refs.md)：炫技类前端效果调研、许可证矩阵、缝合落点与署名要求。
 - [docs/design/world-book-format-compat.md](docs/design/world-book-format-compat.md)：SillyTavern World Info / CCv2 `character_book` 字段表与兼容矩阵。
 - [docs/design/trpg-world-module.md](docs/design/trpg-world-module.md)：跑团式世界模组设计（本轮只写文档）；[story-hazard-copy.md](docs/design/story-hazard-copy.md)：枯井环境伤害文案。
@@ -390,6 +493,6 @@ CI job：`quality`（Python 3.10/3.12 矩阵：ruff → mypy → lint-imports �
 ## 贡献与许可证
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)：环境搭建、四门质量门、golden 回放纪律、世界书改动纪律、视觉/性能红线与密钥/数据约束；[SECURITY.md](SECURITY.md)：安全问题的私下报告方式。
-- [CHANGELOG.md](CHANGELOG.md)：变更记录（当前可发布快照 **`0.2.0`**，`0.1.0` 为开发期历史）；[RELEASE.md](RELEASE.md)：版本号策略、发布 checklist 与 tag/Release 流程。
+- [CHANGELOG.md](CHANGELOG.md)：变更记录（当前开发版本 **`0.3.0`**，上一发布快照 `0.2.0`，`0.1.0` 为开发期历史）；[RELEASE.md](RELEASE.md)：版本号策略、发布 checklist 与 tag/Release 流程。
 - 本项目采用 **MIT License**（见 [LICENSE](LICENSE)）：`pyproject.toml` 以 SPDX 表达式 `license = "MIT"` 声明，构建元数据同时携带 LICENSE 文件。CI 许可证门禁要求依赖侧 GPL/AGPL/LGPL/未知许可证 0 阻断。
 - 前端视觉仅在技法层面参考 MIT 开源项目（retrozone / Codrops / tsParticles / auto-animate / anime.js / vue-kinesis / @vueuse/motion / TresJS / three.js），**未内联第三方代码**；未来如内联需在 [视觉参考文档](docs/design/frontend-visual-refs.md) §6 与 README 致谢保留版权声明。

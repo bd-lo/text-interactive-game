@@ -10,43 +10,80 @@
 > 发布流程/版本号/tag 规则见 [RELEASE.md](RELEASE.md)；分发与 Docker 评估见
 > [deployment-and-distribution](docs/design/deployment-and-distribution.md)。
 
-## [Unreleased]
+## [0.4.0] - 未发布（N 系列批次，2026-11-12）
 
-### 修复（2026-11-11 技术风险审查 R-01～R-25）
-
-- **主线/状态**：story 物品 `tags[0]` 统一为模板键，背包不再把 `consumable` 当模板合并，制造不再因语义标签 `ValidationError`；用户场景导入期校验未知属性/自指出口/物品双放置并做建局 dry-run（422 取代建局 500）；commit 后的快照/幂等写失败只记 WARNING，不再把成功回合报告为失败；`EventLog.append` 校验 `rng_seed`，建局校验初始状态种子/玩家槽位；出口 `in`/`out` 可导航且中文名本地化；`/view.lore` 与下一回合注入的 turn 对齐（R-16）。
-- **并发/升级**：新增进程级分段锁覆盖创建/导入/回合（单进程；多进程仍为已知限制）；启动 `ensure_schema()` 自动检测并升级旧库，Alembic 迁移随 wheel 分发；快照表新增 `(game_id, snapshot_version)` 唯一约束（Alembic 0006）+ upsert，快照写入按存档串行；幂等表不再缓存 4xx 失败响应（修正输入后同键可直接重试）；批量休眠 `SCENE_ENTRY` 只认本回合移动（不再永久唤醒）；每回合只读事件尾部增量、LLM 调用日志有界。
-- **LLM/世界书/安全**：解析白名单从 `tool_specs` 派生（`inspect_item`/`craft_item` 不再被拒）；解析/制造请求带 `prompt_version`；叙事兼容制造产物 dict；重试等待受整链 deadline 约束；世界书嵌套量词正则（含 `(?:a+){2,}`）导入期拒绝；上传 JSON 拒绝 NaN/Infinity；ASGI 请求体 1MB 上限（Content-Length + chunked 实际计数）；人物卡生成限流改为按 IP 且有界；`TrustedHostMiddleware` + 非 loopback `TEXTGAME_API_TOKEN` 鉴权 + `api_base` 拒绝云元数据/链路本地地址；自由制造新增网页设置开关（二次确认 + 本机持久化）。无头/生产开启需**同时**设置 `TEXTGAME_FREE_CRAFT_ENABLED=true` 与 `TEXTGAME_ALLOW_RESOLVER_LLM=true`（显式接受裁决链路调 LLM 的风险，否则启动期 fail-fast）。
-- **前端**：`loadGame` 失败先清空旧对局状态；零事件只读回合不写 history，并新增「最近回应」可见区块（修复零事件回合正文刷新后不可见的回归，+4 例单测）；幂等键改为 store 生成最终 UUID、client 直传，`create-game` 键纳入 `world_book_id`。
-- 详细逐项修法/测试见 `docs/audits/2026-11-11-technical-pitfalls-review.md` §7；回归：后端 **2233 passed**（含 replay **69**、覆盖率 **87.56%**）、前端 **60 files / 383 tests** + typecheck 全绿，本地真实浏览器 e2e **26/26 步、126/126 断言**。
+> **未发布草案**：M6 后 N 系列批次（2026-11-12）已合入工作区/`main`，但本批**不 bump 版本**——
+> `pyproject.toml` 与 `src/textgame/__init__.py::__version__` 仍为 `0.3.0`，未打 tag、未发布。
+> 发布前需执行 [RELEASE.md](RELEASE.md) §2 checklist（全量测试/replay/四门/web 构建与 `web/dist` 漂移/e2e/
+> `check_docs`/构建冒烟/启动器冒烟/许可证/安全）并由维护者拍板 `git tag` / GitHub Release / PyPI。
+> 本段同时收纳 0.3.0 之后已合入的 R5 技术风险修复与 Aurora Glass 双皮肤/氛围层（原 `[Unreleased]` 内容，
+> 2026-11-11～12），避免出现两个并行未发布段。
 
 ### 新增
 
-- **网页自由制造开关（R-19 运行期 opt-in）**：设置页新增「自由制造」卡片，开启前二次确认“裁决/重试链路内调 LLM、可能重复计费”；确认后共享 `FreeCraftSwitch` 即时生效（无需重启），偏好持久化到 `data/free_craft.json`；新增 `GET/PUT /api/v1/settings/free-craft`（开启需大模型已启用并确认风险），无头/生产仍可用 env 显式开启（两个开关见上）。
-- **日间/夜间双皮肤（Aurora Glass）**：默认**日间**；顶栏「外观」按钮一键切换，视觉设置菜单可选「跟随系统」。
+- **场景 JSON v2（N1 029/030，ADR [D-N1-1](docs/decisions/2026-11-12-scenario-dsl-v2.md)）**：用户自上传场景新增 `schema_version=2`——9 个白名单谓词（`flag` / `objective_done` / `has_item_tag_count` / `item_in_room` / `npc_in_room` / `turn_gte|turn_lte` / `world_time_gte|world_time_lte`）并复用 `all/any/not/always`；顶层 `flags[]` 为**派生命题**（≤16 个、统一依赖图环检测、读时求值、不写 `GameState`）；多结局冻结「`priority` 降序 → 声明序 → 首个满足 → 目标全完成/HP≤0 兜底」；**v1 文件逐字兼容**，无 eval/脚本、不新增 EventType/状态字段，非法定义给带 JSON 路径的结构化错误。
+- **场景单文件分享导出（N1 032）**：新增只读 `GET /api/v1/scenarios/{scenario_id}/export`——响应体就是可**直接再导入**的场景定义 JSON 原文（保留 `schema_version`/标题/作者/flags 等全部字段），`attachment; filename="<slug>.json"`，不含库内 ID/时间戳/服务器路径；v1/v2 导出→再导入 roundtrip 均有测试；分享=文件交换（无云端/账号/市场）。
+- **网页场景编辑器（N1 031）**：新增 `/scenarios/editor` 路由——房间/物品/NPC/玩家/目标/结局/建议表单 + v2 `flags`/多结局 `priority`/13 个白名单原子与组合子（递归条件表单，>3 层提示改用 JSON 原文）；表单与 JSON 原文双向同步、600ms debounce 调用 `POST /api/v1/scenarios/validate`（带 JSON 路径的 errors/warnings、序号保护只应用最新结果）；保存走 `POST /api/v1/scenarios`（按内容 FNV-1a 生成稳定 `Idempotency-Key`），成功后跳详情并可「按此场景开局」；载入 v1 文档只提示不自动升级；场景详情新增「导出 JSON」下载（N1-032 网页侧）与场景库/导入页入口。编辑器**只产出 JSON、不旁路服务端校验、不直写库**，无 `v-html`；375px 单列可用。
+- **示例内容包与一键体验（N1 035/036）**：新增 `examples/content-pack/`——2 个可玩 v2 场景（「灰烬灯塔」4 房间/6 flags/3 结局；「镜井」3 房间/9 flags/3 结局，含物品选择与时间两类失败分支）、12 条世界书、1 张人物卡与 README；新增 `scripts/quickstart-content-pack.ps1`（PowerShell 5.1/7，UTF-8 BOM）与 `.sh`：临时数据库 + 显式离线启动，自动校验/导入并建一局「灰烬灯塔 + 世界书」后打开 `/game/<id>`，`-Check`/`--check` headless 自检；不读写 `data/textgame.db`、不复制/打印密钥。
+- **流式叙事阶段 1（N2 038–040，ADR [D-N2-1..N2-8](docs/decisions/2026-11-11-streaming-phase1.md)）**：新增 `POST /api/v1/turns/stream`（`application/x-ndjson`，5 事件 `start`/`delta`/`replace`/`done`/`error`；`done.result` 与 `/turns` 完全同构的 `TurnResult`）；服务端从 JSON 叙事流增量提取 `narrative` 前缀（转义/跨 chunk/上限 150+64，与最终文本 exact match），完整 JSON 到达后仍走原校验/一次修复链，失败以 `replace` 回退模板；网页对局页流式渲染增量、`replace` 覆盖、`done.result.text` 为权威；传输/协议失败自动降级普通 `/turns` **恰好一次**（业务 `error` 事件按普通回合失败处理、不降级；`fetch` + `ReadableStream`，禁 `EventSource`、无自动重试）；幂等/CAS/唯一写入者/断连不撤销语义与旧端点一致。真实 DeepSeek 验收：端到端首 `delta` **1.79–2.09s**、总 **2.53–2.99s**（R-T8 体感缓解）。
+- **网页可访问性（N2 041/042）**：全局跳过链接落点 + 路由切换焦点管理、面板/确认焦点、指令框完整键盘操作（`/` 聚焦、↑↓ 历史、Esc、Ctrl/Cmd+Enter、`aria-busy`/`aria-keyshortcuts`）、对话流 `aria-live` 播报策略；双主题对比度按 **WCAG 2.1 AA** 修正（日间 fg/bg 16.63:1、夜间 17.71:1，按钮 6.29/5.70:1，夜间边界 3.23:1）；打字机/粒子/极光/过渡遵循 `prefers-reduced-motion`，`prefers-reduced-transparency`/`forced-colors` 有降级。
+- **移动端 375px 与触控目标（N2 043/044）**：9 个页面 375px 无横向溢出、长文本/长 JSON 换行与滚动容器、对局输入区可达、弹层不超视口且可关；窄屏（≤760px）按钮/chips/导航/输入/摘要/开关/复选统一 ≥44×44 CSS px（内联文本链接按 WCAG 2.5.5 inline 例外），桌面 1280px 视觉密度与既有 e2e 断言零变化。
+- **终端卡库浏览（N3 047）**：`--list-cards` 支持 `--card-query`（标题/来源过滤）、`--card-limit`（1..100）、`--card-all`，逐卡展示标题/来源/更新时间/完整卡 ID 与可玩提示；新增 `--card-detail <卡ID>` 只读查看安全子集（标题/来源/属性摘要/背包提示/警告）；非法 ID/未知卡/后端不可用给中文可读提示与非 0 退出码。
+- **终端场景包批量导入导出（N3 045）**：`--import-scenarios <目录>`（`--import-limit` 默认 50/上限 100；逐文件 ≤256KB/UTF-8/JSON 对象，幂等键=文件内容 sha256；`[ok]/[skip]/[error]` 报告，有失败退出码 1）与 `--export-scenarios <目录>`（`--export-limit`；只读 list+detail 写 `<slug>.json`，重名追加 ID 后缀，导出文件可直接再导入）。
+- **存档单文件导出/导入（N3 048）**：新增只读 `GET /api/v1/games/{game_id}/export`（`export_version`/`exported_at`/`game`/`events`/`snapshot`/`checksum`，不含 API Key/凭据/日志）与 `POST /api/v1/saves/import`（必带 `Idempotency-Key`；字段白名单 + `sha256` checksum + `Event` 模型 + 全量回放 + `state_hash`/版本/回合/序号一致性校验，全过才以新 `game_id` 写库，可 `/view`/`/replay` 并继续 `POST /turns`；上限 8MB/20000 事件；非法包零写入、同键幂等重放）。
+- **N4/N5 工具与基线**：新增 `scripts/rebaseline_golden.py`（m3 叙事受控重基线唯一工具：默认 dry-run，`--apply` 需 `--confirm` + `.bak` 备份 + 双 sha256 自检；当前 m3 dry-run **0 diff**、tracked golden 零改动）与 `scripts/perf-long-session.py`（120 回合/601 事件：total 8.47–9.57s、per-turn p95 115–140ms、tracemalloc 峰值 3.83MB，并有宽松阈值回归测试）。
+- **网页自由制造开关（R5，R-19 运行期 opt-in）**：设置页新增「自由制造」卡片，开启前二次确认“裁决/重试链路内调 LLM、可能重复计费”；确认后共享 `FreeCraftSwitch` 即时生效（无需重启），偏好持久化到 `data/free_craft.json`；新增 `GET/PUT /api/v1/settings/free-craft`（开启需大模型已启用并确认风险），无头/生产仍可用 env 显式开启。无头/生产开启需**同时**设置 `TEXTGAME_FREE_CRAFT_ENABLED=true` 与 `TEXTGAME_ALLOW_RESOLVER_LLM=true`（显式接受裁决链路调 LLM 的风险，否则启动期 fail-fast）。
+- **日间/夜间双皮肤（R5，Aurora Glass）**：默认**日间**；顶栏「外观」按钮一键切换，视觉设置菜单可选「跟随系统」。
   `stores/theme.ts` 维护 `light|dark|auto` 并写 `<html data-theme>` + `meta[theme-color]`；
   `web/public/theme-init.js` 在任何绘制前写好首帧皮肤（外链脚本，满足 CSP `script-src 'self'`），刷新不闪色；
   支持 View Transition 时从点击位置做 `clip-path: circle()` 圆形扩散换肤，`prefers-reduced-motion` 时瞬时切换。
-- **氛围层**：`AtmosphereOverlay.vue`（4 团极光 + 细颗粒 + 鼠标聚光，纯 CSS/合成层）与 `MoteField.vue`
+- **氛围层（R5）**：`AtmosphereOverlay.vue`（4 团极光 + 细颗粒 + 鼠标聚光，纯 CSS/合成层）与 `MoteField.vue`
   （Canvas 微光粒子，按主题切调色板与混合模式）。两者均懒加载、`data-visual=off` 不渲染；
   粒子层页面隐藏暂停；系统「减少动态效果」/低功耗档自动降级。
-- 主题/外观单测：`web/tests/unit/theme.test.ts`（9 例）、`themeToggle.test.ts`（5 例）、
+- 主题/外观单测（R5）：`web/tests/unit/theme.test.ts`（9 例）、`themeToggle.test.ts`（5 例）、
   `moteField.test.ts`（6 例，替代 `emberField.test.ts`）。
 
 ### 变更
 
-- **视觉基线替换**：旧「2G 深绿终端」皮肤整体退役（用户明确要求「不要考虑 2G」）。
+- **流式开关与回滚（N2 038，ADR D-N2-8）**：新增 `TEXTGAME_STREAM_ENABLED`（默认 `true`：后端端点常开、旧客户端不调用即死代码无副作用；`false` → 流式端点返回 404 统一信封，前端自动降级普通 `/turns`）——一键回滚，且**旧 `POST /turns` 契约、`TurnResult`、事件、`GameState`、默认离线/golden/`demo`/`console --check` 零变化**。
+- **版本与发布口径**：版本号仍为 `0.3.0`（本段为 0.4.0 未发布草案，**不 bump** `pyproject.toml`/`__version__`）；README/README.en/`RELEASE.md` §2.3/部署与分发评估已同步 N 系列交付状态、0.3.0 当前快照与 0.4.0 待发布口径（N 系列增量门禁与发布 checklist 由维护者在发布时复跑并拍板）。
+- **契约仅加法**：新端点（`/turns/stream`、`/scenarios/{id}/export`、`/games/{id}/export`、`/saves/import`）与 LLM 客户端可选流式方法均为加法；v1 场景/世界书/人物卡/旧存档与旧 `/turns` 请求响应形状不变。
+- **视觉基线替换（R5）**：旧「2G 深绿终端」皮肤整体退役（用户明确要求「不要考虑 2G」）。
   `web/src/styles/terminal.css` → `web/src/styles/theme.css`，改为三层 token：语义色 / 玻璃面与描边 / 特效；
   叙事正文改用系统衬线字体，UI 用系统无衬线，指令输入与 JSON 保留等宽；面板改玻璃拟态 + 圆角 + 分层阴影。
-- **不引入 element-plus**：玻璃、极光、渐变与双皮肤全部由 token + 原生 CSS 自建，组件库不提供这些能力且需覆盖整套主题变量
+- **不引入 element-plus（R5）**：玻璃、极光、渐变与双皮肤全部由 token + 原生 CSS 自建，组件库不提供这些能力且需覆盖整套主题变量
   （第 23 章 §23.4 已回写）。
-- **可访问性/降级**：日间 fg/bg 16.63:1、夜间 17.71:1（按钮 6.29 / 5.67），`backdrop-filter` 不可用与
+- **可访问性/降级（R5）**：日间 fg/bg 16.63:1、夜间 17.71:1（按钮 6.29 / 5.70），`backdrop-filter` 不可用与
   `prefers-reduced-transparency` 回退不透明底，`forced-colors` 交还系统色。
-- `web/dist` 重建入库（连续两次 build 逐文件 SHA256 一致，36 文件无 drift）；`pnpm --dir web test` **60 files / 383 tests**、`typecheck` 全绿。
+- `web/dist` 重建入库（039 验收时重复 build 可复现；tracked `web/dist` 漂移由 CI dist 漂移门禁校验）。
+
+### 修复
+
+- **分享/导入边界（N1 032 / N3 048）**：场景导出只读、零写入、未知/已删/库内定义损坏 404、免幂等键且响应不含库内字段；存档导入失败（字段缺失/非法 JSON/checksum 不符/事件模型非法/回放 state_hash 或版本不一致/超 8MB 或 20000 事件）一律结构化错误 + **零写入**，非法包不写幂等表，同键同参可重放。
+- **a11y 可读性/焦点（N2 041/042）**：夜间低对比修正（`--border-strong` 日间 α0.22→0.50（1.60→3.38:1）、夜间 α0.20→0.36（1.93→3.23:1））、焦点环增强、打字机/粒子/极光/过渡遵循 reduced-motion、reduced-transparency/forced-colors 降级；双主题 11 条对比度 token 回归 + reduced-motion/live region 用例锁定。
+- **测试稳定性（N1 032）**：`tests/unit/test_scenario_service.py` 的 R-04 并发用例改用文件型 SQLite，修复并行负载下共享内存连接导致的偶发 `sqlite3.InterfaceError`（断言零改动）。
+- **主线/状态（R5）**：story 物品 `tags[0]` 统一为模板键，背包不再把 `consumable` 当模板合并，制造不再因语义标签 `ValidationError`；用户场景导入期校验未知属性/自指出口/物品双放置并做建局 dry-run（422 取代建局 500）；commit 后的快照/幂等写失败只记 WARNING，不再把成功回合报告为失败；`EventLog.append` 校验 `rng_seed`，建局校验初始状态种子/玩家槽位；出口 `in`/`out` 可导航且中文名本地化；`/view.lore` 与下一回合注入的 turn 对齐（R-16）。
+- **并发/升级（R5）**：新增进程级分段锁覆盖创建/导入/回合（单进程；多进程仍为已知限制）；启动 `ensure_schema()` 自动检测并升级旧库，Alembic 迁移随 wheel 分发；快照表新增 `(game_id, snapshot_version)` 唯一约束（Alembic 0006）+ upsert，快照写入按存档串行；幂等表不再缓存 4xx 失败响应（修正输入后同键可直接重试）；批量休眠 `SCENE_ENTRY` 只认本回合移动（不再永久唤醒）；每回合只读事件尾部增量、LLM 调用日志有界。
+- **LLM/世界书/安全（R5）**：解析白名单从 `tool_specs` 派生（`inspect_item`/`craft_item` 不再被拒）；解析/制造请求带 `prompt_version`；叙事兼容制造产物 dict；重试等待受整链 deadline 约束；世界书嵌套量词正则（含 `(?:a+){2,}`）导入期拒绝；上传 JSON 拒绝 NaN/Infinity；ASGI 请求体 1MB 上限（Content-Length + chunked 实际计数，存档导入路径单独放宽到 8MB+报文头）；人物卡生成限流改为按 IP 且有界；`TrustedHostMiddleware` + 非 loopback `TEXTGAME_API_TOKEN` 鉴权 + `api_base` 拒绝云元数据/链路本地地址。
+- **前端（R5）**：`loadGame` 失败先清空旧对局状态；零事件只读回合不写 history，并新增「最近回应」可见区块（修复零事件回合正文刷新后不可见的回归，+4 例单测）；幂等键改为 store 生成最终 UUID、client 直传，`create-game` 键纳入 `world_book_id`。
+
+### 内部（工程与验证）
+
+- **测试基线（2026-11-12 实测，HEAD `553d0a0` + 工作区）**：后端全量 pytest **2456 passed / 0 failed**（固定顺序与随机 seed 复跑；含 replay **69 passed**、security **172 passed**）；前端 `pnpm --dir web test` **69 files / 481 tests**（031 编辑器 + 043/044 移动端后）；真实浏览器 e2e **32/32 步、205/205 断言**（含编辑器/导出/a11y/流式/移动端步）；`demo --check` **7/7**、`console --check` **4/4**；`mypy src/textgame` **Success（118 files）**、`lint-imports` **2 kept / 0 broken**、变更 py 的 `ruff format/check` 通过。
+- **新增 ADR**：[D-N1-1 场景 DSL v2](docs/decisions/2026-11-12-scenario-dsl-v2.md)、[D-N4-1 m3 叙事受控重基线](docs/decisions/2026-11-12-m3-narrative-rebaseline.md)、[D-N4-2 Playwright/a11y 工具口径复评](docs/decisions/2026-11-12-playwright-a11y-eval.md)、[D-N5-1 便携包/PyInstaller/安装包评估](docs/decisions/2026-11-12-portable-package-eval.md)。
+- **评估结论**：Playwright 继续零依赖 CDP（`scripts/e2e-web.mjs`；不引入约 19MB npm 依赖、不建长期 CI 浏览器矩阵，D-N4-2）；便携包/exe/安装器本轮不实现、不新增构建依赖与 CI 打包 job、不产出 exe（D-N5-1）。
+- **分片验收数字**：v2 目标测试 **132 passed**、分享 **65 passed**、流式后端新增 **70 例** + 验收组合 **126 passed**、a11y 新增 **36 例**、移动端新增 **8 例**、编辑器新增 **30 例**、存档 **15 passed**、终端批量 **21 passed**、卡库 **29 passed**、内容包 **11 passed**、重基线+replay **74 passed**、长会话 **2 passed**；`web/dist` 重建入库且两次 build 逐文件 SHA256 一致。
+- **R5 历史验收（2026-11-11）**：后端 **2233 passed**（含 replay **69**、覆盖率 **87.56%**）、前端 **60 files / 383 tests** + typecheck 全绿，本地真实浏览器 e2e **26/26 步、126/126 断言**。
 
 ### 文档
 
-- 新增 [LLM 参与与自由度评估审计（2026-11-12）](docs/audits/2026-11-12-llm-participation-freedom.md)（46 次真实 LLM 调用证据 + 15 条探针矩阵 + 六维自由度评分）与 [R5 批次回写](docs/progress/R5-2026-11-12-aurora-glass-and-pitfalls-review.md)；[技术风险审查与修复记录（R-01～R-25）](docs/audits/2026-11-11-technical-pitfalls-review.md) 已在 §7 引用并回写最终数字。
+- **新增设计与评估文档**：[场景 DSL v2](docs/design/scenario-dsl-v2.md)、[a11y 检查清单](docs/design/a11y-checklist.md)、[长会话性能基线](docs/design/long-session-perf.md)、[存档导出/导入](docs/design/save-export-import.md)、[场景包批量导入导出](docs/design/scenario-pack-batch.md)；[流式叙事阶段 1 设计](docs/design/narrative-streaming.md) 增补 §9 实施结果/11 条偏差登记；章节回写第 6/8/12/17/18/20/23 章（`docs/开发文档.md` 由 Lead 同批重建并逐字节对齐）。
+- **进度文档与批次记录**：新增 029/030/031/032/035/036/038/039/040/041/042/043/044/045/047/048/054/055/056/058 共 **20 篇**单次进度文档 + **QA 独立红队报告 1 篇**（`docs/PROGRESS.md` 索引由 Lead 同批回填）；README/README.en 同步 N 系列交付状态与 0.4.0 待发布口径。
+- **章节回写（N 系列）**：第 6 章（场景导出/存档导出导入 §6.8）、第 8 章（叙事 Agent 流式渲染 §8.6）、第 12 章（流式补全扩展 §12.12）、第 17 章（N 系列交付状态 §17.9.6）、第 18 章（性能基线 §18.11 + 受控重基线）、第 20 章（R-T15/R-P2/R-T4 等风险状态）、第 23 章（§23.11 a11y/§23.12 流式/§23.13 编辑器/§23.14 移动端/§23.15 内容包）；`docs/开发文档.md` 由 Lead 同批重建。
+- **R5 审计与回写**：[LLM 参与与自由度评估审计（2026-11-12）](docs/audits/2026-11-12-llm-participation-freedom.md)（46 次真实 LLM 调用证据 + 15 条探针矩阵 + 六维自由度评分）与 [R5 批次回写](docs/progress/R5-2026-11-12-aurora-glass-and-pitfalls-review.md)；[技术风险审查与修复记录（R-01～R-25）](docs/audits/2026-11-11-technical-pitfalls-review.md) §7。
+
+> **未纳入本草案（待后续批次）**：N1 **033–034 跑团世界模组 P0**（需用户拍板新增 EventType，D-N6）、N3 **046 世界书条目编辑**（可选）——交付后另立条目；网页场景包/存档多文件 UI 亦待后续 web 批次（后端端点已就绪）。
+> **发布状态**：本段仅草案；`0.4.0` 发布（版本 bump / tag / GitHub Release / PyPI）由维护者按 [RELEASE.md](RELEASE.md) 拍板执行。
 
 ## [0.3.0] - 2026-11-11（玩家启动器与退出体验，N5 057）
 
